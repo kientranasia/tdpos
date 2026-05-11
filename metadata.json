@@ -1,0 +1,8 @@
+{
+  "name": "TDPOS - Hệ thống Quản lý Vật tư Nông nghiệp",
+  "description": "Nền tảng quản lý bán hàng, kho bãi và công nợ tối ưu cho cửa hàng vật tư nông nghiệp. Phát triển bởi TRANDAO Investment.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": []
+}

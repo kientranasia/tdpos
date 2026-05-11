@@ -1,0 +1,43 @@
+# Dockerfile Example for AI Studio POS App
+# ----------------------------------------
+# This is a sample production-ready Dockerfile for an Express + Vite (React) app.
+
+# Stage 1: Build the React Application
+FROM node:18-alpine AS build
+
+WORKDIR /app
+
+# Copy package files and install dependencies
+COPY package*.json ./
+RUN npm install
+
+# Copy source code and build the application
+COPY . .
+RUN npm run build
+
+# Stage 2: Serve with Node.js
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install production dependencies only
+COPY package*.json ./
+RUN npm install --omit=dev
+
+# Copy the built assets from Stage 1
+COPY --from=build /app/dist ./dist
+# If you have an express server (server.ts), copy it and run it
+# If it's a static site, you might want to use nginx instead
+COPY --from=build /app/package.json ./
+
+# Environment configuration
+ENV NODE_ENV=production
+ENV PORT=3000
+
+# Expose the application port
+EXPOSE 3000
+
+# Start command
+# For static apps: RUN npm install -g serve && CMD ["serve", "-s", "dist", "-l", "3000"]
+# For full-stack apps: CMD ["node", "dist/server.js"]
+CMD ["npm", "run", "start"]
