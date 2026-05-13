@@ -74,6 +74,7 @@ export const products = sqliteTable('products', {
 export const customers = sqliteTable('customers', {
   id: text('id').primaryKey(),
   tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  createdBy: text('created_by'),
   name: text('name').notNull(),
   phone: text('phone').notNull(),
   address: text('address').notNull(),

@@ -54,6 +54,7 @@ export default function MobileLayout() {
     { icon: Settings, label: 'Cài đặt', shortLabel: 'Tôi', path: '/app/settings' },
   ];
   const visibleMenuItems = menuItems.filter((item) => isMenuAllowed(currentUser.role, item.path));
+  const footerMenuItems = visibleMenuItems.filter((item) => item.path !== '/app/settings');
 
   const getHeaderTitle = () => {
     const item = visibleMenuItems.find(item => item.path === location.pathname);
@@ -99,8 +100,8 @@ export default function MobileLayout() {
       )}
 
       {/* Header cho Mobile + Tablet */}
-      <header className="sticky top-0 z-40 h-14 md:h-16 items-center justify-between brand-topbar px-4 md:px-5 lg:hidden flex">
-        <div className="flex items-center gap-3 min-w-0">
+      <header className="sticky top-0 z-[110] h-14 md:h-16 items-center justify-between brand-topbar px-4 md:px-5 lg:hidden flex">
+        <button onClick={() => navigate('/app/dashboard')} className="flex items-center gap-3 min-w-0">
           <div className="flex h-9 w-9 md:h-10 md:w-10 items-center justify-center rounded-lg bg-sky-600 text-white shadow-lg shadow-sky-900/20">
             <Store className="h-5 w-5" />
           </div>
@@ -108,7 +109,7 @@ export default function MobileLayout() {
             <p className="font-semibold text-slate-900 tracking-tight text-[15px] md:text-base leading-none">TDPOS</p>
             <p className="text-[11px] text-slate-500 truncate">{getHeaderTitle()}</p>
           </div>
-        </div>
+        </button>
 
         <div className="flex items-center gap-2 relative">
           <button
@@ -141,7 +142,7 @@ export default function MobileLayout() {
           </button>
 
           {showAccountMenu && (
-            <div className="absolute top-11 md:top-12 right-0 w-52 rounded-lg brand-surface shadow-xl p-2">
+            <div className="absolute top-11 md:top-12 right-0 z-[120] w-52 rounded-lg brand-surface shadow-xl p-2">
               <button
                 onClick={() => {
                   setShowAccountMenu(false);
@@ -245,8 +246,8 @@ export default function MobileLayout() {
 
       {/* Bottom Nav cho Mobile */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md pb-safe lg:hidden border-t border-slate-200 shadow-[0_-6px_24px_rgba(15,23,42,0.08)]">
-        <div className="grid" style={{ gridTemplateColumns: `repeat(${visibleMenuItems.length}, minmax(0, 1fr))` }}>
-        {visibleMenuItems.map((item) => (
+        <div className="grid" style={{ gridTemplateColumns: `repeat(${footerMenuItems.length}, minmax(0, 1fr))` }}>
+        {footerMenuItems.map((item) => (
           <NavLink
             key={item.path}
             to={item.path}

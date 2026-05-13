@@ -554,6 +554,9 @@ app.post('/api/products/:id/stock', (req, res) => {
 app.get('/api/customers', (req, res) => {
   try {
     const { search } = req.query;
+    const tenantUsers = db.select().from(schema.users)
+      .where(eq(schema.users.tenantId, req.user.tenantId)).all();
+    const userNameById = new Map(tenantUsers.map((u) => [u.id, u.name]));
     let allCustomers = db.select().from(schema.customers)
       .where(eq(schema.customers.tenantId, req.user.tenantId)).all();
 
@@ -565,7 +568,12 @@ app.get('/api/customers', (req, res) => {
       );
     }
 
-    res.json(allCustomers);
+    res.json(
+      allCustomers.map((customer) => ({
+        ...customer,
+        createdByName: customer.createdBy ? userNameById.get(customer.createdBy) || null : null,
+      }))
+    );
   } catch (err) {
     console.error('GET /api/customers error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -574,10 +582,16 @@ app.get('/api/customers', (req, res) => {
 
 app.get('/api/customers/:id', (req, res) => {
   try {
+    const tenantUsers = db.select().from(schema.users)
+      .where(eq(schema.users.tenantId, req.user.tenantId)).all();
+    const userNameById = new Map(tenantUsers.map((u) => [u.id, u.name]));
     const customer = db.select().from(schema.customers)
       .where(and(eq(schema.customers.id, req.params.id), eq(schema.customers.tenantId, req.user.tenantId))).get();
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
-    res.json(customer);
+    res.json({
+      ...customer,
+      createdByName: customer.createdBy ? userNameById.get(customer.createdBy) || null : null,
+    });
   } catch (err) {
     console.error('GET /api/customers/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -587,9 +601,10 @@ app.get('/api/customers/:id', (req, res) => {
 app.post('/api/customers', (req, res) => {
   try {
     if (!ensureRole(req, res, ['owner', 'manager'])) return;
-    const customer = { id: uuid(), totalDebt: 0, ...req.body, tenantId: req.user.tenantId };
+    const customer = { id: uuid(), totalDebt: 0, ...req.body, tenantId: req.user.tenantId, createdBy: req.user.id };
     db.insert(schema.customers).values(customer).run();
-    res.status(201).json(customer);
+    const creator = db.select().from(schema.users).where(eq(schema.users.id, req.user.id)).get();
+    res.status(201).json({ ...customer, createdByName: creator?.name || null });
   } catch (err) {
     console.error('POST /api/customers error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -646,6 +661,9 @@ app.post('/api/customers/:id/debt', (req, res) => {
 app.get('/api/invoices', (req, res) => {
   try {
     const { customerId, status } = req.query;
+    const tenantUsers = db.select().from(schema.users)
+      .where(eq(schema.users.tenantId, req.user.tenantId)).all();
+    const userNameById = new Map(tenantUsers.map((u) => [u.id, u.name]));
     let allInvoices = db.select().from(schema.invoices)
       .where(eq(schema.invoices.tenantId, req.user.tenantId))
       .orderBy(desc(schema.invoices.createdAt)).all();
@@ -657,7 +675,12 @@ app.get('/api/invoices', (req, res) => {
       allInvoices = allInvoices.filter(i => i.status === status);
     }
 
-    res.json(allInvoices);
+    res.json(
+      allInvoices.map((invoice) => ({
+        ...invoice,
+        createdByName: userNameById.get(invoice.createdBy) || null,
+      }))
+    );
   } catch (err) {
     console.error('GET /api/invoices error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -666,6 +689,9 @@ app.get('/api/invoices', (req, res) => {
 
 app.get('/api/invoices/:id', (req, res) => {
   try {
+    const tenantUsers = db.select().from(schema.users)
+      .where(eq(schema.users.tenantId, req.user.tenantId)).all();
+    const userNameById = new Map(tenantUsers.map((u) => [u.id, u.name]));
     const invoice = db.select().from(schema.invoices)
       .where(and(eq(schema.invoices.id, req.params.id), eq(schema.invoices.tenantId, req.user.tenantId))).get();
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
@@ -673,7 +699,7 @@ app.get('/api/invoices/:id', (req, res) => {
     // Also fetch invoice items
     const items = db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, req.params.id)).all();
 
-    res.json({ ...invoice, items });
+    res.json({ ...invoice, createdByName: userNameById.get(invoice.createdBy) || null, items });
   } catch (err) {
     console.error('GET /api/invoices/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });

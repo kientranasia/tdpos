@@ -90,6 +90,8 @@ export interface Category {
 export interface Customer {
   id: string;
   tenantId: string; // Tách data theo tenant
+  createdBy?: string;
+  createdByName?: string | null;
   name: string;
   phone: string;
   address: string;
@@ -104,6 +106,7 @@ export interface Invoice {
   tenantId: string;
   customerId: string | null;
   createdBy: string; // User ID
+  createdByName?: string | null;
   totalAmount: number;
   discount: number;
   finalAmount: number;

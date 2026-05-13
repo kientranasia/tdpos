@@ -4,15 +4,15 @@ import { useApp } from '../context/AppContext';
 import { formatCurrency } from '../lib/utils';
 import { debtLedgerApi } from '../lib/api';
 import { DebtLedger } from '../types';
-import { 
-  Users, 
-  Phone, 
-  MapPin, 
-  ArrowLeft, 
-  Wallet, 
-  History, 
-  TrendingUp, 
-  ShoppingCart, 
+import {
+  Users,
+  Phone,
+  MapPin,
+  ArrowLeft,
+  Wallet,
+  History,
+  TrendingUp,
+  ShoppingCart,
   Calendar,
   ChevronRight,
   MoreVertical,
@@ -22,7 +22,6 @@ import {
   Star,
   Download,
   Share2,
-  Trash2,
   Edit2
 } from 'lucide-react';
 import { Button } from '../components/ui/Button';
@@ -274,15 +273,15 @@ export default function CustomerDetail() {
       <div className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar">
         <div className="max-w-7xl mx-auto space-y-8">
             {/* Quick Stats Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {stats.map((stat, i) => (
-                    <div key={i} className="bg-white p-6 rounded-lg shadow-sm border border-slate-100 flex items-center gap-6 group hover:border-indigo-100 hover:shadow-indigo-900/5 transition-all">
-                        <div className={`h-16 w-16 ${stat.bg} ${stat.color} rounded-lg flex items-center justify-center group-hover:scale-110 transition-transform`}>
-                            <stat.icon className="h-8 w-8" />
+                    <div key={i} className="bg-white p-5 rounded-lg shadow-sm border border-slate-100 flex items-center gap-4 group hover:border-indigo-100 hover:shadow-indigo-900/5 transition-all">
+                        <div className={`h-12 w-12 ${stat.bg} ${stat.color} rounded-lg flex items-center justify-center group-hover:scale-105 transition-transform`}>
+                            <stat.icon className="h-6 w-6" />
                         </div>
-                        <div className="space-y-1">
-                            <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">{stat.label}</p>
-                            <p className="text-2xl font-black text-slate-900 font-display tracking-tight tabular-nums">{stat.val}</p>
+                        <div className="space-y-1 min-w-0">
+                            <p className="text-xs font-semibold text-slate-500">{stat.label}</p>
+                            <p className="text-lg md:text-xl font-semibold text-slate-900 font-display tabular-nums break-all max-w-[240px]">{stat.val}</p>
                         </div>
                     </div>
                 ))}
@@ -317,6 +316,15 @@ export default function CustomerDetail() {
                                         <div>
                                             <p className="text-[8px] font-black text-slate-300 uppercase tracking-widest mb-1">Địa chỉ giao hàng</p>
                                             <p className="text-sm font-bold text-slate-900 leading-relaxed">{customer.address || 'Chưa cập nhật'}</p>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-start gap-4">
+                                        <div className="h-10 w-10 rounded-lg bg-slate-50 text-slate-400 flex items-center justify-center shrink-0">
+                                            <UserCheck className="h-5 w-5" />
+                                        </div>
+                                        <div>
+                                            <p className="text-[8px] font-black text-slate-300 uppercase tracking-widest mb-1">Nhân sự tạo khách</p>
+                                            <p className="text-sm font-semibold text-slate-900">{customer.createdByName || customer.createdBy || 'N/A'}</p>
                                         </div>
                                     </div>
                                 </div>

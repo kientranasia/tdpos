@@ -120,7 +120,7 @@ export default function Invoices() {
           <p>Mã đơn</p>
           <p>Khách hàng</p>
           <p>Thời gian</p>
-          <p>Tổng tiền</p>
+          <p>Tổng tiền / Người tạo</p>
           <p className="text-right">Thao tác</p>
         </div>
         <div className="divide-y divide-slate-100">
@@ -137,7 +137,10 @@ export default function Invoices() {
                   <Calendar className="h-4 w-4 text-slate-400" />
                   {new Date(inv.createdAt).toLocaleString('vi-VN')}
                 </div>
-                <p className="mb-3 text-sm font-semibold text-slate-900 md:mb-0">{formatCurrency(inv.finalAmount)}</p>
+                <div className="mb-3 md:mb-0">
+                  <p className="text-sm font-semibold text-slate-900">{formatCurrency(inv.finalAmount)}</p>
+                  <p className="text-xs text-slate-500">Tạo bởi: {inv.createdByName || inv.createdBy || 'N/A'}</p>
+                </div>
                 <div className="flex items-center justify-end gap-1">
                   <Button variant="ghost" size="icon" onClick={() => printInvoice(inv.id)}>
                     <Printer className="h-4 w-4" />
@@ -198,6 +201,10 @@ export default function Invoices() {
                     ? customerNameById.get(selectedInvoice.customerId) || 'Khách vãng lai'
                     : 'Khách vãng lai'}
                 </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Nhân sự tạo đơn</span>
+                <span className="font-medium text-slate-900">{selectedInvoice.createdByName || selectedInvoice.createdBy || 'N/A'}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Trạng thái</span>

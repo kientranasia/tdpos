@@ -40,6 +40,10 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
   }
 }
 
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'customers'").get()) {
+  addColumnIfMissing('customers', 'created_by', 'created_by TEXT');
+}
+
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenants'").get()) {
   addColumnIfMissing('tenants', 'trial_start_at', 'trial_start_at TEXT');
   addColumnIfMissing('tenants', 'trial_end_at', 'trial_end_at TEXT');

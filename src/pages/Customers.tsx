@@ -138,6 +138,9 @@ export default function Customers() {
               <p className={`text-base font-semibold ${customer.totalDebt > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
                 {formatCurrency(customer.totalDebt)}
               </p>
+              <p className="mt-1 text-xs text-slate-500">
+                Tạo bởi: {customer.createdByName || customer.createdBy || 'N/A'}
+              </p>
             </div>
           </button>
         ))}
