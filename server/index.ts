@@ -21,7 +21,9 @@ const withTenantAccess = (tenant: any) => {
   const trialEnd = tenant.trialEndAt ? new Date(tenant.trialEndAt).getTime() : 0;
   const subscriptionEnd = tenant.subscriptionEndAt ? new Date(tenant.subscriptionEndAt).getTime() : 0;
   const hasActiveSubscription = tenant.subscriptionStatus === 'active' && (!subscriptionEnd || subscriptionEnd >= now);
-  const inTrial = tenant.subscriptionStatus === 'trial' && trialEnd >= now;
+  // Keep tenant usable while trial window is still valid, even if status moved to pending_review.
+  const inTrialWindow = !!trialEnd && trialEnd >= now;
+  const inTrial = tenant.subscriptionStatus === 'trial' || inTrialWindow;
   const blocked = !inTrial && !hasActiveSubscription;
 
   return {
