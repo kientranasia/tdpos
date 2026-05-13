@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, ShoppingCart, Package, Users, Wallet, LogOut, Store, Receipt, Settings, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Home, ShoppingCart, Package, Users, Wallet, LogOut, Store, Receipt, Settings, PanelLeftClose, PanelLeftOpen, Bell, UserRound } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { useState } from 'react';
 import { authApi } from '../../lib/api';
@@ -7,11 +7,12 @@ import { Button } from '../ui/Button';
 import { firstAllowedPath, isMenuAllowed, canAccessPath } from '../../lib/permissions';
 
 export default function MobileLayout() {
-  const { activeTenant, currentUser, loading, setActiveTenant, setCurrentUser } = useApp();
+  const { activeTenant, currentUser, loading, setActiveTenant, setCurrentUser, products } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [subscriptionHelpMessage, setSubscriptionHelpMessage] = useState('');
+  const [showAccountMenu, setShowAccountMenu] = useState(false);
 
   if (loading) {
     return (
@@ -59,8 +60,9 @@ export default function MobileLayout() {
     return item ? item.label : 'TDPOS';
   };
 
-  const hiddenTopHeaderRoutes = ['/app/invoices', '/app/inventory', '/app/customers', '/app/debt'];
-  const showTopHeader = !hiddenTopHeaderRoutes.includes(location.pathname);
+  const lowStockCount = activeTenant?.accessBlocked
+    ? 0
+    : products.filter((p) => p.trackStock && p.stock <= p.lowStockThreshold).length;
 
   return (
     <div className={`flex h-screen flex-col bg-slate-50 ${isCollapsed ? 'lg:pl-20' : 'lg:pl-64'} transition-all duration-300 font-sans`}>
@@ -96,20 +98,70 @@ export default function MobileLayout() {
         </div>
       )}
 
-      {/* Header cho Mobile */}
-      <header className={`sticky top-0 z-30 h-14 items-center justify-between glass px-4 border-b border-slate-200/70 lg:hidden ${showTopHeader ? 'flex' : 'hidden'}`}>
-        <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-sky-600 text-white shadow-lg shadow-sky-900/20">
+      {/* Header cho Mobile + Tablet */}
+      <header className="sticky top-0 z-40 h-14 md:h-16 items-center justify-between brand-topbar px-4 md:px-5 lg:hidden flex">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex h-9 w-9 md:h-10 md:w-10 items-center justify-center rounded-lg bg-sky-600 text-white shadow-lg shadow-sky-900/20">
             <Store className="h-5 w-5" />
           </div>
-          <span className="font-semibold text-slate-900 tracking-tight text-[15px]">{getHeaderTitle()}</span>
+          <div className="min-w-0">
+            <p className="font-semibold text-slate-900 tracking-tight text-[15px] md:text-base leading-none">TDPOS</p>
+            <p className="text-[11px] text-slate-500 truncate">{getHeaderTitle()}</p>
+          </div>
         </div>
-        <button 
-          onClick={handleLogout} 
-          className="h-9 w-9 flex items-center justify-center rounded-full text-slate-300 hover:text-red-500 transition-colors"
-        >
-          <LogOut className="h-4 w-4" />
-        </button>
+
+        <div className="flex items-center gap-2 relative">
+          <button
+            onClick={() => navigate('/app/pos')}
+            className="h-9 w-9 md:h-10 md:w-10 rounded-lg brand-surface text-slate-600 hover:text-sky-600 transition-colors flex items-center justify-center"
+            title="Giỏ hàng / POS"
+          >
+            <ShoppingCart className="h-4 w-4 md:h-5 md:w-5" />
+          </button>
+
+          <button
+            onClick={() => navigate('/app/inventory')}
+            className="h-9 w-9 md:h-10 md:w-10 rounded-lg brand-surface text-slate-600 hover:text-sky-600 transition-colors flex items-center justify-center relative"
+            title="Thông báo tồn kho"
+          >
+            <Bell className="h-4 w-4 md:h-5 md:w-5" />
+            {lowStockCount > 0 && (
+              <span className="absolute -top-1 -right-1 h-4 min-w-4 px-1 rounded-full bg-orange-500 text-white text-[10px] leading-4 font-semibold text-center">
+                {lowStockCount > 9 ? '9+' : lowStockCount}
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setShowAccountMenu((prev) => !prev)}
+            className="h-9 w-9 md:h-10 md:w-10 rounded-lg brand-surface text-slate-600 hover:text-sky-600 transition-colors flex items-center justify-center"
+            title="Tài khoản"
+          >
+            <UserRound className="h-4 w-4 md:h-5 md:w-5" />
+          </button>
+
+          {showAccountMenu && (
+            <div className="absolute top-11 md:top-12 right-0 w-52 rounded-lg brand-surface shadow-xl p-2">
+              <button
+                onClick={() => {
+                  setShowAccountMenu(false);
+                  navigate('/app/settings');
+                }}
+                className="w-full h-9 px-3 rounded-md text-sm text-left text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+              >
+                <Settings className="h-4 w-4" />
+                <span>Cài đặt tài khoản</span>
+              </button>
+              <button
+                onClick={handleLogout}
+                className="w-full h-9 px-3 rounded-md text-sm text-left text-rose-600 hover:bg-rose-50 flex items-center gap-2"
+              >
+                <LogOut className="h-4 w-4" />
+                <span>Đăng xuất</span>
+              </button>
+            </div>
+          )}
+        </div>
       </header>
 
       {/* Sidebar cho Desktop */}
@@ -200,7 +252,7 @@ export default function MobileLayout() {
             to={item.path}
             className={({ isActive }) =>
               `flex min-w-0 flex-col items-center justify-center gap-1 py-2.5 transition-all duration-200 ${
-                isActive ? 'text-sky-600' : 'text-slate-500'
+                isActive ? 'text-sky-600 bg-sky-50/70' : 'text-slate-500'
               }`
             }
           >
