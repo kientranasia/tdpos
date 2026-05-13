@@ -1,125 +1,198 @@
-import { useState } from 'react';
-import { useApp } from '../context/AppContext';
-import { Search, Plus, Users, UserPlus, Phone, MapPin, ChevronRight, UserCheck, Star, Wallet } from 'lucide-react';
-import { Input } from '../components/ui/Input';
-import { Button } from '../components/ui/Button';
-import { formatCurrency } from '../lib/utils';
+import { FormEvent, useMemo, useState } from 'react';
+import { ChevronRight, MapPin, Phone, Plus, Search, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { v4 as uuid } from 'uuid';
+import { useApp } from '../context/AppContext';
+import { Button } from '../components/ui/Button';
+import { Input } from '../components/ui/Input';
+import { formatCurrency } from '../lib/utils';
+
+type CustomerTypeFilter = 'all' | 'retail' | 'loyal';
 
 export default function Customers() {
-  const { customers } = useApp();
   const navigate = useNavigate();
+  const { customers, activeTenant, currentUser, addCustomer } = useApp();
   const [searchTerm, setSearchTerm] = useState('');
+  const [typeFilter, setTypeFilter] = useState<CustomerTypeFilter>('all');
+  const [isOpenCreateModal, setIsOpenCreateModal] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [createForm, setCreateForm] = useState({
+    name: '',
+    phone: '',
+    address: '',
+    type: 'retail' as 'retail' | 'loyal',
+  });
 
-  const filteredCustomers = customers.filter(c => 
-    c.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    c.phone.includes(searchTerm)
-  );
+  const filteredCustomers = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase();
+    return customers.filter((customer) => {
+      const matchKeyword =
+        !keyword ||
+        customer.name.toLowerCase().includes(keyword) ||
+        customer.phone.toLowerCase().includes(keyword) ||
+        customer.address.toLowerCase().includes(keyword);
+      const matchType = typeFilter === 'all' || customer.type === typeFilter;
+      return matchKeyword && matchType;
+    });
+  }, [customers, searchTerm, typeFilter]);
+
+  const handleCreateCustomer = async (event: FormEvent) => {
+    event.preventDefault();
+    setSubmitError('');
+    if (!activeTenant || !currentUser) {
+      setSubmitError('Không tìm thấy thông tin tenant hoặc user hiện tại.');
+      return;
+    }
+    if (!createForm.name.trim() || !createForm.phone.trim()) {
+      setSubmitError('Vui lòng nhập tên và số điện thoại khách hàng.');
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+      await addCustomer({
+        id: uuid(),
+        tenantId: activeTenant.id,
+        name: createForm.name.trim(),
+        phone: createForm.phone.trim(),
+        address: createForm.address.trim(),
+        totalDebt: 0,
+        type: createForm.type,
+      });
+      setCreateForm({ name: '', phone: '', address: '', type: 'retail' });
+      setIsOpenCreateModal(false);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Không thể thêm khách hàng.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   return (
-    <div className="flex h-full flex-col bg-slate-50 animate-in fade-in duration-500 overflow-hidden">
-      <div className="p-4 sm:p-8 bg-white border-b sticky top-0 z-40 flex flex-col md:flex-row gap-4 md:gap-6 items-start md:items-center justify-between shadow-sm">
-        <div className="flex items-center gap-4 sm:gap-5">
-          <div className="h-9 w-9 sm:h-12 sm:w-12 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-lg shadow-blue-900/20 transform -rotate-3">
-            <Users className="h-5 w-5 sm:h-6 sm:w-6" />
-          </div>
+    <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-5 p-4 md:gap-6 md:p-6">
+      <section className="rounded-lg border border-slate-200 bg-white p-4 md:p-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <h1 className="text-base sm:text-xl font-black text-slate-900 font-display tracking-tight uppercase italic">Khách hàng</h1>
-            <p className="text-[7px] sm:text-[9px] font-black text-slate-400 uppercase tracking-widest sm:tracking-[0.2em] mt-0.5">{customers.length} khách trong hệ thống</p>
+            <h1 className="text-base font-semibold text-slate-900 md:text-lg">Khách hàng</h1>
+            <p className="mt-1 text-sm text-slate-500">{customers.length} khách trong hệ thống</p>
           </div>
-        </div>
-        
-        <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
-          <div className="relative flex-1 md:w-56 lg:w-72 group">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-blue-600 transition-colors" />
-            <Input 
-              className="h-9 sm:h-11 rounded-xl border-none bg-slate-100/50 shadow-inner focus:ring-4 focus:ring-blue-500/10 transition-all font-bold text-xs sm:text-sm placeholder:text-slate-300 placeholder:font-black placeholder:uppercase placeholder:tracking-widest" 
-              placeholder="TÌM THEO TÊN, SỐ ĐT..." 
-              value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
-            />
-          </div>
-          <Button className="h-9 sm:h-11 px-4 rounded-xl gap-2 font-black bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-900/20 active:scale-95 transition-all text-white uppercase tracking-widest shrink-0 text-[10px] sm:text-xs">
-            <UserPlus className="h-4 w-4 sm:h-5 sm:w-5" />
-            <span>Thêm mới</span>
+          <Button className="h-10 text-sm md:w-auto" onClick={() => setIsOpenCreateModal(true)}>
+            <Plus className="mr-2 h-4 w-4" />
+            Thêm khách hàng
           </Button>
         </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-4 sm:p-10 pb-40">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8">
-            {filteredCustomers.map(customer => (
-                <div 
-                    key={customer.id} 
-                    onClick={() => navigate(`/app/customers/${customer.id}`)}
-                    className="group bg-white p-5 rounded-3xl shadow-lg shadow-slate-900/5 border border-white hover:border-blue-100 hover:shadow-2xl hover:shadow-blue-900/10 transition-all duration-500 cursor-pointer relative overflow-hidden"
-                >
-                    <div className="flex justify-between items-start mb-4 relative z-10">
-                        <div className="h-12 w-12 rounded-2xl bg-blue-50 flex items-center justify-center text-blue-600 shadow-inner group-hover:rotate-6 transition-transform duration-500">
-                           <Users className="h-6 w-6" />
-                        </div>
-                        <div className={`px-2.5 py-1 rounded-xl text-[7px] sm:text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5 ${
-                            customer.type === 'loyal' ? 'bg-emerald-50 text-emerald-600 shadow-sm' : 'bg-slate-50 text-slate-400'
-                        }`}>
-                           {customer.type === 'loyal' ? <Star className="h-3 w-3 fill-emerald-600" /> : <UserCheck className="h-3 w-3" />}
-                           {customer.type === 'loyal' ? 'Thân thiết' : 'Khách lẻ'}
-                        </div>
-                    </div>
-
-                    <div className="space-y-4 relative z-10">
-                        <div className="space-y-1">
-                            <h3 className="text-lg sm:text-xl font-black text-slate-900 font-display tracking-tight group-hover:text-blue-700 transition-colors uppercase italic">{customer.name}</h3>
-                            <p className="text-[7px] sm:text-[8px] font-black text-slate-300 uppercase tracking-widest font-mono">MSKH: #{customer.id.toUpperCase()}</p>
-                        </div>
-
-                        <div className="space-y-2">
-                            <div className="flex items-center gap-2 text-slate-500 font-bold text-xs">
-                                <div className="h-6 w-6 rounded-lg bg-slate-50 flex items-center justify-center text-slate-400">
-                                    <Phone className="h-3 w-3" />
-                                </div>
-                                {customer.phone}
-                            </div>
-                            <div className="flex items-center gap-2 text-slate-500 font-bold text-xs">
-                                <div className="h-6 w-6 rounded-lg bg-slate-50 flex items-center justify-center text-slate-400">
-                                    <MapPin className="h-3 w-3" />
-                                </div>
-                                <span className="truncate">{customer.address}</span>
-                            </div>
-                        </div>
-
-                        <div className="pt-3 border-t border-slate-50 flex items-center justify-between">
-                            <div className="space-y-1">
-                                <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Số dư nợ</p>
-                                <div className={`text-lg sm:text-xl font-black font-display tabular-nums tracking-tighter leading-none ${customer.totalDebt > 0 ? 'text-orange-600' : 'text-emerald-600'}`}>
-                                    {formatCurrency(customer.totalDebt)}
-                                </div>
-                            </div>
-                            <div className="h-8 w-8 sm:h-9 sm:w-9 rounded-xl bg-slate-50 text-slate-300 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white group-hover:shadow-lg shadow-blue-900/20 transition-all transform group-hover:translate-x-1">
-                                <ChevronRight className="h-4 w-4" />
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Decorative blobs */}
-                    <div className="absolute -right-8 -top-8 h-32 w-32 bg-blue-50 opacity-0 group-hover:opacity-40 rounded-full blur-3xl transition-opacity" />
-                    <div className="absolute -left-10 -bottom-10 h-40 w-40 bg-emerald-50 opacity-0 group-hover:opacity-20 rounded-full blur-3xl transition-opacity" />
-                </div>
-            ))}
-            
-            {/* Empty State */}
-            {filteredCustomers.length === 0 && (
-                <div className="col-span-full py-40 text-center space-y-10 animate-pulse">
-                     <div className="inline-flex h-40 w-40 items-center justify-center rounded-[64px] bg-slate-50 text-slate-200 shadow-inner">
-                        <Users className="h-20 w-20 opacity-5" />
-                     </div>
-                     <div className="space-y-2">
-                        <p className="text-slate-300 font-black uppercase tracking-[0.5em] text-xs leading-relaxed">Danh bạ khách hàng trống</p>
-                        <p className="text-[10px] text-slate-200 font-black uppercase tracking-widest leading-relaxed">Vui lòng thêm khách hàng mới để quản lý</p>
-                     </div>
-                </div>
-            )}
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <Input
+              className="h-10 pl-10 text-sm"
+              placeholder="Tìm theo tên, số điện thoại, địa chỉ"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value as CustomerTypeFilter)}
+            className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
+          >
+            <option value="all">Tất cả</option>
+            <option value="retail">Khách lẻ</option>
+            <option value="loyal">Khách thân thiết</option>
+          </select>
         </div>
-      </div>
+      </section>
+
+      <section className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {filteredCustomers.map((customer) => (
+          <button
+            key={customer.id}
+            className="rounded-lg border border-slate-200 bg-white p-4 text-left hover:bg-slate-50"
+            onClick={() => navigate(`/app/customers/${customer.id}`)}
+          >
+            <div className="mb-3 flex items-start justify-between">
+              <div className="flex items-center gap-2">
+                <div className="rounded-lg bg-slate-100 p-2">
+                  <Users className="h-4 w-4 text-slate-700" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">{customer.name}</p>
+                  <p className="text-xs text-slate-500">{customer.type === 'loyal' ? 'Khách thân thiết' : 'Khách lẻ'}</p>
+                </div>
+              </div>
+              <ChevronRight className="h-4 w-4 text-slate-400" />
+            </div>
+            <div className="space-y-2 text-sm text-slate-600">
+              <p className="flex items-center gap-2">
+                <Phone className="h-4 w-4 text-slate-400" />
+                {customer.phone}
+              </p>
+              <p className="flex items-start gap-2">
+                <MapPin className="mt-[2px] h-4 w-4 text-slate-400" />
+                <span className="line-clamp-2">{customer.address || 'Chưa cập nhật địa chỉ'}</span>
+              </p>
+            </div>
+            <div className="mt-3 border-t border-slate-100 pt-3">
+              <p className="text-xs text-slate-500">Dư nợ</p>
+              <p className={`text-base font-semibold ${customer.totalDebt > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
+                {formatCurrency(customer.totalDebt)}
+              </p>
+            </div>
+          </button>
+        ))}
+      </section>
+
+      {filteredCustomers.length === 0 && (
+        <div className="rounded-lg border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
+          Không có khách hàng phù hợp bộ lọc hiện tại.
+        </div>
+      )}
+
+      {isOpenCreateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+          <form onSubmit={handleCreateCustomer} className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5">
+            <h3 className="text-base font-semibold text-slate-900">Thêm khách hàng</h3>
+            <div className="mt-4 space-y-3">
+              <Input
+                placeholder="Tên khách hàng"
+                className="h-10 text-sm"
+                value={createForm.name}
+                onChange={(e) => setCreateForm((prev) => ({ ...prev, name: e.target.value }))}
+              />
+              <Input
+                placeholder="Số điện thoại"
+                className="h-10 text-sm"
+                value={createForm.phone}
+                onChange={(e) => setCreateForm((prev) => ({ ...prev, phone: e.target.value }))}
+              />
+              <Input
+                placeholder="Địa chỉ"
+                className="h-10 text-sm"
+                value={createForm.address}
+                onChange={(e) => setCreateForm((prev) => ({ ...prev, address: e.target.value }))}
+              />
+              <select
+                value={createForm.type}
+                onChange={(e) => setCreateForm((prev) => ({ ...prev, type: e.target.value as 'retail' | 'loyal' }))}
+                className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
+              >
+                <option value="retail">Khách lẻ</option>
+                <option value="loyal">Khách thân thiết</option>
+              </select>
+            </div>
+            {submitError && <p className="mt-3 text-sm text-rose-600">{submitError}</p>}
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button type="button" variant="outline" className="h-10 text-sm" onClick={() => setIsOpenCreateModal(false)}>
+                Hủy
+              </Button>
+              <Button type="submit" className="h-10 text-sm" disabled={isSubmitting}>
+                {isSubmitting ? 'Đang lưu...' : 'Lưu khách hàng'}
+              </Button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

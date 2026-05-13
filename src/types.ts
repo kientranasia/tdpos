@@ -14,6 +14,18 @@ export interface Tenant {
   currency: string;
   invoicePrefix: string;
   status: 'active' | 'suspended' | 'trial' | 'onboarding' | 'pending_setup';
+  trialStartAt?: string;
+  trialEndAt?: string;
+  subscriptionStatus?: 'trial' | 'active' | 'expired' | 'cancelled' | 'pending_review';
+  subscriptionPlan?: 'monthly' | 'yearly';
+  subscriptionPriceMonthly?: number;
+  subscriptionStartAt?: string;
+  subscriptionEndAt?: string;
+  packageCode?: string;
+  packageName?: string;
+  maxUsers?: number;
+  packagePriceMonthly?: number;
+  accessBlocked?: boolean;
   createdAt: string;
   settings?: TenantSettings;
 }
@@ -31,6 +43,14 @@ export interface TenantSettings {
     close: string;
   };
   defaultLanguage: string;
+  insights?: {
+    businessModel?: string;
+    industry?: string;
+    staffSize?: string;
+    monthlyOrdersEstimate?: string;
+    salesChannels?: string[];
+    primaryGoal?: string;
+  };
 }
 
 export interface User {

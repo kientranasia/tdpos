@@ -10,12 +10,12 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant = 'default', size = 'default', ...props }, ref) => {
     
     const variants = {
-      default: "bg-emerald-600 text-white hover:bg-emerald-700",
+      default: "bg-sky-600 text-white hover:bg-sky-700",
       destructive: "bg-red-500 text-white hover:bg-red-600",
       outline: "border border-gray-300 bg-white hover:bg-gray-100 text-gray-700",
       secondary: "bg-gray-100 text-gray-900 hover:bg-gray-200",
       ghost: "hover:bg-gray-100 hover:text-gray-900 text-gray-700",
-      link: "text-emerald-600 underline-offset-4 hover:underline",
+      link: "text-sky-600 underline-offset-4 hover:underline",
     }
     
     const sizes = {
@@ -29,7 +29,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       <button
         ref={ref}
         className={cn(
-          "inline-flex items-center justify-center rounded-2xl text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:pointer-events-none disabled:opacity-50 active:scale-95",
+          "inline-flex items-center justify-center rounded-lg text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 disabled:pointer-events-none disabled:opacity-50 active:scale-95",
           variants[variant],
           sizes[size],
           className

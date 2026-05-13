@@ -25,9 +25,9 @@ const InvoiceContent = forwardRef(({
   currentInvoiceItems, 
   currentInvoice 
 }: Omit<POSInvoiceModalProps, 'isOpen' | 'onClose' | 'onExportImage' | 'onPrint'>, ref: ForwardedRef<HTMLDivElement>) => (
-  <div ref={ref} className="bg-white p-8 rounded-[32px] border border-slate-100 shadow-sm print:border-none print:shadow-none min-h-fit">
+  <div ref={ref} className="bg-white p-8 rounded-lg border border-slate-100 shadow-sm print:border-none print:shadow-none min-h-fit">
     <div className="text-center mb-10">
-      <h4 className="text-3xl font-black text-emerald-700 font-display uppercase tracking-tighter leading-none mb-2">{activeTenant?.name}</h4>
+      <h4 className="text-3xl font-black text-sky-700 font-display uppercase tracking-tighter leading-none mb-2">{activeTenant?.name}</h4>
       <p className="text-[10px] text-slate-400 font-black uppercase tracking-[0.2em]">{activeTenant?.address}</p>
       <p className="text-[10px] text-slate-400 font-black tracking-widest">Hotline: {activeTenant?.phone}</p>
       <div className="h-px bg-slate-100 w-full my-8"></div>
@@ -35,7 +35,7 @@ const InvoiceContent = forwardRef(({
       <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">{new Date().toLocaleString('vi-VN')}</p>
     </div>
 
-    <div className="space-y-3 mb-10 bg-slate-50 p-6 rounded-3xl">
+    <div className="space-y-3 mb-10 bg-slate-50 p-6 rounded-lg">
       <div className="flex justify-between items-center">
         <span className="text-slate-400 font-black uppercase tracking-widest text-[10px]">Khách hàng:</span>
         <span className="text-slate-900 font-black text-sm">{selectedCustomer?.name || 'Khách lẻ'}</span>
@@ -48,7 +48,7 @@ const InvoiceContent = forwardRef(({
       )}
       <div className="flex justify-between items-center">
         <span className="text-slate-400 font-black uppercase tracking-widest text-[10px]">Hình thức:</span>
-        <span className="text-emerald-700 font-black text-[10px] uppercase tracking-widest bg-emerald-100 px-2 py-0.5 rounded-lg">
+        <span className="text-sky-700 font-black text-[10px] uppercase tracking-widest bg-sky-100 px-2 py-0.5 rounded-lg">
           {paymentMethod === 'cash' ? 'Tiền mặt' : paymentMethod === 'transfer' ? 'Chuyển khoản' : 'Ghi nợ'}
         </span>
       </div>
@@ -75,7 +75,7 @@ const InvoiceContent = forwardRef(({
     <div className="space-y-3 pt-8 border-t-2 border-dashed border-slate-100">
       <div className="flex justify-between items-end">
         <span className="text-xs font-black text-slate-400 uppercase tracking-widest">Thành tiền</span>
-        <span className="text-3xl font-black text-emerald-700 font-display tabular-nums tracking-tighter leading-none">{formatCurrency(currentInvoice?.finalAmount || 0)}</span>
+        <span className="text-3xl font-black text-sky-700 font-display tabular-nums tracking-tighter leading-none">{formatCurrency(currentInvoice?.finalAmount || 0)}</span>
       </div>
       {currentInvoice?.debtAmount && currentInvoice.debtAmount > 0 ? (
         <div className="flex justify-between items-center pt-2">
@@ -108,15 +108,15 @@ export const POSInvoiceModal = forwardRef(({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="bg-white w-full max-w-lg rounded-[40px] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div className="bg-white w-full max-w-lg rounded-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
           <div className="flex items-center gap-3">
-             <div className="h-10 w-10 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+             <div className="h-10 w-10 rounded-lg bg-sky-50 text-sky-600 flex items-center justify-center">
                <Printer className="h-5 w-5" />
              </div>
              <h3 className="font-black text-slate-900 text-lg uppercase tracking-tight">Hóa đơn số {lastInvoiceId}</h3>
           </div>
-          <button onClick={onClose} className="h-10 w-10 rounded-2xl hover:bg-slate-100 flex items-center justify-center text-slate-400 transition-colors">
+          <button onClick={onClose} className="h-10 w-10 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 transition-colors">
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -134,10 +134,10 @@ export const POSInvoiceModal = forwardRef(({
         </div>
 
         <div className="p-8 bg-white border-t border-slate-100 flex gap-4">
-          <Button variant="outline" className="flex-1 h-14 rounded-2xl font-black uppercase tracking-widest bg-slate-50 border-none text-slate-600 hover:bg-slate-100 transition-all" onClick={onExportImage}>
+          <Button variant="outline" className="flex-1 h-14 rounded-lg font-black uppercase tracking-widest bg-slate-50 border-none text-slate-600 hover:bg-slate-100 transition-all" onClick={onExportImage}>
             <Download className="h-5 w-5 mr-2" /> Lưu ảnh
           </Button>
-          <Button className="flex-1 h-14 rounded-2xl font-black uppercase tracking-widest bg-emerald-600 hover:bg-emerald-700 shadow-xl shadow-emerald-900/20" onClick={onPrint}>
+          <Button className="flex-1 h-14 rounded-lg font-black uppercase tracking-widest bg-sky-600 hover:bg-sky-700 shadow-xl shadow-sky-900/20" onClick={onPrint}>
             <Printer className="h-5 w-5 mr-2" /> In phiếu
           </Button>
         </div>

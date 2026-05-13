@@ -1,0 +1,32 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: tdpos-api
+    restart: unless-stopped
+    environment:
+      API_PORT: 3101
+      JWT_SECRET: ${JWT_SECRET:-tdpos-dev-secret-change-me}
+      ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-admin@tdpos.vn}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-123456}
+      ADMIN_BOOTSTRAP_NAME: ${ADMIN_BOOTSTRAP_NAME:-TDPOS Admin}
+      ADMIN_BOOTSTRAP_ROLE: ${ADMIN_BOOTSTRAP_ROLE:-super_admin}
+    volumes:
+      - tdpos_data:/app/data
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        VITE_API_URL: /api
+    container_name: tdpos-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${WEB_PUBLIC_PORT:-8077}:80"
+
+volumes:
+  tdpos_data:
