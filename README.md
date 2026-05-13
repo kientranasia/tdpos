@@ -50,3 +50,34 @@ Notes:
 - SQLite data is persisted in Docker volume `tdpos_data`.
 - Backend API is internal-only in Docker network (not published to host).
 - Frontend is built with `VITE_API_URL=/api` and nginx proxies `/api/*` to `api:3101`.
+
+## Docker UAT & Production
+
+Use separate env files + compose override files:
+
+- `.env.uat` + `docker-compose.uat.yml`
+- `.env.prod` + `docker-compose.prod.yml`
+- Sample templates:
+  - `.env.uat.example`
+  - `.env.prod.example`
+
+Run UAT:
+
+`docker compose --env-file .env.uat -f docker-compose.yml -f docker-compose.uat.yml up -d --build`
+
+Run Production:
+
+`docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build`
+
+Stop UAT:
+
+`docker compose --env-file .env.uat -f docker-compose.yml -f docker-compose.uat.yml down`
+
+Stop Production:
+
+`docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml down`
+
+Open URLs:
+
+- UAT: `http://localhost:18077`
+- Production: `http://localhost:8077`

@@ -9,8 +9,8 @@ import { authApi } from '../lib/api';
 export default function Login({ isRegister = false }: { isRegister?: boolean }) {
   const { setActiveTenant, setCurrentUser } = useApp();
   const navigate = useNavigate();
-  const [email, setEmail] = useState(isRegister ? '' : 'owner@tdpos.vn');
-  const [password, setPassword] = useState(isRegister ? '' : '123456');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [storeName, setStoreName] = useState('');
   const [error, setError] = useState('');

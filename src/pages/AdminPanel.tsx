@@ -15,8 +15,8 @@ export default function AdminPanel() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [subscriptionFilter, setSubscriptionFilter] = useState('all');
   const [usersTenantFilter, setUsersTenantFilter] = useState('all');
-  const [email, setEmail] = useState('admin@tdpos.vn');
-  const [password, setPassword] = useState('admin123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [adminUser, setAdminUser] = useState<any>(null);
   const [stats, setStats] = useState<any>(null);
   const [tenants, setTenants] = useState<any[]>([]);
@@ -492,7 +492,7 @@ export default function AdminPanel() {
             <h1 className="text-2xl font-black uppercase italic tracking-tight">Admin CPanel</h1>
             <p className="text-sm font-bold text-slate-400">Quản trị tenant, subscription và audit log.</p>
           </div>
-          <Input type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="h-14 rounded-lg border-white/10 bg-white/10 font-bold text-white" placeholder="admin@tdpos.vn" required />
+          <Input type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="h-14 rounded-lg border-white/10 bg-white/10 font-bold text-white" placeholder="Nhập email admin" required />
           <Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} className="h-14 rounded-lg border-white/10 bg-white/10 font-bold text-white" placeholder="Mật khẩu" required />
           <Button type="submit" className="h-14 w-full rounded-lg bg-sky-600 font-black uppercase tracking-widest hover:bg-sky-700">
             {loading ? 'Đang kiểm tra...' : 'Đăng nhập'}
