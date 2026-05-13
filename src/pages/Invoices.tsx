@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Calendar, ChevronRight, Printer, Search, ShoppingCart, User, Wallet } from 'lucide-react';
+import { Calendar, ChevronRight, Printer, Receipt, Search, ShoppingCart, User, Wallet } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Button } from '../components/ui/Button';
@@ -7,7 +7,6 @@ import { Input } from '../components/ui/Input';
 import { formatCurrency } from '../lib/utils';
 import { debtLedgerApi } from '../lib/api';
 import { DebtLedger } from '../types';
-import AppPageHeader from '../components/layout/AppPageHeader';
 
 export default function Invoices() {
   const { invoices, customers } = useApp();
@@ -79,23 +78,23 @@ export default function Invoices() {
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-5 p-4 md:gap-6 md:p-6">
-      <AppPageHeader
-        title="Lịch sử đơn hàng"
-        subtitle={`${invoices.length} đơn hàng trong hệ thống`}
-        actions={(
-          <Button className="h-10 text-sm" onClick={() => navigate('/app/pos')}>
-            <ShoppingCart className="mr-2 h-4 w-4" />
-            Lên đơn mới
-          </Button>
-        )}
-      />
-      <section className="rounded-lg border border-slate-200 bg-white p-4 md:p-5">
-        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
+    <div className="flex h-full flex-col bg-slate-50 animate-in fade-in duration-500 overflow-hidden">
+      <div className="p-4 lg:p-8 bg-white border-b sticky top-0 z-40 flex flex-col lg:flex-row gap-3 lg:gap-6 items-start lg:items-center justify-between shadow-sm shrink-0">
+        <div className="hidden lg:flex items-center gap-5">
+          <div className="h-9 w-9 sm:h-12 sm:w-12 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-lg shadow-sky-900/20 transform -rotate-3 shrink-0">
+            <Receipt className="h-5 w-5 sm:h-6 sm:w-6" />
+          </div>
+          <div>
+            <h1 className="text-section-title">Lịch sử đơn hàng</h1>
+            <p className="text-section-subtitle mt-1">{invoices.length} đơn hàng trong hệ thống</p>
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto">
           <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <Input
-              className="h-10 pl-10 text-sm"
+              className="h-10 lg:h-11 pl-10 text-sm rounded-lg border-none bg-slate-100/70 shadow-inner"
               placeholder="Tìm theo mã đơn hoặc tên khách"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -104,15 +103,22 @@ export default function Invoices() {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as 'all' | 'completed' | 'partial' | 'unpaid')}
-            className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
+            className="h-10 lg:h-11 rounded-lg border-none bg-slate-100/70 shadow-inner px-3 text-sm text-slate-700"
           >
             <option value="all">Tất cả trạng thái</option>
             <option value="completed">Đã thanh toán</option>
             <option value="partial">Thanh toán một phần</option>
             <option value="unpaid">Chưa thanh toán</option>
           </select>
+          <Button className="h-10 lg:h-11 text-sm" onClick={() => navigate('/app/pos')}>
+            <ShoppingCart className="mr-2 h-4 w-4" />
+            Lên đơn mới
+          </Button>
         </div>
-      </section>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+      <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-5 p-4 md:gap-6 md:p-6">
 
       <section className="rounded-lg border border-slate-200 bg-white">
         <div className="hidden border-b border-slate-100 px-4 py-3 text-xs text-slate-500 md:grid md:grid-cols-[1.2fr_1fr_1fr_1fr_auto] md:gap-3">
@@ -238,6 +244,8 @@ export default function Invoices() {
           </div>
         </div>
       )}
+      </div>
+      </div>
     </div>
   );
 }

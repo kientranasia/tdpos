@@ -68,6 +68,12 @@ export default function POS() {
     ).slice(0, 5);
   }, [customers, customerSearchTerm]);
 
+  const inventorySummary = useMemo(() => {
+    const inStockCount = products.filter((p) => p.stock > 0).length;
+    const lowStockCount = products.filter((p) => p.stock > 0 && p.stock <= p.lowStockThreshold).length;
+    return { total: products.length, inStockCount, lowStockCount };
+  }, [products]);
+
   const addToCart = (product: Product) => {
     if (product.stock <= 0) return;
 
@@ -512,7 +518,31 @@ export default function POS() {
     <div className="flex flex-col h-full lg:flex-row bg-slate-50 overflow-y-auto lg:overflow-hidden font-sans relative">
       {/* Product List Section */}
       <div className="w-full lg:flex-1 flex flex-col min-h-0 border-b lg:border-b-0 lg:border-r border-slate-200/50 bg-slate-50 relative shrink-0">
-          <div className="p-3 sm:p-5 space-y-3 bg-white/80 backdrop-blur-xl sticky top-0 z-40 border-b border-slate-100 shadow-sm shrink-0">
+        <div className="p-3 sm:p-5 space-y-3 bg-white/95 backdrop-blur-xl sticky top-0 z-40 border-b border-slate-200 shadow-sm shrink-0">
+          <div className="hidden lg:flex items-center justify-between gap-4 pb-2">
+            <div className="flex items-center gap-4">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-sky-600 text-white shadow-lg">
+                <ShoppingCart className="h-7 w-7" />
+              </div>
+              <div>
+                <h1 className="text-3xl font-semibold text-slate-900">Bán hàng POS</h1>
+                <p className="text-sm text-slate-500">Tìm và lên đơn nhanh theo tồn kho thực tế</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1 text-slate-600">
+                <Package className="h-4 w-4" />
+                {inventorySummary.total} SP
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1 text-emerald-700">
+                Còn hàng: {inventorySummary.inStockCount}
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2.5 py-1 text-amber-700">
+                Sắp hết: {inventorySummary.lowStockCount}
+              </span>
+            </div>
+          </div>
+
           <div className="relative group">
             <Search className="absolute left-5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-sky-600 transition-colors" />
             <Input 

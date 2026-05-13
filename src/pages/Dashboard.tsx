@@ -1,17 +1,23 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { AlertCircle, ArrowRight, Package, ShoppingCart, Users, Wallet } from 'lucide-react';
+import { AlertCircle, ArrowRight, Crown, LayoutDashboard, Package, ShoppingCart, Users, Wallet, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Button } from '../components/ui/Button';
 import { formatCurrency } from '../lib/utils';
-import AppPageHeader from '../components/layout/AppPageHeader';
+import { subscriptionApi } from '../lib/api';
 
 const dateKey = (value: string) => new Date(value).toISOString().slice(0, 10);
 
 export default function Dashboard() {
-  const { activeTenant, invoices, products, customers } = useApp();
+  const { activeTenant, currentUser, invoices, products, customers, setActiveTenant } = useApp();
   const navigate = useNavigate();
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [packages, setPackages] = useState<any[]>([]);
+  const [loadingPackages, setLoadingPackages] = useState(false);
+  const [selectedPackageCode, setSelectedPackageCode] = useState('');
+  const [upgradeMessage, setUpgradeMessage] = useState('');
+  const [isRequestingUpgrade, setIsRequestingUpgrade] = useState(false);
 
   const today = new Date();
   const todayString = dateKey(today.toISOString());
@@ -62,22 +68,68 @@ export default function Dashboard() {
     [products]
   );
 
+  const openUpgradeModal = async () => {
+    setShowUpgradeModal(true);
+    setUpgradeMessage('');
+    setLoadingPackages(true);
+    try {
+      const rows = await subscriptionApi.packages();
+      setPackages(rows);
+      const defaultCode = activeTenant?.packageCode || rows[0]?.code || '';
+      setSelectedPackageCode(defaultCode);
+    } catch (err) {
+      setUpgradeMessage(err instanceof Error ? err.message : 'Không thể tải danh sách gói.');
+    } finally {
+      setLoadingPackages(false);
+    }
+  };
+
+  const submitUpgradeRequest = async () => {
+    if (!selectedPackageCode) {
+      setUpgradeMessage('Vui lòng chọn gói nâng cấp.');
+      return;
+    }
+    setIsRequestingUpgrade(true);
+    setUpgradeMessage('');
+    try {
+      const response = await subscriptionApi.requestUpgrade(selectedPackageCode);
+      if (response?.tenant) setActiveTenant(response.tenant);
+      setUpgradeMessage('Đã gửi yêu cầu nâng cấp. Admin sẽ duyệt subscription sớm.');
+    } catch (err) {
+      setUpgradeMessage(err instanceof Error ? err.message : 'Không thể gửi yêu cầu nâng cấp.');
+    } finally {
+      setIsRequestingUpgrade(false);
+    }
+  };
+
   return (
-    <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-5 p-4 md:gap-6 md:p-6">
-      <AppPageHeader
-        title="Dashboard"
-        subtitle={`${activeTenant?.name || 'Tenant'} • Cập nhật theo dữ liệu bán hàng thực tế`}
-        actions={(
-          <>
-            <Button variant="outline" className="h-10 text-sm" onClick={() => navigate('/app/invoices')}>
-              Lịch sử đơn
-            </Button>
-            <Button className="h-10 text-sm" onClick={() => navigate('/app/pos')}>
-              Tạo đơn mới
-            </Button>
-          </>
-        )}
-      />
+    <div className="flex h-full flex-col bg-slate-50 animate-in fade-in duration-500 overflow-hidden">
+      <div className="p-4 lg:p-8 bg-white border-b sticky top-0 z-40 flex flex-col lg:flex-row gap-3 lg:gap-6 items-start lg:items-center justify-between shadow-sm shrink-0">
+        <div className="hidden lg:flex items-center gap-5">
+          <div className="h-9 w-9 sm:h-12 sm:w-12 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-lg shadow-sky-900/20 transform -rotate-3 shrink-0">
+            <LayoutDashboard className="h-5 w-5 sm:h-6 sm:w-6" />
+          </div>
+          <div>
+            <h1 className="text-section-title">Tổng quan</h1>
+            <p className="text-section-subtitle mt-1">{activeTenant?.name || 'Tenant'} • Cập nhật theo dữ liệu bán hàng thực tế</p>
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto">
+          <Button variant="outline" className="h-10 lg:h-11 text-sm" onClick={openUpgradeModal}>
+            Nâng cấp gói
+          </Button>
+          <Button variant="outline" className="h-10 lg:h-11 text-sm" onClick={() => navigate('/app/invoices')}>
+            Lịch sử đơn
+          </Button>
+          <Button className="h-10 lg:h-11 text-sm" onClick={() => navigate('/app/pos')}>
+            Tạo đơn mới
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+      <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-5 p-4 md:gap-6 md:p-6">
 
       <section className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <div className="rounded-lg border border-slate-200 bg-white p-4">
@@ -199,6 +251,71 @@ export default function Dashboard() {
           </Button>
         </div>
       </section>
+      </div>
+      </div>
+
+      {showUpgradeModal && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/45 p-4">
+          <div className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-100 text-sky-700">
+                  <Crown className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-slate-900">Nâng cấp gói sử dụng</h3>
+                  <p className="text-sm text-slate-500">Đồng bộ trực tiếp từ bảng giá trong admin cpanel.</p>
+                </div>
+              </div>
+              <button onClick={() => setShowUpgradeModal(false)} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4 px-5 py-5">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                Gói hiện tại: <span className="font-semibold">{activeTenant?.packageName || 'Starter 1'}</span> · {formatCurrency(activeTenant?.packagePriceMonthly || 150000)}/tháng · {activeTenant?.maxUsers || 1} user
+              </div>
+
+              {loadingPackages ? (
+                <p className="text-sm text-slate-500">Đang tải danh sách gói...</p>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {packages.map((pkg) => (
+                    <button
+                      key={pkg.id}
+                      className={`rounded-xl border p-4 text-left transition ${
+                        selectedPackageCode === pkg.code ? 'border-sky-600 bg-sky-50' : 'border-slate-200 hover:border-sky-300'
+                      }`}
+                      onClick={() => setSelectedPackageCode(pkg.code)}
+                    >
+                      <p className="text-base font-semibold text-slate-900">{pkg.name}</p>
+                      <p className="text-sm text-slate-500">{pkg.code}</p>
+                      <p className="mt-2 text-xl font-semibold text-sky-700">{formatCurrency(pkg.priceMonthly)}/tháng</p>
+                      <p className="mt-1 text-sm text-slate-600">{pkg.maxUsers} user</p>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {upgradeMessage && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                  {upgradeMessage}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 border-t border-slate-200 px-5 py-4">
+              <Button variant="outline" onClick={() => setShowUpgradeModal(false)}>
+                Đóng
+              </Button>
+              <Button disabled={isRequestingUpgrade || currentUser?.role !== 'owner'} onClick={submitUpgradeRequest}>
+                {isRequestingUpgrade ? 'Đang gửi...' : 'Gửi yêu cầu nâng cấp'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

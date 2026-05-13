@@ -81,3 +81,35 @@ Open URLs:
 
 - UAT: `http://localhost:18077`
 - Production: `http://localhost:8077`
+
+## Product Backlog (Next Phases)
+
+### Phase A - Subscription & Billing Hardening
+- Add full subscription request timeline (multiple requests, approve/reject history, actor + timestamp).
+- Add tenant-facing billing center with invoice history and payment proof upload.
+- Add package effective date model (scheduled change next cycle vs immediate).
+- Add admin-side bulk actions for expiring trials and pending reviews.
+
+### Phase B - RBAC & User Governance
+- Granular permission matrix by screen/action (view/create/update/delete/export/approve).
+- Per-package enforcement for feature flags, seat limits, and add-on modules.
+- User invitation flow (email invite token, first-login password setup).
+- Session security controls: force logout all sessions, password policy, optional 2FA.
+
+### Phase C - POS UX & Operational Excellence
+- Dense POS layout mode for low-resolution devices and high-volume cashier workflows.
+- Cart and checkout keyboard shortcuts + scanner-first flow.
+- Inventory intelligence: reorder suggestions, stock movement audit, variance alerts.
+- Debt collection workflow with due-date buckets and customer payment plans.
+
+### Phase D - Data, Audit, and Reliability
+- Structured audit viewer (filter by entity/action/user/date range) with export.
+- Soft-delete + restore for customers/products/users with retention policy.
+- Background jobs for daily snapshots and anomaly detection.
+- Backup/restore tooling and migration playbook for production operations.
+
+### Phase E - Analytics & Merchant Insights
+- Merchant health score (sales velocity, debt risk, stock-out risk).
+- Cohort analytics (new vs returning customers, retention trend).
+- Package recommendation engine based on seat usage and feature usage.
+- Executive dashboard for TRANDAO with MRR, churn risk, and support SLA metrics.

@@ -279,6 +279,110 @@ app.patch('/api/tenants/:id', (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
+// SUBSCRIPTION & PACKAGES (TENANT APP)
+// ═══════════════════════════════════════════════════════════
+
+app.get('/api/packages', (_req, res) => {
+  try {
+    const rows = db.select().from(schema.packages).all();
+    const activePackages = rows
+      .filter((pkg) => pkg.status === 'active')
+      .sort((a, b) => Number(a.priceMonthly || 0) - Number(b.priceMonthly || 0));
+    res.json(activePackages);
+  } catch (err) {
+    console.error('GET /api/packages error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/subscriptions/request-upgrade', (req, res) => {
+  try {
+    if (!ensureRole(req, res, ['owner'])) return;
+    const tenantId = req.user.tenantId;
+    const { packageCode, note } = req.body || {};
+
+    if (!packageCode) {
+      return res.status(400).json({ error: 'packageCode is required' });
+    }
+
+    const tenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, tenantId)).get();
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+    const selectedPackage = db.select().from(schema.packages)
+      .where(eq(schema.packages.code, packageCode)).get();
+    if (!selectedPackage) return res.status(400).json({ error: 'Invalid packageCode' });
+    if (selectedPackage.status !== 'active') return res.status(400).json({ error: 'Package is inactive' });
+
+    const now = new Date().toISOString();
+    const mergedNote = [note, `requested_package:${selectedPackage.code}`, `requested_by:${req.user.id}`]
+      .filter(Boolean)
+      .join(' | ');
+
+    db.update(schema.tenants).set({
+      subscriptionStatus: 'pending_review',
+      packageCode: selectedPackage.code,
+      packageName: selectedPackage.name,
+      maxUsers: selectedPackage.maxUsers,
+      packagePriceMonthly: selectedPackage.priceMonthly,
+      subscriptionPriceMonthly: selectedPackage.priceMonthly,
+      subscriptionPlan: 'yearly',
+    }).where(eq(schema.tenants.id, tenantId)).run();
+
+    let subscription = db.select().from(schema.subscriptions)
+      .where(eq(schema.subscriptions.tenantId, tenantId)).get();
+
+    if (!subscription) {
+      db.insert(schema.subscriptions).values({
+        id: uuid(),
+        tenantId,
+        plan: 'yearly',
+        priceMonthly: selectedPackage.priceMonthly,
+        status: 'pending_review',
+        note: mergedNote || null,
+        createdAt: now,
+      }).run();
+    } else {
+      db.update(schema.subscriptions).set({
+        plan: 'yearly',
+        priceMonthly: selectedPackage.priceMonthly,
+        status: 'pending_review',
+        note: mergedNote || null,
+      }).where(eq(schema.subscriptions.id, subscription.id)).run();
+    }
+
+    const updatedTenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, tenantId)).get();
+    if (!updatedTenant) return res.status(404).json({ error: 'Tenant not found' });
+    res.json({ tenant: withTenantAccess(updatedTenant), message: 'Upgrade request submitted' });
+  } catch (err) {
+    console.error('POST /api/subscriptions/request-upgrade error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/subscriptions/me', (req, res) => {
+  try {
+    const tenantId = req.user.tenantId;
+    const tenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, tenantId)).get();
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+    const subscription = db.select().from(schema.subscriptions)
+      .where(eq(schema.subscriptions.tenantId, tenantId)).get();
+    const packages = db.select().from(schema.packages)
+      .where(eq(schema.packages.status, 'active')).all()
+      .sort((a, b) => Number(a.priceMonthly || 0) - Number(b.priceMonthly || 0));
+
+    res.json({
+      tenant: withTenantAccess(tenant),
+      subscription: subscription || null,
+      packages,
+    });
+  } catch (err) {
+    console.error('GET /api/subscriptions/me error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
 // USERS
 // ═══════════════════════════════════════════════════════════
 

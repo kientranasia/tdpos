@@ -118,6 +118,14 @@ export const dashboardApi = {
   stats: (tenantId: string) => request<any>('/dashboard/stats', { params: { tenantId } }),
 };
 
+// ─── Packages & Subscription Upgrade (Tenant App) ─────────
+export const subscriptionApi = {
+  packages: () => request<any[]>('/packages'),
+  me: () => request<any>('/subscriptions/me'),
+  requestUpgrade: (packageCode: string, note?: string) =>
+    request<any>('/subscriptions/request-upgrade', { method: 'POST', body: { packageCode, note } }),
+};
+
 // ─── Auth (Tenant Login/Register) ──────────────────────────
 export const authApi = {
   login: (email: string, password: string) =>

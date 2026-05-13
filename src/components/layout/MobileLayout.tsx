@@ -11,7 +11,6 @@ export default function MobileLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [subscriptionHelpMessage, setSubscriptionHelpMessage] = useState('');
   const [showAccountMenu, setShowAccountMenu] = useState(false);
 
   if (loading) {
@@ -80,14 +79,11 @@ export default function MobileLayout() {
               <p className="text-[10px] font-bold text-slate-500">Thanh toán theo gói năm</p>
             </div>
             <Button
-              onClick={() => setSubscriptionHelpMessage('Vui lòng liên hệ đơn vị cung cấp để duyệt subscription và mở lại thao tác.')}
+              onClick={() => navigate('/app/subscription')}
               className="w-full h-11 rounded-lg bg-sky-600 hover:bg-sky-700 font-black uppercase tracking-widest"
             >
               Yêu cầu đăng ký
             </Button>
-            {subscriptionHelpMessage && (
-              <p className="text-xs text-slate-500">{subscriptionHelpMessage}</p>
-            )}
             <Button
               onClick={handleLogout}
               variant="outline"

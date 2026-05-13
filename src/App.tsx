@@ -18,6 +18,7 @@ import Invoices from './pages/Invoices';
 import TenantSetup from './pages/TenantSetup';
 import AdminPanel from './pages/AdminPanel';
 import Settings from './pages/Settings';
+import Subscription from './pages/Subscription';
 
 export default function App() {
   return (
@@ -40,6 +41,7 @@ export default function App() {
             <Route path="debt" element={<Debt />} />
             <Route path="invoices" element={<Invoices />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="subscription" element={<Subscription />} />
           </Route>
         </Routes>
       </BrowserRouter>

@@ -1,16 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { usersApi } from '../lib/api';
 import { User } from '../types';
-import { Save, ShieldCheck, Store, Users } from 'lucide-react';
-import AppPageHeader from '../components/layout/AppPageHeader';
+import { Save, Settings2, ShieldCheck, Store, Users } from 'lucide-react';
 
 type SettingsTab = 'profile' | 'system' | 'users';
 
 export default function Settings() {
   const { activeTenant, currentUser, updateTenant } = useApp();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<SettingsTab>('profile');
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
@@ -183,35 +184,48 @@ export default function Settings() {
   };
 
   return (
-    <div className="mx-auto max-w-6xl p-4 sm:p-6 space-y-6">
-      <AppPageHeader
-        title="Cài đặt hệ thống"
-        subtitle="Quản trị thông tin tenant, chính sách vận hành và user theo gói."
-        actions={(
-          <Button onClick={handleSave} disabled={isSaving} className="h-10 px-4 text-sm font-medium">
-            <Save className="h-4 w-4 mr-2" />
+    <div className="flex h-full flex-col bg-slate-100/60">
+      <div className="sticky top-0 z-30 border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
+          <div className="hidden items-center gap-4 lg:flex">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-lg">
+              <Settings2 className="h-8 w-8" />
+            </div>
+            <div>
+              <h1 className="text-3xl font-semibold text-slate-900">Cài đặt hệ thống</h1>
+              <p className="text-lg text-slate-500">Quản trị tenant, user và chính sách vận hành.</p>
+            </div>
+          </div>
+
+          <Button onClick={handleSave} disabled={isSaving} className="h-11 px-5 text-base font-semibold">
+            <Save className="mr-2 h-4 w-4" />
             {isSaving ? 'Đang lưu...' : 'Lưu thay đổi'}
           </Button>
-        )}
-      />
-
-      {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
-      {saveMessage && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{saveMessage}</div>}
-
-      <div className="flex flex-wrap gap-2">
-        <button onClick={() => setActiveTab('profile')} className={`h-9 px-3 rounded-lg text-sm ${activeTab === 'profile' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-700'}`}>
-          Hồ sơ
-        </button>
-        <button onClick={() => setActiveTab('system')} className={`h-9 px-3 rounded-lg text-sm ${activeTab === 'system' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-700'}`}>
-          Hệ thống
-        </button>
-        <button onClick={() => setActiveTab('users')} className={`h-9 px-3 rounded-lg text-sm ${activeTab === 'users' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-700'}`}>
-          Users & Gói
-        </button>
+        </div>
       </div>
 
-      {activeTab === 'profile' && (
-        <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 space-y-4">
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8 lg:py-8">
+          {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
+          {saveMessage && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{saveMessage}</div>}
+
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => setActiveTab('profile')} className={`h-10 px-4 rounded-lg text-sm ${activeTab === 'profile' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-700'}`}>
+              Hồ sơ
+            </button>
+            <button onClick={() => setActiveTab('system')} className={`h-10 px-4 rounded-lg text-sm ${activeTab === 'system' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-700'}`}>
+              Hệ thống
+            </button>
+            <button onClick={() => setActiveTab('users')} className={`h-10 px-4 rounded-lg text-sm ${activeTab === 'users' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-700'}`}>
+              Users & Gói
+            </button>
+            <button onClick={() => navigate('/app/subscription')} className="h-10 px-4 rounded-lg text-sm bg-white border border-slate-200 text-slate-700 hover:border-sky-300 hover:text-sky-700">
+              Subscription
+            </button>
+          </div>
+
+          {activeTab === 'profile' && (
+            <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 space-y-4">
           <div className="flex items-center gap-2 text-slate-900">
             <Store className="h-4 w-4" />
             <h2 className="text-base font-semibold">Hồ sơ cửa hàng</h2>
@@ -224,10 +238,10 @@ export default function Settings() {
           </div>
           <Input value={formData.address} onChange={(e) => setFormData((prev) => ({ ...prev, address: e.target.value }))} placeholder="Địa chỉ cửa hàng" />
         </div>
-      )}
+          )}
 
-      {activeTab === 'system' && (
-        <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 space-y-4">
+          {activeTab === 'system' && (
+            <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 space-y-4">
           <div className="flex items-center gap-2 text-slate-900">
             <ShieldCheck className="h-4 w-4" />
             <h2 className="text-base font-semibold">Vận hành & công nợ</h2>
@@ -254,10 +268,10 @@ export default function Settings() {
             </div>
           </div>
         </div>
-      )}
+          )}
 
-      {activeTab === 'users' && (
-        <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 space-y-4">
+          {activeTab === 'users' && (
+            <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 space-y-4">
           <div className="flex items-center gap-2 text-slate-900">
             <Users className="h-4 w-4" />
             <h2 className="text-base font-semibold">Users theo gói</h2>
@@ -371,8 +385,10 @@ export default function Settings() {
               </div>
             </div>
           )}
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

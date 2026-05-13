@@ -10,6 +10,7 @@ const roleRoutes: Record<string, AppRole[]> = {
   '/app/customers': ['owner', 'manager'],
   '/app/debt': ['owner', 'manager'],
   '/app/settings': ['owner'],
+  '/app/subscription': ['owner', 'manager'],
 };
 
 export const canAccessPath = (role: AppRole | undefined, path: string) => {
