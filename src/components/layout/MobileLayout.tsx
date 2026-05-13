@@ -30,6 +30,7 @@ export default function MobileLayout() {
   }
 
   const accessBlocked = activeTenant.accessBlocked || activeTenant.status === 'suspended';
+  const isBillingRoute = location.pathname.startsWith('/app/subscription') || location.pathname.startsWith('/app/settings');
 
   // Multi-tenant Onboarding Check
   if (activeTenant.status === 'pending_setup' && location.pathname !== '/onboarding') {
@@ -66,7 +67,7 @@ export default function MobileLayout() {
 
   return (
     <div className={`flex h-screen flex-col bg-slate-50 ${isCollapsed ? 'lg:pl-20' : 'lg:pl-64'} transition-all duration-300 font-sans`}>
-      {accessBlocked && (
+      {accessBlocked && !isBillingRoute && (
         <div className="fixed inset-0 z-[200] bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-2xl border border-white space-y-4 text-center">
             <h2 className="text-lg font-black text-slate-900 uppercase tracking-tight">Gói dùng thử đã hết hạn</h2>

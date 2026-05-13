@@ -350,6 +350,23 @@ app.post('/api/subscriptions/request-upgrade', (req, res) => {
       }).where(eq(schema.subscriptions.id, subscription.id)).run();
     }
 
+    db.insert(schema.auditLogs).values({
+      id: uuid(),
+      actorType: 'tenant_user',
+      actorId: req.user.id,
+      action: 'subscription_upgrade_requested',
+      entityType: 'subscription',
+      entityId: tenantId,
+      tenantId,
+      meta: JSON.stringify({
+        packageCode: selectedPackage.code,
+        packageName: selectedPackage.name,
+        priceMonthly: selectedPackage.priceMonthly,
+        note: note || null,
+      }),
+      createdAt: now,
+    }).run();
+
     const updatedTenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, tenantId)).get();
     if (!updatedTenant) return res.status(404).json({ error: 'Tenant not found' });
     res.json({ tenant: withTenantAccess(updatedTenant), message: 'Upgrade request submitted' });
@@ -370,11 +387,23 @@ app.get('/api/subscriptions/me', (req, res) => {
     const packages = db.select().from(schema.packages)
       .where(eq(schema.packages.status, 'active')).all()
       .sort((a, b) => Number(a.priceMonthly || 0) - Number(b.priceMonthly || 0));
+    const requestLogs = db.select().from(schema.auditLogs)
+      .where(and(
+        eq(schema.auditLogs.tenantId, tenantId),
+        eq(schema.auditLogs.action, 'subscription_upgrade_requested')
+      ))
+      .orderBy(desc(schema.auditLogs.createdAt))
+      .all()
+      .map((row) => ({
+        ...row,
+        meta: row.meta ? JSON.parse(row.meta) : null,
+      }));
 
     res.json({
       tenant: withTenantAccess(tenant),
       subscription: subscription || null,
       packages,
+      requestLogs,
     });
   } catch (err) {
     console.error('GET /api/subscriptions/me error:', err);

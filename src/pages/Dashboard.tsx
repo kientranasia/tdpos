@@ -110,8 +110,8 @@ export default function Dashboard() {
             <LayoutDashboard className="h-5 w-5 sm:h-6 sm:w-6" />
           </div>
           <div>
-            <h1 className="text-section-title">Tổng quan</h1>
-            <p className="text-section-subtitle mt-1">{activeTenant?.name || 'Tenant'} • Cập nhật theo dữ liệu bán hàng thực tế</p>
+            <h1 className="text-page-title">Tổng quan</h1>
+            <p className="text-page-subtitle mt-1">{activeTenant?.name || 'Tenant'} • Cập nhật theo dữ liệu bán hàng thực tế</p>
           </div>
         </div>
 

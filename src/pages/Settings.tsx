@@ -192,8 +192,8 @@ export default function Settings() {
               <Settings2 className="h-8 w-8" />
             </div>
             <div>
-              <h1 className="text-3xl font-semibold text-slate-900">Cài đặt hệ thống</h1>
-              <p className="text-lg text-slate-500">Quản trị tenant, user và chính sách vận hành.</p>
+              <h1 className="text-page-title">Cài đặt hệ thống</h1>
+              <p className="text-page-subtitle">Quản trị tenant, user và chính sách vận hành.</p>
             </div>
           </div>
 

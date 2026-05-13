@@ -122,6 +122,14 @@
     @apply text-xs md:text-sm text-slate-500 leading-5;
   }
 
+  .text-page-title {
+    @apply text-[2rem] leading-tight font-semibold text-slate-900;
+  }
+
+  .text-page-subtitle {
+    @apply text-base text-slate-500;
+  }
+
   /* Typography normalization layer for legacy utility-heavy screens */
   .text-\[7px\],
   .text-\[8px\],

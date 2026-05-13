@@ -1,5 +1,5 @@
-import { FormEvent, useMemo, useState } from 'react';
-import { ChevronRight, MapPin, Phone, Plus, Search, Users } from 'lucide-react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { ChevronRight, Crown, DollarSign, MapPin, Phone, Plus, Search, Users, Wallet } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { v4 as uuid } from 'uuid';
 import { useApp } from '../context/AppContext';
@@ -8,12 +8,17 @@ import { Input } from '../components/ui/Input';
 import { formatCurrency } from '../lib/utils';
 
 type CustomerTypeFilter = 'all' | 'retail' | 'loyal';
+type CustomerSortKey = 'vip' | 'spending_desc' | 'debt_desc' | 'name_asc';
+
+const PAGE_SIZE = 12;
 
 export default function Customers() {
   const navigate = useNavigate();
-  const { customers, activeTenant, currentUser, addCustomer } = useApp();
+  const { customers, invoices, activeTenant, currentUser, addCustomer } = useApp();
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState<CustomerTypeFilter>('all');
+  const [sortKey, setSortKey] = useState<CustomerSortKey>('vip');
+  const [page, setPage] = useState(1);
   const [isOpenCreateModal, setIsOpenCreateModal] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -24,9 +29,18 @@ export default function Customers() {
     type: 'retail' as 'retail' | 'loyal',
   });
 
+  const customerSpendingMap = useMemo(() => {
+    const map = new Map<string, number>();
+    invoices.forEach((invoice) => {
+      if (!invoice.customerId) return;
+      map.set(invoice.customerId, (map.get(invoice.customerId) || 0) + (invoice.finalAmount || 0));
+    });
+    return map;
+  }, [invoices]);
+
   const filteredCustomers = useMemo(() => {
     const keyword = searchTerm.trim().toLowerCase();
-    return customers.filter((customer) => {
+    const filtered = customers.filter((customer) => {
       const matchKeyword =
         !keyword ||
         customer.name.toLowerCase().includes(keyword) ||
@@ -35,7 +49,43 @@ export default function Customers() {
       const matchType = typeFilter === 'all' || customer.type === typeFilter;
       return matchKeyword && matchType;
     });
-  }, [customers, searchTerm, typeFilter]);
+
+    return filtered.sort((a, b) => {
+      const spendingA = customerSpendingMap.get(a.id) || 0;
+      const spendingB = customerSpendingMap.get(b.id) || 0;
+      if (sortKey === 'spending_desc') return spendingB - spendingA;
+      if (sortKey === 'debt_desc') return b.totalDebt - a.totalDebt;
+      if (sortKey === 'name_asc') return a.name.localeCompare(b.name, 'vi');
+
+      // default: VIP first, then spending, then debt
+      const vipScoreA = a.type === 'loyal' ? 1 : 0;
+      const vipScoreB = b.type === 'loyal' ? 1 : 0;
+      if (vipScoreA !== vipScoreB) return vipScoreB - vipScoreA;
+      if (spendingA !== spendingB) return spendingB - spendingA;
+      return b.totalDebt - a.totalDebt;
+    });
+  }, [customers, customerSpendingMap, searchTerm, typeFilter, sortKey]);
+
+  const overview = useMemo(() => {
+    const totalSpending = customers.reduce((sum, customer) => sum + (customerSpendingMap.get(customer.id) || 0), 0);
+    const vipCount = customers.filter((customer) => customer.type === 'loyal').length;
+    const debtCount = customers.filter((customer) => customer.totalDebt > 0).length;
+    return { totalSpending, vipCount, debtCount };
+  }, [customers, customerSpendingMap]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredCustomers.length / PAGE_SIZE));
+  const pagedCustomers = useMemo(() => {
+    const start = (page - 1) * PAGE_SIZE;
+    return filteredCustomers.slice(start, start + PAGE_SIZE);
+  }, [filteredCustomers, page]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [searchTerm, typeFilter, sortKey]);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
 
   const handleCreateCustomer = async (event: FormEvent) => {
     event.preventDefault();
@@ -77,8 +127,8 @@ export default function Customers() {
             <Users className="h-5 w-5 sm:h-6 sm:w-6" />
           </div>
           <div>
-            <h1 className="text-section-title">Khách hàng</h1>
-            <p className="text-section-subtitle mt-1">{customers.length} khách trong hệ thống</p>
+            <h1 className="text-page-title">Khách hàng</h1>
+            <p className="text-page-subtitle mt-1">{customers.length} khách trong hệ thống</p>
           </div>
         </div>
 
@@ -109,8 +159,46 @@ export default function Customers() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 lg:p-8">
+      <section className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <p className="text-xs text-slate-500">Tổng khách hàng</p>
+          <p className="mt-1 text-lg font-semibold text-slate-900 tabular-nums">{customers.length}</p>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <p className="text-xs text-slate-500">Tổng chi tiêu</p>
+          <p className="mt-1 text-lg font-semibold text-sky-700 tabular-nums">{formatCurrency(overview.totalSpending)}</p>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <p className="text-xs text-slate-500">Khách VIP</p>
+          <p className="mt-1 text-lg font-semibold text-amber-700 tabular-nums">{overview.vipCount}</p>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <p className="text-xs text-slate-500">Khách có công nợ</p>
+          <p className="mt-1 text-lg font-semibold text-slate-900 tabular-nums">{overview.debtCount}</p>
+        </div>
+      </section>
+
+      <section className="mb-4 flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-slate-600">
+          Hiển thị <span className="font-semibold text-slate-900">{pagedCustomers.length}</span> / {filteredCustomers.length} khách phù hợp
+        </p>
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-slate-500">Sắp xếp</label>
+          <select
+            value={sortKey}
+            onChange={(e) => setSortKey(e.target.value as CustomerSortKey)}
+            className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
+          >
+            <option value="vip">VIP trước (mặc định)</option>
+            <option value="spending_desc">Chi tiêu cao nhất</option>
+            <option value="debt_desc">Dư nợ cao nhất</option>
+            <option value="name_asc">Tên A-Z</option>
+          </select>
+        </div>
+      </section>
+
       <section className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {filteredCustomers.map((customer) => (
+        {pagedCustomers.map((customer) => (
           <button
             key={customer.id}
             className="rounded-lg border border-slate-200 bg-white p-4 text-left hover:bg-slate-50"
@@ -123,7 +211,10 @@ export default function Customers() {
                 </div>
                 <div>
                   <p className="text-sm font-semibold text-slate-900">{customer.name}</p>
-                  <p className="text-xs text-slate-500">{customer.type === 'loyal' ? 'Khách thân thiết' : 'Khách lẻ'}</p>
+                  <p className="text-xs text-slate-500 flex items-center gap-1">
+                    {customer.type === 'loyal' ? <Crown className="h-3 w-3 text-amber-600" /> : null}
+                    {customer.type === 'loyal' ? 'Khách VIP' : 'Khách lẻ'}
+                  </p>
                 </div>
               </div>
               <ChevronRight className="h-4 w-4 text-slate-400" />
@@ -139,7 +230,19 @@ export default function Customers() {
               </p>
             </div>
             <div className="mt-3 border-t border-slate-100 pt-3">
-              <p className="text-xs text-slate-500">Dư nợ</p>
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-xs text-slate-500 flex items-center gap-1">
+                  <DollarSign className="h-3.5 w-3.5 text-sky-600" />
+                  Tổng chi tiêu
+                </p>
+                <p className="text-sm font-semibold text-sky-700 tabular-nums">
+                  {formatCurrency(customerSpendingMap.get(customer.id) || 0)}
+                </p>
+              </div>
+              <p className="text-xs text-slate-500 flex items-center gap-1">
+                <Wallet className="h-3.5 w-3.5 text-slate-500" />
+                Dư nợ
+              </p>
               <p className={`text-base font-semibold ${customer.totalDebt > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
                 {formatCurrency(customer.totalDebt)}
               </p>
@@ -154,6 +257,22 @@ export default function Customers() {
       {filteredCustomers.length === 0 && (
         <div className="rounded-lg border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
           Không có khách hàng phù hợp bộ lọc hiện tại.
+        </div>
+      )}
+
+      {filteredCustomers.length > 0 && (
+        <div className="mt-4 flex items-center justify-between rounded-lg border border-slate-200 bg-white px-4 py-3">
+          <p className="text-sm text-slate-600">
+            Trang <span className="font-semibold text-slate-900">{page}</span> / {totalPages}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" className="h-9 px-3 text-sm" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+              Trước
+            </Button>
+            <Button variant="outline" className="h-9 px-3 text-sm" disabled={page >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>
+              Sau
+            </Button>
+          </div>
         </div>
       )}
       </div>

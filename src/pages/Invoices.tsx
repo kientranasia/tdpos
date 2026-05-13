@@ -85,8 +85,8 @@ export default function Invoices() {
             <Receipt className="h-5 w-5 sm:h-6 sm:w-6" />
           </div>
           <div>
-            <h1 className="text-section-title">Lịch sử đơn hàng</h1>
-            <p className="text-section-subtitle mt-1">{invoices.length} đơn hàng trong hệ thống</p>
+            <h1 className="text-page-title">Lịch sử đơn hàng</h1>
+            <p className="text-page-subtitle mt-1">{invoices.length} đơn hàng trong hệ thống</p>
           </div>
         </div>
 

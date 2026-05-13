@@ -525,8 +525,8 @@ export default function POS() {
                 <ShoppingCart className="h-7 w-7" />
               </div>
               <div>
-                <h1 className="text-3xl font-semibold text-slate-900">Bán hàng POS</h1>
-                <p className="text-sm text-slate-500">Tìm và lên đơn nhanh theo tồn kho thực tế</p>
+                <h1 className="text-page-title">Bán hàng POS</h1>
+                <p className="text-page-subtitle">Tìm và lên đơn nhanh theo tồn kho thực tế</p>
               </div>
             </div>
             <div className="flex items-center gap-2 text-sm">

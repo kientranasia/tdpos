@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { Search, Plus, ExternalLink, AlertTriangle, Package, Filter, Download, ArrowUpDown, X, Save, Edit3, DollarSign, Tag, CheckCircle, Camera, Layers, Trash2 } from 'lucide-react';
+import { Search, Plus, AlertTriangle, Package, ArrowUpDown, X, Save, Edit3, DollarSign, Tag, CheckCircle, Camera, Layers, Trash2 } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { formatCurrency } from '../lib/utils';
@@ -240,6 +240,13 @@ export default function Inventory() {
       p.category.toLowerCase().includes(searchTerm.toLowerCase())
     );
   }, [products, searchTerm]);
+
+  const inventoryStats = useMemo(() => {
+    const lowStock = products.filter((p) => p.trackStock && p.stock <= p.lowStockThreshold).length;
+    const totalUnits = products.reduce((sum, p) => sum + (p.stock || 0), 0);
+    const totalStockValue = products.reduce((sum, p) => sum + (p.stock || 0) * (p.purchasePrice || 0), 0);
+    return { lowStock, totalUnits, totalStockValue };
+  }, [products]);
 
   return (
     <div className="flex h-full flex-col bg-slate-50 animate-in fade-in duration-500 overflow-hidden relative">
@@ -568,8 +575,8 @@ export default function Inventory() {
             <Package className="h-4 w-4 sm:h-6 sm:w-6" />
           </div>
           <div>
-            <h1 className="text-xl font-black text-slate-900 tracking-tight">Kho hàng</h1>
-            <p className="text-[7px] sm:text-[9px] font-black text-slate-400 uppercase tracking-widest sm:tracking-[0.2em] mt-0.5">{products.length} mặt hàng</p>
+            <h1 className="text-page-title">Kho hàng</h1>
+            <p className="text-page-subtitle mt-1">{products.length} mặt hàng trong hệ thống</p>
           </div>
         </div>
         
@@ -597,6 +604,23 @@ export default function Inventory() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-3 lg:p-6">
+        <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-3 lg:mb-6">
+          <div className="rounded-lg border border-slate-200 bg-white p-4">
+            <p className="text-xs text-slate-500">Tổng tồn kho (đơn vị)</p>
+            <p className="mt-1 text-lg font-semibold text-slate-900 tabular-nums">{inventoryStats.totalUnits}</p>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white p-4">
+            <p className="text-xs text-slate-500">Giá trị tồn (giá nhập)</p>
+            <p className="mt-1 text-lg font-semibold text-sky-700 tabular-nums">{formatCurrency(inventoryStats.totalStockValue)}</p>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white p-4">
+            <p className="text-xs text-slate-500">Mặt hàng sắp hết</p>
+            <p className={`mt-1 text-lg font-semibold tabular-nums ${inventoryStats.lowStock > 0 ? 'text-amber-700' : 'text-slate-900'}`}>
+              {inventoryStats.lowStock}
+            </p>
+          </div>
+        </div>
+
         <div className="bg-white rounded-lg shadow-xl shadow-slate-900/5 border border-white overflow-hidden">
           {/* Mobile View: High-polish Cards */}
           <div className="grid grid-cols-1 gap-px bg-slate-100 lg:hidden">
@@ -604,8 +628,8 @@ export default function Inventory() {
               <div key={product.id} className="p-4 bg-white space-y-3 relative group active:bg-slate-50 transition-colors" onClick={() => openStockEntry(product)}>
                 <div className="flex justify-between items-start">
                   <div className="space-y-1">
-                    <div className="text-[7px] font-black text-slate-300 uppercase tracking-widest font-mono leading-none">{product.sku}</div>
-                    <div className="font-black text-slate-900 text-base leading-tight tracking-tight uppercase italic">{product.name}</div>
+                    <div className="text-xs font-semibold text-slate-500 font-mono leading-none">{product.sku}</div>
+                    <div className="font-semibold text-slate-900 text-lg leading-tight tracking-tight">{product.name}</div>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
@@ -613,7 +637,7 @@ export default function Inventory() {
                         e.stopPropagation();
                         openEditProduct(product);
                       }}
-                      className="h-8 w-8 rounded-lg bg-slate-100 text-slate-500 flex items-center justify-center"
+                      className="h-9 w-9 rounded-lg bg-slate-100 text-slate-500 flex items-center justify-center"
                     >
                       <Edit3 className="h-4 w-4" />
                     </button>
@@ -622,11 +646,11 @@ export default function Inventory() {
                         e.stopPropagation();
                         handleDeleteProduct(product);
                       }}
-                      className="h-8 w-8 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center"
+                      className="h-9 w-9 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center"
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
-                    <div className={`h-8 w-8 rounded-lg flex items-center justify-center shadow-inner transition-transform group-hover:rotate-12 ${
+                    <div className={`h-9 w-9 rounded-lg flex items-center justify-center shadow-inner transition-transform group-hover:rotate-12 ${
                       product.stock <= product.lowStockThreshold ? 'bg-orange-50 text-orange-600' : 'bg-sky-50 text-sky-600'
                     }`}>
                       <Package className="h-4 w-4" />
@@ -635,22 +659,26 @@ export default function Inventory() {
                 </div>
                 
                 <div className="flex items-center gap-2">
-                  <span className="text-[8px] font-black text-slate-400 bg-slate-100 px-2.5 py-1 rounded-lg uppercase tracking-widest leading-none ring-1 ring-slate-200/50">{product.category}</span>
-                  <span className="text-[8px] font-black text-slate-400 bg-slate-100 px-2.5 py-1 rounded-lg uppercase tracking-widest leading-none ring-1 ring-slate-200/50">{product.unit}</span>
+                  <span className="text-xs font-medium text-slate-600 bg-slate-100 px-2.5 py-1 rounded-lg leading-none ring-1 ring-slate-200/50">{product.category}</span>
+                  <span className="text-xs font-medium text-slate-600 bg-slate-100 px-2.5 py-1 rounded-lg leading-none ring-1 ring-slate-200/50">{product.unit}</span>
                 </div>
 
-                <div className="flex items-center justify-between pt-4 border-t border-slate-50">
+                <div className="grid grid-cols-3 gap-3 pt-4 border-t border-slate-100">
                   <div className="space-y-1">
-                    <div className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Tồn kho</div>
-                    <div className={`text-xl font-black font-display tabular-nums tracking-tighter leading-none ${
+                    <div className="text-xs font-medium text-slate-500">Tồn kho</div>
+                    <div className={`text-lg font-semibold tabular-nums leading-none ${
                       product.stock <= product.lowStockThreshold ? 'text-orange-600' : 'text-slate-900'
                     }`}>
-                      {product.stock} <span className="text-[10px] text-slate-300 font-bold uppercase ml-0.5">{product.unit}</span>
+                      {product.stock} <span className="text-xs text-slate-400 font-medium ml-0.5">{product.unit}</span>
                     </div>
                   </div>
                   <div className="text-right space-y-1">
-                    <div className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Giá bán</div>
-                    <div className="text-xl font-black text-sky-700 font-display tabular-nums tracking-tighter leading-none">{formatCurrency(product.sellingPrice)}</div>
+                    <div className="text-xs font-medium text-slate-500">Giá nhập</div>
+                    <div className="text-base font-semibold text-slate-600 tabular-nums leading-none">{formatCurrency(product.purchasePrice)}</div>
+                  </div>
+                  <div className="text-right space-y-1">
+                    <div className="text-xs font-medium text-slate-500">Giá bán</div>
+                    <div className="text-lg font-semibold text-sky-700 tabular-nums leading-none">{formatCurrency(product.sellingPrice)}</div>
                   </div>
                 </div>
               </div>
@@ -662,85 +690,85 @@ export default function Inventory() {
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50/50">
-                  <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] border-b border-slate-100">
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 border-b border-slate-100">
                     <div className="flex items-center gap-2">Mã SKU <ArrowUpDown className="h-3 w-3" /></div>
                   </th>
-                  <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] border-b border-slate-100">Sản phẩm</th>
-                  <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] border-b border-slate-100">Danh mục</th>
-                  <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] border-b border-slate-100 text-right">Giá nhập</th>
-                  <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] border-b border-slate-100 text-right">Giá bán</th>
-                  <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] border-b border-slate-100 text-center">Tồn kho</th>
-                  <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] border-b border-slate-100 text-center">Action</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 border-b border-slate-100">Sản phẩm</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 border-b border-slate-100">Danh mục</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 border-b border-slate-100 text-right">Giá nhập</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 border-b border-slate-100 text-right">Giá bán</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 border-b border-slate-100 text-center">Tồn kho</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 border-b border-slate-100 text-center">Thao tác</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {filteredProducts.map(product => (
                   <tr key={product.id} className="group hover:bg-sky-50/20 transition-all duration-300">
-                    <td className="px-8 py-6">
-                      <span className="font-mono text-[10px] font-black text-slate-400 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200/50 uppercase tracking-widest">{product.sku}</span>
+                    <td className="px-6 py-4">
+                      <span className="font-mono text-xs font-semibold text-slate-500 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200/50">{product.sku}</span>
                     </td>
-                    <td className="px-8 py-6">
+                    <td className="px-6 py-4">
                       <div className="flex items-center gap-4">
                         <div className="h-12 w-12 rounded-lg bg-slate-50 group-hover:bg-white group-hover:shadow-lg transition-all flex items-center justify-center text-slate-400 group-hover:text-sky-600 border border-transparent group-hover:border-sky-100">
                            <Package className="h-6 w-6 transform group-hover:rotate-12 transition-transform" />
                         </div>
-                        <div className="font-black text-slate-900 tracking-tight text-lg">{product.name}</div>
+                        <div className="font-semibold text-slate-900 tracking-tight text-xl leading-tight">{product.name}</div>
                       </div>
                     </td>
-                    <td className="px-8 py-6">
-                      <span className="text-[10px] font-black text-slate-500 bg-slate-50 px-3 py-1.5 rounded-lg uppercase tracking-widest border border-slate-100">{product.category}</span>
+                    <td className="px-6 py-4">
+                      <span className="text-xs font-medium text-slate-600 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100">{product.category}</span>
                     </td>
-                    <td className="px-8 py-6 text-right font-black text-slate-400 tabular-nums">
+                    <td className="px-6 py-4 text-right font-semibold text-slate-500 tabular-nums">
                         {formatCurrency(product.purchasePrice)}
                     </td>
-                    <td className="px-8 py-6 text-right">
+                    <td className="px-6 py-4 text-right">
                       <div className="flex flex-col items-end">
-                        <div className="font-black text-sky-700 font-display text-xl tabular-nums tracking-tighter">{formatCurrency(product.sellingPrice)}</div>
+                        <div className="font-semibold text-sky-700 text-2xl tabular-nums">{formatCurrency(product.sellingPrice)}</div>
                         <button 
                           onClick={(e) => {
                             e.stopPropagation();
                             openEditProduct(product);
                           }}
-                          className="text-[8px] font-black uppercase text-slate-300 hover:text-sky-600 transition-colors"
+                          className="text-xs font-medium text-slate-400 hover:text-sky-600 transition-colors"
                         >
                           Sửa giá
                         </button>
                       </div>
                     </td>
-                    <td className="px-8 py-6">
+                    <td className="px-6 py-4">
                       <div className="flex justify-center">
-                        <div className={`px-5 py-2 rounded-lg text-[10px] font-black flex items-center gap-3 shadow-sm transition-transform group-hover:scale-105 ${
+                        <div className={`px-5 py-2 rounded-lg text-xs font-semibold flex items-center gap-3 shadow-sm transition-transform group-hover:scale-105 ${
                           product.stock <= product.lowStockThreshold 
-                          ? 'bg-orange-600 text-white ring-4 ring-orange-100' 
-                          : 'bg-slate-900 text-white ring-4 ring-slate-100'
+                            ? 'bg-orange-600 text-white ring-4 ring-orange-100' 
+                            : 'bg-slate-900 text-white ring-4 ring-slate-100'
                         }`}>
                           <button className="hover:scale-125 transition-transform" onClick={(e) => {
                              e.stopPropagation();
                              openStockEntry(product);
                           }}><Plus className="h-4 w-4" /></button>
-                          <span className="text-sm font-display">{product.stock}</span>
-                          <span className="opacity-50 uppercase tracking-widest">{product.unit}</span>
+                          <span className="text-base font-semibold tabular-nums">{product.stock}</span>
+                          <span className="opacity-70">{product.unit}</span>
                           {product.stock <= product.lowStockThreshold && <AlertTriangle className="h-4 w-4" />}
                         </div>
                       </div>
                     </td>
-                    <td className="px-8 py-6">
+                    <td className="px-6 py-4">
                       <div className="flex justify-center gap-2">
                         <Button 
                           variant="ghost" 
                           size="sm" 
                           onClick={() => openEditProduct(product)}
-                          className="h-12 w-12 rounded-lg bg-slate-50 hover:bg-sky-600 text-slate-300 hover:text-white transition-all shadow-sm ring-1 ring-slate-100 hover:ring-sky-500 transform hover:-translate-y-1"
+                          className="h-10 w-10 rounded-lg bg-slate-50 hover:bg-sky-600 text-slate-400 hover:text-white transition-all shadow-sm ring-1 ring-slate-100 hover:ring-sky-500"
                         >
-                          <Edit3 className="h-5 w-5" />
+                          <Edit3 className="h-4 w-4" />
                         </Button>
                         <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => handleDeleteProduct(product)}
-                          className="h-12 w-12 rounded-lg bg-rose-50 hover:bg-rose-600 text-rose-500 hover:text-white transition-all shadow-sm ring-1 ring-rose-100 hover:ring-rose-500 transform hover:-translate-y-1"
+                          className="h-10 w-10 rounded-lg bg-rose-50 hover:bg-rose-600 text-rose-500 hover:text-white transition-all shadow-sm ring-1 ring-rose-100 hover:ring-rose-500"
                         >
-                          <Trash2 className="h-5 w-5" />
+                          <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
                     </td>

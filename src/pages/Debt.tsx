@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { Search, Wallet, ArrowDownCircle, ArrowUpCircle, AlertCircle, CheckCircle, ChevronRight, TrendingUp } from 'lucide-react';
+import { Search, Wallet, ArrowDownCircle, ArrowUpCircle, AlertCircle, CheckCircle, ChevronRight, TrendingUp, X } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { formatCurrency } from '../lib/utils';
@@ -138,8 +138,12 @@ export default function Debt() {
               <h3 className="text-section-title">
                 {debtForm.type === 'decrease' ? 'Thu công nợ' : 'Tăng công nợ'}
               </h3>
-              <button onClick={() => setShowDebtModal(false)} className="text-slate-400 hover:text-red-500">
-                <AlertCircle className="h-5 w-5" />
+              <button
+                onClick={() => setShowDebtModal(false)}
+                aria-label="Đóng popup"
+                className="h-8 w-8 rounded-lg bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700 flex items-center justify-center transition-colors"
+              >
+                <X className="h-4 w-4" />
               </button>
             </div>
 
@@ -224,8 +228,8 @@ export default function Debt() {
             <Wallet className="h-5 w-5 sm:h-6 sm:w-6" />
           </div>
           <div>
-            <h1 className="text-section-title">Công nợ</h1>
-            <p className="text-section-subtitle mt-1">{debtCustomers.length} khách nợ</p>
+            <h1 className="text-page-title">Công nợ</h1>
+            <p className="text-page-subtitle mt-1">{debtCustomers.length} khách nợ</p>
           </div>
         </div>
         

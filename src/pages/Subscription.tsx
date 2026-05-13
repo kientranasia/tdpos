@@ -23,14 +23,16 @@ export default function Subscription() {
   const [selectedPackageCode, setSelectedPackageCode] = useState('');
   const [packages, setPackages] = useState<any[]>([]);
   const [subscription, setSubscription] = useState<any>(null);
+  const [requestLogs, setRequestLogs] = useState<any[]>([]);
 
-  const loadData = async () => {
+  const loadData = async (silent = false) => {
     setLoading(true);
-    setMessage('');
+    if (!silent) setMessage('');
     try {
       const data = await subscriptionApi.me();
       setPackages(data.packages || []);
       setSubscription(data.subscription || null);
+      setRequestLogs(data.requestLogs || []);
       setSelectedPackageCode(data.tenant?.packageCode || data.packages?.[0]?.code || '');
       if (data.tenant) setActiveTenant(data.tenant);
     } catch (err) {
@@ -64,7 +66,7 @@ export default function Subscription() {
       const response = await subscriptionApi.requestUpgrade(selectedPackageCode, note || undefined);
       if (response?.tenant) setActiveTenant(response.tenant);
       setMessage('Đã gửi yêu cầu nâng cấp thành công. Admin sẽ duyệt sớm.');
-      await loadData();
+      await loadData(true);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Không thể gửi yêu cầu.');
     } finally {
@@ -81,8 +83,8 @@ export default function Subscription() {
               <Crown className="h-8 w-8" />
             </div>
             <div>
-              <h1 className="text-3xl font-semibold text-slate-900">Subscription</h1>
-              <p className="text-lg text-slate-500">Quản lý gói dịch vụ và quyền sử dụng tenant.</p>
+              <h1 className="text-page-title">Subscription</h1>
+              <p className="text-page-subtitle">Quản lý gói dịch vụ và quyền sử dụng tenant.</p>
             </div>
           </div>
           <Button variant="outline" onClick={loadData} className="h-10">
@@ -176,12 +178,33 @@ export default function Subscription() {
             )}
           </div>
 
+          <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
+            <h2 className="text-base font-semibold text-slate-900">Lịch sử yêu cầu nâng cấp</h2>
+            {requestLogs.length === 0 ? (
+              <p className="mt-3 text-sm text-slate-500">Chưa có yêu cầu nào được ghi nhận.</p>
+            ) : (
+              <div className="mt-3 space-y-2">
+                {requestLogs.map((log) => (
+                  <div key={log.id} className="rounded-lg border border-slate-200 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-slate-900">{log.meta?.packageName || log.meta?.packageCode || 'Package'}</p>
+                      <p className="text-xs text-slate-500">{new Date(log.createdAt).toLocaleString('vi-VN')}</p>
+                    </div>
+                    <p className="mt-1 text-sm text-slate-700">
+                      Giá: {formatCurrency(Number(log.meta?.priceMonthly || 0))}/tháng
+                    </p>
+                    {log.meta?.note && <p className="mt-1 text-xs text-slate-500">Ghi chú: {log.meta.note}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {message && (
-            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">{message}</div>
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{message}</div>
           )}
         </div>
       </div>
     </div>
   );
 }
-
