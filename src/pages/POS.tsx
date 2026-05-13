@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Product, Customer, PaymentMethod, InvoiceItem, Invoice } from '../types';
 import { formatCurrency } from '../lib/utils';
@@ -32,9 +32,20 @@ export default function POS() {
   const [currentInvoice, setCurrentInvoice] = useState<Invoice | null>(null);
   const [currentInvoiceItems, setCurrentInvoiceItems] = useState<InvoiceItem[]>([]);
   const [formError, setFormError] = useState('');
+  const [lastAddedProductId, setLastAddedProductId] = useState<string | null>(null);
+  const [cartPulse, setCartPulse] = useState(false);
   const isCashier = currentUser?.role === 'cashier';
 
   const invoiceRef = useRef<HTMLDivElement>(null);
+  const addedPulseTimerRef = useRef<number | null>(null);
+  const cartPulseTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (addedPulseTimerRef.current) window.clearTimeout(addedPulseTimerRef.current);
+      if (cartPulseTimerRef.current) window.clearTimeout(cartPulseTimerRef.current);
+    };
+  }, []);
 
   const categories = useMemo(() => {
     return ['All', ...appCategories.map(c => c.name)];
@@ -59,17 +70,20 @@ export default function POS() {
 
   const addToCart = (product: Product) => {
     if (product.stock <= 0) return;
-    
+
+    let wasAdded = false;
     setCart(prev => {
       const existing = prev.find(item => item.productId === product.id);
       if (existing) {
         if (existing.quantity >= product.stock) return prev;
+        wasAdded = true;
         return prev.map(item => 
           item.productId === product.id 
             ? { ...item, quantity: item.quantity + 1, total: (item.quantity + 1) * item.price }
             : item
         );
       }
+      wasAdded = true;
       return [...prev, {
         id: uuid(),
         invoiceId: '',
@@ -81,6 +95,17 @@ export default function POS() {
         maxStock: product.stock
       }];
     });
+
+    if (wasAdded) {
+      setLastAddedProductId(product.id);
+      setCartPulse(true);
+
+      if (addedPulseTimerRef.current) window.clearTimeout(addedPulseTimerRef.current);
+      if (cartPulseTimerRef.current) window.clearTimeout(cartPulseTimerRef.current);
+
+      addedPulseTimerRef.current = window.setTimeout(() => setLastAddedProductId(null), 420);
+      cartPulseTimerRef.current = window.setTimeout(() => setCartPulse(false), 360);
+    }
   };
 
   const updateQuantity = (productId: string, delta: number) => {
@@ -522,6 +547,7 @@ export default function POS() {
                 key={product.id}
                 product={product}
                 onClick={() => addToCart(product)}
+                isAdded={lastAddedProductId === product.id}
               />
             ))}
           </div>
@@ -541,7 +567,7 @@ export default function POS() {
       <div className="w-full lg:w-[350px] xl:w-[380px] 2xl:w-[420px] flex flex-col min-h-0 bg-white relative lg:shadow-[-20px_0_60px_rgba(0,0,0,0.03)] z-40 shrink-0">
         <div className="p-4 sm:p-8 border-b border-slate-50 flex justify-between items-center bg-white/80 backdrop-blur-xl lg:sticky lg:top-0 z-40 shrink-0">
           <div className="flex items-center gap-3 sm:gap-4">
-            <div className="h-8 w-8 sm:h-10 sm:w-10 rounded-lg sm:rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-lg shadow-sky-900/20">
+            <div className={`h-8 w-8 sm:h-10 sm:w-10 rounded-lg sm:rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-lg shadow-sky-900/20 transition-transform duration-300 ${cartPulse ? 'scale-110' : 'scale-100'}`}>
               <ShoppingCart className="h-4 w-4 sm:h-5 sm:w-5" />
             </div>
             <div>
