@@ -185,7 +185,7 @@ export default function MobileLayout() {
       </aside>
 
       {/* Nội dung chính */}
-      <main className="flex-1 overflow-y-auto w-full bg-slate-50 relative">
+      <main className="flex-1 overflow-y-auto w-full bg-slate-50 relative pb-mobile-nav lg:pb-0">
         <div className="w-full h-full">
           <Outlet />
         </div>
