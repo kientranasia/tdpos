@@ -5,6 +5,7 @@ import { AlertCircle, ArrowRight, Package, ShoppingCart, Users, Wallet } from 'l
 import { useApp } from '../context/AppContext';
 import { Button } from '../components/ui/Button';
 import { formatCurrency } from '../lib/utils';
+import AppPageHeader from '../components/layout/AppPageHeader';
 
 const dateKey = (value: string) => new Date(value).toISOString().slice(0, 10);
 
@@ -63,24 +64,20 @@ export default function Dashboard() {
 
   return (
     <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-5 p-4 md:gap-6 md:p-6">
-      <section className="rounded-lg border border-slate-200 bg-white p-4 md:p-5">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h1 className="text-base font-semibold text-slate-900 md:text-lg">Dashboard</h1>
-            <p className="mt-1 text-sm text-slate-500">
-              {activeTenant?.name || 'Tenant'} • Cập nhật theo dữ liệu bán hàng thực tế
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
+      <AppPageHeader
+        title="Dashboard"
+        subtitle={`${activeTenant?.name || 'Tenant'} • Cập nhật theo dữ liệu bán hàng thực tế`}
+        actions={(
+          <>
             <Button variant="outline" className="h-10 text-sm" onClick={() => navigate('/app/invoices')}>
               Lịch sử đơn
             </Button>
             <Button className="h-10 text-sm" onClick={() => navigate('/app/pos')}>
               Tạo đơn mới
             </Button>
-          </div>
-        </div>
-      </section>
+          </>
+        )}
+      />
 
       <section className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <div className="rounded-lg border border-slate-200 bg-white p-4">

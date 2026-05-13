@@ -5,6 +5,7 @@ import { Input } from '../components/ui/Input';
 import { usersApi } from '../lib/api';
 import { User } from '../types';
 import { Save, ShieldCheck, Store, Users } from 'lucide-react';
+import AppPageHeader from '../components/layout/AppPageHeader';
 
 type SettingsTab = 'profile' | 'system' | 'users';
 
@@ -183,16 +184,16 @@ export default function Settings() {
 
   return (
     <div className="mx-auto max-w-6xl p-4 sm:p-6 space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-slate-900">Cài đặt hệ thống</h1>
-          <p className="text-sm text-slate-500">Quản trị thông tin tenant, chính sách vận hành và user theo gói.</p>
-        </div>
-        <Button onClick={handleSave} disabled={isSaving} className="h-10 px-4 text-sm font-medium">
-          <Save className="h-4 w-4 mr-2" />
-          {isSaving ? 'Đang lưu...' : 'Lưu thay đổi'}
-        </Button>
-      </div>
+      <AppPageHeader
+        title="Cài đặt hệ thống"
+        subtitle="Quản trị thông tin tenant, chính sách vận hành và user theo gói."
+        actions={(
+          <Button onClick={handleSave} disabled={isSaving} className="h-10 px-4 text-sm font-medium">
+            <Save className="h-4 w-4 mr-2" />
+            {isSaving ? 'Đang lưu...' : 'Lưu thay đổi'}
+          </Button>
+        )}
+      />
 
       {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
       {saveMessage && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{saveMessage}</div>}

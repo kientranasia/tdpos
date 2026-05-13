@@ -6,6 +6,7 @@ import { useApp } from '../context/AppContext';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { formatCurrency } from '../lib/utils';
+import AppPageHeader from '../components/layout/AppPageHeader';
 
 type CustomerTypeFilter = 'all' | 'retail' | 'loyal';
 
@@ -71,17 +72,17 @@ export default function Customers() {
 
   return (
     <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-5 p-4 md:gap-6 md:p-6">
-      <section className="rounded-lg border border-slate-200 bg-white p-4 md:p-5">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h1 className="text-base font-semibold text-slate-900 md:text-lg">Khách hàng</h1>
-            <p className="mt-1 text-sm text-slate-500">{customers.length} khách trong hệ thống</p>
-          </div>
+      <AppPageHeader
+        title="Khách hàng"
+        subtitle={`${customers.length} khách trong hệ thống`}
+        actions={(
           <Button className="h-10 text-sm md:w-auto" onClick={() => setIsOpenCreateModal(true)}>
             <Plus className="mr-2 h-4 w-4" />
             Thêm khách hàng
           </Button>
-        </div>
+        )}
+      />
+      <section className="rounded-lg border border-slate-200 bg-white p-4 md:p-5">
         <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
