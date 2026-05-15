@@ -78,8 +78,8 @@ export const productsApi = {
   create: (data: any) => request<any>('/products', { method: 'POST', body: data }),
   update: (id: string, data: any) => request<any>(`/products/${id}`, { method: 'PATCH', body: data }),
   delete: (id: string) => request<any>(`/products/${id}`, { method: 'DELETE' }),
-  adjustStock: (id: string, quantity: number, type: 'increase' | 'decrease') =>
-    request<any>(`/products/${id}/stock`, { method: 'POST', body: { quantity, type } }),
+  adjustStock: (id: string, quantity: number, type: 'increase' | 'decrease', note?: string) =>
+    request<any>(`/products/${id}/stock`, { method: 'POST', body: { quantity, type, note } }),
 };
 
 // ─── Customers ─────────────────────────────────────────────
@@ -99,6 +99,18 @@ export const invoicesApi = {
     request<any[]>('/invoices', { params: { tenantId: tenantId || '', ...filters } }),
   get: (id: string) => request<any>(`/invoices/${id}`),
   create: (data: any) => request<any>('/invoices', { method: 'POST', body: data }),
+};
+
+export const cashbookApi = {
+  list: (filters?: { from?: string; to?: string; type?: 'income' | 'expense' }) => request<any[]>('/cashbook', { params: filters as any }),
+  create: (data: { type: 'income' | 'expense'; amount: number; category?: string; note?: string; referenceId?: string | null }) =>
+    request<any>('/cashbook', { method: 'POST', body: data }),
+};
+
+export const stockMovementsApi = {
+  list: (productId?: string) => request<any[]>('/stock-movements', { params: { productId: productId || '' } }),
+  stockCheck: (productId: string, actualStock: number, note?: string) =>
+    request<any>('/stock-check', { method: 'POST', body: { productId, actualStock, note } }),
 };
 
 // ─── Invoice Items ─────────────────────────────────────────

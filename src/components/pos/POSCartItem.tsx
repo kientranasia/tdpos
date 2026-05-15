@@ -5,12 +5,13 @@ import { Minus, Plus, X } from 'lucide-react';
 
 interface POSCartItemProps {
   key?: React.Key;
-  item: InvoiceItem & { maxStock: number };
+  item: InvoiceItem & { maxStock: number; discountPercent?: number };
   onUpdateQuantity: (productId: string, delta: number) => void;
   onRemove: (productId: string) => void;
+  onUpdateDiscount?: (productId: string, discountPercent: number) => void;
 }
 
-export const POSCartItem = ({ item, onUpdateQuantity, onRemove }: POSCartItemProps) => {
+export const POSCartItem = ({ item, onUpdateQuantity, onRemove, onUpdateDiscount }: POSCartItemProps) => {
   return (
     <div className="p-4 rounded-lg bg-slate-50/50 hover:bg-sky-50/30 border border-transparent hover:border-sky-100 transition-all group relative" id={`cart-item-${item.productId}`}>
       <div className="flex justify-between items-start mb-4">
@@ -45,6 +46,19 @@ export const POSCartItem = ({ item, onUpdateQuantity, onRemove }: POSCartItemPro
           </button>
         </div>
       </div>
+      {onUpdateDiscount && (
+        <div className="mt-3 flex items-center justify-between rounded-lg bg-white/80 ring-1 ring-slate-100 px-2 py-1">
+          <span className="text-xs text-slate-500">Giảm giá SP (%)</span>
+          <input
+            type="number"
+            min={0}
+            max={100}
+            value={item.discountPercent || 0}
+            onChange={(e) => onUpdateDiscount(item.productId, Number(e.target.value))}
+            className="w-16 rounded-md border border-slate-200 px-2 py-1 text-xs text-right"
+          />
+        </div>
+      )}
     </div>
   );
 }

@@ -19,6 +19,7 @@ import TenantSetup from './pages/TenantSetup';
 import AdminPanel from './pages/AdminPanel';
 import Settings from './pages/Settings';
 import Subscription from './pages/Subscription';
+import Cashbook from './pages/Cashbook';
 
 export default function App() {
   return (
@@ -39,6 +40,7 @@ export default function App() {
             <Route path="customers" element={<Customers />} />
             <Route path="customers/:id" element={<CustomerDetail />} />
             <Route path="debt" element={<Debt />} />
+            <Route path="cashbook" element={<Cashbook />} />
             <Route path="invoices" element={<Invoices />} />
             <Route path="settings" element={<Settings />} />
             <Route path="subscription" element={<Subscription />} />

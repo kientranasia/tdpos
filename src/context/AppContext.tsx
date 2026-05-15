@@ -20,7 +20,7 @@ interface AppContextType {
   setActiveTenant: (tenant: Tenant | null) => void;
   setCurrentUser: (user: User | null) => void;
   updateTenant: (tenantUpdates: Partial<Tenant>) => void;
-  addInvoice: (invoice: Invoice) => void;
+  addInvoice: (invoice: Invoice, items?: any[]) => void;
   addProduct: (product: Product) => Promise<boolean>;
   addCategory: (category: Category) => Promise<boolean>;
   updateProduct: (productId: string, productUpdates: Partial<Product>) => Promise<boolean>;
@@ -193,10 +193,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [activeTenant]);
 
-  const addInvoice = useCallback(async (invoice: Invoice) => {
+  const addInvoice = useCallback(async (invoice: Invoice, items?: any[]) => {
     setInvoices(prev => [invoice, ...prev]);
     try {
-      await invoicesApi.create(invoice);
+      await invoicesApi.create({ ...invoice, items: items || [] });
       await Promise.all([refreshProducts(), refreshCustomers()]);
     } catch (err) {
       console.error('Failed to create invoice:', err);

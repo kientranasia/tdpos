@@ -58,6 +58,10 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
   addColumnIfMissing('tenants', 'package_price_monthly', 'package_price_monthly REAL NOT NULL DEFAULT 150000');
 }
 
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'invoices'").get()) {
+  addColumnIfMissing('invoices', 'note', "note TEXT NOT NULL DEFAULT ''");
+}
+
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS packages (
     id TEXT PRIMARY KEY,
@@ -94,6 +98,32 @@ sqlite.exec(`
     tenant_id TEXT,
     meta TEXT,
     created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS cashbook_entries (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    type TEXT NOT NULL,
+    amount REAL NOT NULL,
+    category TEXT NOT NULL DEFAULT 'Khác',
+    note TEXT NOT NULL DEFAULT '',
+    reference_id TEXT,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS stock_movements (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    product_id TEXT NOT NULL REFERENCES products(id),
+    type TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    before_stock REAL NOT NULL,
+    after_stock REAL NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    reference_id TEXT,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL
   );
 `);
 

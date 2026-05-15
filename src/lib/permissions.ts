@@ -9,6 +9,7 @@ const roleRoutes: Record<string, AppRole[]> = {
   '/app/inventory': ['owner', 'manager'],
   '/app/customers': ['owner', 'manager'],
   '/app/debt': ['owner', 'manager'],
+  '/app/cashbook': ['owner', 'manager', 'accountant'],
   '/app/settings': ['owner'],
   '/app/subscription': ['owner', 'manager'],
 };

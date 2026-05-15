@@ -95,6 +95,7 @@ export const invoices = sqliteTable('invoices', {
   debtAmount: real('debt_amount').notNull().default(0),
   paymentMethod: text('payment_method', { enum: ['cash', 'transfer', 'debt'] }).notNull(),
   status: text('status', { enum: ['completed', 'partial', 'unpaid'] }).notNull(),
+  note: text('note').notNull().default(''),
   createdAt: text('created_at').notNull(),
 });
 
@@ -118,6 +119,32 @@ export const debtLedger = sqliteTable('debt_ledger', {
   amount: real('amount').notNull(),
   type: text('type', { enum: ['increase', 'decrease'] }).notNull(),
   note: text('note').notNull().default(''),
+  createdAt: text('created_at').notNull(),
+  createdBy: text('created_by').notNull(),
+});
+
+export const cashbookEntries = sqliteTable('cashbook_entries', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  type: text('type', { enum: ['income', 'expense'] }).notNull(),
+  amount: real('amount').notNull(),
+  category: text('category').notNull().default('Khác'),
+  note: text('note').notNull().default(''),
+  referenceId: text('reference_id'),
+  createdAt: text('created_at').notNull(),
+  createdBy: text('created_by').notNull(),
+});
+
+export const stockMovements = sqliteTable('stock_movements', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  productId: text('product_id').notNull().references(() => products.id),
+  type: text('type', { enum: ['in', 'out', 'adjust'] }).notNull(),
+  quantity: real('quantity').notNull(),
+  beforeStock: real('before_stock').notNull(),
+  afterStock: real('after_stock').notNull(),
+  note: text('note').notNull().default(''),
+  referenceId: text('reference_id'),
   createdAt: text('created_at').notNull(),
   createdBy: text('created_by').notNull(),
 });

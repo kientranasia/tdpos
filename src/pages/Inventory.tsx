@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { Search, Plus, AlertTriangle, Package, ArrowUpDown, X, Save, Edit3, DollarSign, Tag, CheckCircle, Camera, Layers, Trash2 } from 'lucide-react';
 import { Input } from '../components/ui/Input';
@@ -6,6 +6,7 @@ import { Button } from '../components/ui/Button';
 import { formatCurrency } from '../lib/utils';
 import { Product } from '../types';
 import { v4 as uuid } from 'uuid';
+import { productsApi, stockMovementsApi } from '../lib/api';
 
 export default function Inventory() {
   const { products, addProduct, updateProduct, deleteProduct, activeTenant, categories, addCategory } = useApp();
@@ -14,6 +15,7 @@ export default function Inventory() {
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [showUnitModal, setShowUnitModal] = useState(false);
   const [showStockModal, setShowStockModal] = useState(false);
+  const [showBulkCheckModal, setShowBulkCheckModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [stockUpdatingProduct, setStockUpdatingProduct] = useState<Product | null>(null);
   
@@ -22,6 +24,10 @@ export default function Inventory() {
   const [customUnits, setCustomUnits] = useState<string[]>([]);
   const [savingProduct, setSavingProduct] = useState(false);
   const [formError, setFormError] = useState('');
+  const [stockMovements, setStockMovements] = useState<any[]>([]);
+  const [stockCheckActual, setStockCheckActual] = useState<number>(0);
+  const [bulkCheckActuals, setBulkCheckActuals] = useState<Record<string, number>>({});
+  const [movementTypeFilter, setMovementTypeFilter] = useState<'all' | 'in' | 'out' | 'adjust'>('all');
 
   const unitOptions = useMemo(() => {
     const defaults = ['Cái', 'Chai', 'Thùng', 'Hộp', 'Gói', 'Kg', 'Lít'];
@@ -114,18 +120,59 @@ export default function Inventory() {
       return;
     }
 
-    // updateStock quantity is added to current stock
+    await productsApi.adjustStock(stockUpdatingProduct.id, stockUpdateForm.quantity, 'increase', 'Nhập kho thủ công');
     const success = await updateProduct(stockUpdatingProduct.id, {
       stock: stockUpdatingProduct.stock + stockUpdateForm.quantity,
       purchasePrice: stockUpdateForm.purchasePrice > 0 ? stockUpdateForm.purchasePrice : stockUpdatingProduct.purchasePrice,
       sellingPrice: stockUpdateForm.sellingPrice > 0 ? stockUpdateForm.sellingPrice : stockUpdatingProduct.sellingPrice
     });
+    if (success) {
+      const movements = await stockMovementsApi.list();
+      setStockMovements(movements.slice(0, 40));
+    }
     if (!success) {
       setFormError('Không thể cập nhật tồn kho. Vui lòng thử lại.');
       return;
     }
 
     setShowStockModal(false);
+  };
+
+  const handleStockCheck = async (product: Product) => {
+    if (!Number.isFinite(stockCheckActual) || stockCheckActual < 0) {
+      setFormError('Số lượng kiểm kê không hợp lệ.');
+      return;
+    }
+    await stockMovementsApi.stockCheck(product.id, stockCheckActual, 'Kiểm kê nhanh');
+    await updateProduct(product.id, { stock: stockCheckActual });
+    const movements = await stockMovementsApi.list();
+    setStockMovements(movements.slice(0, 40));
+    setStockCheckActual(0);
+  };
+
+  const openBulkCheck = () => {
+    const defaults: Record<string, number> = {};
+    filteredProducts.forEach((p) => { defaults[p.id] = p.stock; });
+    setBulkCheckActuals(defaults);
+    setShowBulkCheckModal(true);
+  };
+
+  const handleBulkCheckApply = async () => {
+    setFormError('');
+    try {
+      for (const product of filteredProducts) {
+        const actual = bulkCheckActuals[product.id];
+        if (!Number.isFinite(actual) || actual < 0) continue;
+        if (actual === product.stock) continue;
+        await stockMovementsApi.stockCheck(product.id, actual, 'Kiểm kê hàng loạt');
+        await updateProduct(product.id, { stock: actual });
+      }
+      const movements = await stockMovementsApi.list();
+      setStockMovements(movements.slice(0, 40));
+      setShowBulkCheckModal(false);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Không thể áp dụng kiểm kê hàng loạt.');
+    }
   };
 
   const openEditProduct = (product: Product) => {
@@ -241,6 +288,23 @@ export default function Inventory() {
     );
   }, [products, searchTerm]);
 
+  const visibleStockMovements = useMemo(() => {
+    if (movementTypeFilter === 'all') return stockMovements;
+    return stockMovements.filter((m) => m.type === movementTypeFilter);
+  }, [movementTypeFilter, stockMovements]);
+
+  useEffect(() => {
+    const loadMovements = async () => {
+      try {
+        const rows = await stockMovementsApi.list();
+        setStockMovements(rows.slice(0, 40));
+      } catch (err) {
+        console.error('Failed to load stock movements', err);
+      }
+    };
+    loadMovements();
+  }, []);
+
   const inventoryStats = useMemo(() => {
     const lowStock = products.filter((p) => p.trackStock && p.stock <= p.lowStockThreshold).length;
     const totalUnits = products.reduce((sum, p) => sum + (p.stock || 0), 0);
@@ -251,6 +315,44 @@ export default function Inventory() {
   return (
     <div className="flex h-full flex-col bg-slate-50 animate-in fade-in duration-500 overflow-hidden relative">
       {/* Product Modal */}
+      {showBulkCheckModal && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="w-full max-w-3xl rounded-lg border border-slate-200 bg-white shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-base font-semibold text-slate-900">Kiểm kê hàng loạt</h3>
+              <button onClick={() => setShowBulkCheckModal(false)} className="text-slate-400 hover:text-slate-700">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto divide-y divide-slate-100">
+              {filteredProducts.map((p) => (
+                <div key={p.id} className="px-5 py-3 grid grid-cols-12 items-center gap-3">
+                  <div className="col-span-5">
+                    <p className="text-sm font-medium text-slate-900">{p.name}</p>
+                    <p className="text-xs text-slate-500">{p.sku} · Hiện tại: {p.stock} {p.unit}</p>
+                  </div>
+                  <div className="col-span-4">
+                    <Input
+                      type="number"
+                      value={bulkCheckActuals[p.id] ?? p.stock}
+                      onChange={(e) => setBulkCheckActuals((prev) => ({ ...prev, [p.id]: Number(e.target.value) }))}
+                      className="h-9 text-sm"
+                    />
+                  </div>
+                  <div className="col-span-3 text-xs text-slate-500">
+                    Chênh: {(bulkCheckActuals[p.id] ?? p.stock) - p.stock}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="px-5 py-4 border-t border-slate-100 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowBulkCheckModal(false)}>Hủy</Button>
+              <Button onClick={handleBulkCheckApply}>Áp dụng kiểm kê</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showProductModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
           <div className="bg-white w-full max-w-lg rounded-lg shadow-2xl border border-white overflow-hidden animate-in zoom-in-95 duration-500">
@@ -555,6 +657,26 @@ export default function Inventory() {
                         />
                       </div>
                    </div>
+
+                   <div className="space-y-2 rounded-lg border border-slate-200 p-4">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">KIỂM KÊ NHANH (số tồn thực tế)</label>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          type="number"
+                          className="h-11 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700"
+                          value={stockCheckActual}
+                          onChange={e => setStockCheckActual(Number(e.target.value))}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-11"
+                          onClick={() => handleStockCheck(stockUpdatingProduct)}
+                        >
+                          Áp dụng
+                        </Button>
+                      </div>
+                   </div>
                 </div>
 
                 <Button 
@@ -599,6 +721,9 @@ export default function Inventory() {
           >
             <Plus className="h-4 w-4 sm:h-5 sm:w-5" />
             <span>Thêm mới</span>
+          </Button>
+          <Button variant="outline" onClick={openBulkCheck} className="h-10 lg:h-11 px-4 rounded-lg text-sm">
+            Kiểm kê
           </Button>
         </div>
       </div>
@@ -786,6 +911,39 @@ export default function Inventory() {
               <p className="text-slate-300 font-black uppercase tracking-[0.5em] text-xs">Dữ liệu hàng hóa trống</p>
             </div>
           )}
+        </div>
+
+        <div className="mt-4 rounded-lg border border-slate-200 bg-white overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-slate-900">Lịch sử kho gần đây</h3>
+            <select
+              value={movementTypeFilter}
+              onChange={(e) => setMovementTypeFilter(e.target.value as any)}
+              className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700"
+            >
+              <option value="all">Tất cả</option>
+              <option value="in">Nhập kho</option>
+              <option value="out">Xuất kho</option>
+              <option value="adjust">Kiểm kê</option>
+            </select>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {visibleStockMovements.length === 0 ? (
+              <p className="p-4 text-sm text-slate-500">Chưa có biến động kho.</p>
+            ) : (
+              visibleStockMovements.slice(0, 12).map((m) => (
+                <div key={m.id} className="px-4 py-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">{m.note || 'Biến động kho'}</p>
+                    <p className="text-xs text-slate-500">{new Date(m.createdAt).toLocaleString('vi-VN')}</p>
+                  </div>
+                  <p className="text-sm text-slate-700 tabular-nums">
+                    {m.beforeStock} → {m.afterStock} ({m.type === 'in' ? '+' : m.type === 'out' ? '-' : '±'}{m.quantity})
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </div>
     </div>

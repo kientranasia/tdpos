@@ -660,19 +660,38 @@ app.delete('/api/products/:id', (req, res) => {
 app.post('/api/products/:id/stock', (req, res) => {
   try {
     if (!ensureRole(req, res, ['owner', 'manager'])) return;
-    const { quantity, type } = req.body; // type: 'decrease' | 'increase'
+    const { quantity, type, note } = req.body; // type: 'decrease' | 'increase'
     const product = db.select().from(schema.products)
       .where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
     if (!product) return res.status(404).json({ error: 'Product not found' });
 
+    const qty = Number(quantity) || 0;
+    if (qty <= 0) return res.status(400).json({ error: 'Quantity must be greater than 0' });
+
+    const beforeStock = product.stock;
     const newStock = type === 'decrease'
-      ? product.stock - quantity
-      : product.stock + quantity;
+      ? product.stock - qty
+      : product.stock + qty;
+    const afterStock = Math.max(0, newStock);
 
     db.update(schema.products)
-      .set({ stock: Math.max(0, newStock) })
+      .set({ stock: afterStock })
       .where(eq(schema.products.id, req.params.id))
       .run();
+
+    db.insert(schema.stockMovements).values({
+      id: uuid(),
+      tenantId: req.user.tenantId,
+      productId: req.params.id,
+      type: type === 'decrease' ? 'out' : 'in',
+      quantity: qty,
+      beforeStock,
+      afterStock,
+      note: note || (type === 'decrease' ? 'Xuất kho' : 'Nhập kho'),
+      referenceId: null,
+      createdAt: new Date().toISOString(),
+      createdBy: req.user.id,
+    }).run();
 
     const updated = db.select().from(schema.products).where(eq(schema.products.id, req.params.id)).get();
     res.json(updated);
@@ -871,10 +890,25 @@ app.post('/api/invoices', (req, res) => {
         const product = db.select().from(schema.products)
           .where(and(eq(schema.products.id, item.productId), eq(schema.products.tenantId, req.user.tenantId))).get();
         if (product && product.trackStock) {
+          const beforeStock = product.stock;
+          const afterStock = Math.max(0, product.stock - item.quantity);
           db.update(schema.products)
-            .set({ stock: Math.max(0, product.stock - item.quantity) })
+            .set({ stock: afterStock })
             .where(eq(schema.products.id, item.productId))
             .run();
+          db.insert(schema.stockMovements).values({
+            id: uuid(),
+            tenantId: req.user.tenantId,
+            productId: item.productId,
+            type: 'out',
+            quantity: Number(item.quantity) || 0,
+            beforeStock,
+            afterStock,
+            note: `Bán hàng ${invoiceId}`,
+            referenceId: invoiceId,
+            createdAt: invoice.createdAt,
+            createdBy: req.user.id,
+          }).run();
         }
       }
     }
@@ -905,9 +939,125 @@ app.post('/api/invoices', (req, res) => {
       }).run();
     }
 
+    if ((invoice.paidAmount || 0) > 0 && invoice.paymentMethod !== 'debt') {
+      db.insert(schema.cashbookEntries).values({
+        id: uuid(),
+        tenantId: req.user.tenantId,
+        type: 'income',
+        amount: Number(invoice.paidAmount) || 0,
+        category: 'Bán hàng',
+        note: `Thu từ hóa đơn ${invoiceId}`,
+        referenceId: invoiceId,
+        createdAt: invoice.createdAt,
+        createdBy: req.user.id,
+      }).run();
+    }
+
     res.status(201).json(invoice);
   } catch (err) {
     console.error('POST /api/invoices error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// CASHBOOK
+// ═══════════════════════════════════════════════════════════
+app.get('/api/cashbook', (req, res) => {
+  try {
+    const { from, to, type } = req.query;
+    const rows = db.select().from(schema.cashbookEntries)
+      .where(eq(schema.cashbookEntries.tenantId, req.user.tenantId))
+      .orderBy(desc(schema.cashbookEntries.createdAt))
+      .all()
+      .filter((row) => {
+        if (type && row.type !== type) return false;
+        if (from && new Date(row.createdAt).getTime() < new Date(String(from)).getTime()) return false;
+        if (to && new Date(row.createdAt).getTime() > (new Date(String(to)).getTime() + 24 * 60 * 60 * 1000 - 1)) return false;
+        return true;
+      });
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/cashbook error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/cashbook', (req, res) => {
+  try {
+    if (!ensureRole(req, res, ['owner', 'manager', 'accountant'])) return;
+    const { type, amount, category, note, referenceId } = req.body || {};
+    if (!type || !['income', 'expense'].includes(type)) return res.status(400).json({ error: 'Invalid type' });
+    const amt = Number(amount) || 0;
+    if (amt <= 0) return res.status(400).json({ error: 'Amount must be greater than 0' });
+
+    const entry = {
+      id: uuid(),
+      tenantId: req.user.tenantId,
+      type,
+      amount: amt,
+      category: category || 'Khác',
+      note: note || '',
+      referenceId: referenceId || null,
+      createdAt: new Date().toISOString(),
+      createdBy: req.user.id,
+    };
+    db.insert(schema.cashbookEntries).values(entry).run();
+    res.status(201).json(entry);
+  } catch (err) {
+    console.error('POST /api/cashbook error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// STOCK MOVEMENTS / STOCK CHECK
+// ═══════════════════════════════════════════════════════════
+app.get('/api/stock-movements', (req, res) => {
+  try {
+    const { productId } = req.query;
+    let rows = db.select().from(schema.stockMovements)
+      .where(eq(schema.stockMovements.tenantId, req.user.tenantId))
+      .orderBy(desc(schema.stockMovements.createdAt))
+      .all();
+    if (productId) rows = rows.filter((r) => r.productId === productId);
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/stock-movements error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/stock-check', (req, res) => {
+  try {
+    if (!ensureRole(req, res, ['owner', 'manager', 'warehouse'])) return;
+    const { productId, actualStock, note } = req.body || {};
+    const product = db.select().from(schema.products)
+      .where(and(eq(schema.products.id, productId), eq(schema.products.tenantId, req.user.tenantId))).get();
+    if (!product) return res.status(404).json({ error: 'Product not found' });
+    const actual = Number(actualStock);
+    if (!Number.isFinite(actual) || actual < 0) return res.status(400).json({ error: 'Invalid actualStock' });
+
+    const beforeStock = product.stock;
+    const afterStock = actual;
+    db.update(schema.products).set({ stock: afterStock }).where(eq(schema.products.id, productId)).run();
+    const movement = {
+      id: uuid(),
+      tenantId: req.user.tenantId,
+      productId,
+      type: 'adjust' as const,
+      quantity: Math.abs(afterStock - beforeStock),
+      beforeStock,
+      afterStock,
+      note: note || 'Kiểm kê kho',
+      referenceId: null,
+      createdAt: new Date().toISOString(),
+      createdBy: req.user.id,
+    };
+    db.insert(schema.stockMovements).values(movement).run();
+    res.json(movement);
+  } catch (err) {
+    console.error('POST /api/stock-check error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -978,6 +1128,20 @@ app.post('/api/debt-ledger', (req, res) => {
       .set({ totalDebt: newDebt })
       .where(eq(schema.customers.id, entry.customerId))
       .run();
+
+    if (entry.type === 'decrease') {
+      db.insert(schema.cashbookEntries).values({
+        id: uuid(),
+        tenantId: req.user.tenantId,
+        type: 'income',
+        amount: Number(entry.amount) || 0,
+        category: 'Thu nợ',
+        note: entry.note || `Thu nợ khách ${customer.name}`,
+        referenceId: entry.invoiceId || null,
+        createdAt: entry.createdAt,
+        createdBy: req.user.id,
+      }).run();
+    }
 
     res.status(201).json(entry);
   } catch (err) {

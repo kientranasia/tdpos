@@ -14,6 +14,19 @@ import { POSProductCard } from '../components/pos/POSProductCard';
 import { POSCartItem } from '../components/pos/POSCartItem';
 import { POSInvoiceModal } from '../components/pos/POSInvoiceModal';
 
+type CartLine = InvoiceItem & { maxStock: number; discountPercent?: number };
+type OrderDraft = {
+  id: string;
+  name: string;
+  cart: CartLine[];
+  customerId: string | null;
+  paymentMethod: PaymentMethod;
+  orderNote: string;
+  orderDiscountType: 'percent' | 'amount';
+  orderDiscountValue: number;
+  createdAt: string;
+};
+
 export default function POS() {
   const { products, customers, activeTenant, currentUser, addInvoice, addCustomer, categories: appCategories } = useApp();
   
@@ -23,9 +36,14 @@ export default function POS() {
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [newCustomer, setNewCustomer] = useState({ name: '', phone: '', address: '' });
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
-  const [cart, setCart] = useState<(InvoiceItem & { maxStock: number })[]>([]);
+  const [cart, setCart] = useState<CartLine[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
+  const [orderNote, setOrderNote] = useState('');
+  const [orderDiscountType, setOrderDiscountType] = useState<'percent' | 'amount'>('amount');
+  const [orderDiscountValue, setOrderDiscountValue] = useState(0);
+  const [drafts, setDrafts] = useState<OrderDraft[]>([]);
+  const [activeOrderTab, setActiveOrderTab] = useState<'live' | string>('live');
   const [step, setStep] = useState<'cart' | 'payment' | 'success'>('cart');
   const [lastInvoiceId, setLastInvoiceId] = useState('');
   const [showInvoice, setShowInvoice] = useState(false);
@@ -39,6 +57,7 @@ export default function POS() {
   const invoiceRef = useRef<HTMLDivElement>(null);
   const addedPulseTimerRef = useRef<number | null>(null);
   const cartPulseTimerRef = useRef<number | null>(null);
+  const draftStorageKey = activeTenant?.id ? `tdpos_pos_drafts_${activeTenant.id}` : 'tdpos_pos_drafts';
 
   useEffect(() => {
     return () => {
@@ -46,6 +65,20 @@ export default function POS() {
       if (cartPulseTimerRef.current) window.clearTimeout(cartPulseTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(draftStorageKey);
+      if (raw) setDrafts(JSON.parse(raw));
+      else setDrafts([]);
+    } catch {
+      setDrafts([]);
+    }
+  }, [draftStorageKey]);
+
+  useEffect(() => {
+    localStorage.setItem(draftStorageKey, JSON.stringify(drafts));
+  }, [draftStorageKey, drafts]);
 
   const categories = useMemo(() => {
     return ['All', ...appCategories.map(c => c.name)];
@@ -98,7 +131,8 @@ export default function POS() {
         price: product.sellingPrice,
         quantity: 1,
         total: product.sellingPrice,
-        maxStock: product.stock
+        maxStock: product.stock,
+        discountPercent: 0,
       }];
     });
 
@@ -131,6 +165,83 @@ export default function POS() {
   };
 
   const totalAmount = cart.reduce((sum, item) => sum + item.total, 0);
+  const orderDiscountAmount = useMemo(() => {
+    if (orderDiscountType === 'percent') {
+      return Math.min(totalAmount, Math.max(0, (totalAmount * (Number(orderDiscountValue) || 0)) / 100));
+    }
+    return Math.min(totalAmount, Math.max(0, Number(orderDiscountValue) || 0));
+  }, [orderDiscountType, orderDiscountValue, totalAmount]);
+  const finalAmount = Math.max(0, totalAmount - orderDiscountAmount);
+
+  const updateLineDiscount = (productId: string, discountPercent: number) => {
+    setCart((prev) => prev.map((item) => {
+      if (item.productId !== productId) return item;
+      const pct = Math.min(100, Math.max(0, Number(discountPercent) || 0));
+      const rawTotal = item.price * item.quantity;
+      const discountedTotal = rawTotal - (rawTotal * pct) / 100;
+      return { ...item, discountPercent: pct, total: Math.max(0, discountedTotal) };
+    }));
+  };
+
+  const saveDraft = () => {
+    if (cart.length === 0) {
+      setFormError('Không thể lưu đơn trống.');
+      return;
+    }
+    const upsertId = activeOrderTab === 'live' ? `DRAFT-${Date.now()}` : activeOrderTab;
+    const draft: OrderDraft = {
+      id: upsertId,
+      name: `${selectedCustomer?.name || 'Khách vãng lai'} - ${new Date().toLocaleTimeString('vi-VN')}`,
+      cart,
+      customerId: selectedCustomer?.id || null,
+      paymentMethod,
+      orderNote,
+      orderDiscountType,
+      orderDiscountValue,
+      createdAt: new Date().toISOString(),
+    };
+    setDrafts((prev) => {
+      const next = [draft, ...prev.filter((d) => d.id !== upsertId)].slice(0, 20);
+      return next;
+    });
+    setActiveOrderTab(upsertId);
+    setCart([]);
+    setSelectedCustomer(null);
+    setPaymentMethod('cash');
+    setOrderNote('');
+    setOrderDiscountType('amount');
+    setOrderDiscountValue(0);
+    setFormError('');
+  };
+
+  const loadDraft = (draft: OrderDraft) => {
+    setCart(draft.cart);
+    setSelectedCustomer(draft.customerId ? customers.find((c) => c.id === draft.customerId) || null : null);
+    setPaymentMethod(draft.paymentMethod);
+    setOrderNote(draft.orderNote || '');
+    setOrderDiscountType(draft.orderDiscountType || 'amount');
+    setOrderDiscountValue(draft.orderDiscountValue || 0);
+    setStep('cart');
+    setActiveOrderTab(draft.id);
+  };
+
+  const removeDraft = (draftId: string) => {
+    setDrafts((prev) => prev.filter((d) => d.id !== draftId));
+    if (activeOrderTab === draftId) {
+      startNewOrder();
+    }
+  };
+
+  const startNewOrder = () => {
+    setCart([]);
+    setSelectedCustomer(null);
+    setPaymentMethod('cash');
+    setOrderNote('');
+    setOrderDiscountType('amount');
+    setOrderDiscountValue(0);
+    setStep('cart');
+    setActiveOrderTab('live');
+  };
 
   const handleCheckout = () => {
     setFormError('');
@@ -146,16 +257,20 @@ export default function POS() {
       customerId: selectedCustomer?.id || null,
       createdBy: currentUser.id,
       totalAmount,
-      discount: 0,
-      finalAmount: totalAmount,
-      paidAmount: paymentMethod === 'debt' ? 0 : totalAmount,
-      debtAmount: paymentMethod === 'debt' ? totalAmount : 0,
+      discount: orderDiscountAmount,
+      finalAmount,
+      paidAmount: paymentMethod === 'debt' ? 0 : finalAmount,
+      debtAmount: paymentMethod === 'debt' ? finalAmount : 0,
       paymentMethod,
       status: paymentMethod === 'debt' ? 'unpaid' : 'completed',
+      note: orderNote?.trim() || '',
       createdAt: new Date().toISOString()
     };
 
-    addInvoice(newInvoice);
+    addInvoice(newInvoice, cart.map((item) => ({
+      ...item,
+      discountPercent: item.discountPercent || 0,
+    })));
 
     setLastInvoiceId(newInvoice.id);
     setCurrentInvoice(newInvoice);
@@ -164,6 +279,12 @@ export default function POS() {
     
     setStep('success');
     setCart([]);
+    setOrderDiscountValue(0);
+    setOrderNote('');
+    if (activeOrderTab !== 'live') {
+      setDrafts((prev) => prev.filter((d) => d.id !== activeOrderTab));
+      setActiveOrderTab('live');
+    }
   };
 
   const resetPOS = () => {
@@ -177,6 +298,9 @@ export default function POS() {
     setNewCustomer({ name: '', phone: '', address: '' });
     setShowInvoice(false);
     setFormError('');
+    setOrderDiscountType('amount');
+    setOrderDiscountValue(0);
+    setOrderNote('');
   };
 
   const handleCreateCustomer = () => {
@@ -285,7 +409,10 @@ export default function POS() {
         <div className="bg-white p-6 rounded-lg shadow-xl shadow-sky-900/5 border border-white flex flex-col sm:flex-row justify-between items-center gap-6">
             <div className="space-y-1 text-center sm:text-left">
               <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.3em] leading-none mb-1">Tổng cộng hóa đơn</p>
-              <div className="text-3xl font-black text-sky-700 font-display tabular-nums tracking-tighter leading-none">{formatCurrency(totalAmount)}</div>
+              <div className="text-3xl font-black text-sky-700 font-display tabular-nums tracking-tighter leading-none">{formatCurrency(finalAmount)}</div>
+              {orderDiscountAmount > 0 && (
+                <p className="text-xs text-emerald-700">Giảm: {formatCurrency(orderDiscountAmount)}</p>
+              )}
             </div>
             <div className="h-14 w-14 rounded-lg bg-sky-50 flex items-center justify-center text-sky-600 shadow-inner">
               <Wallet className="h-7 w-7" />
@@ -633,6 +760,7 @@ export default function POS() {
                    item={item}
                    onUpdateQuantity={updateQuantity}
                    onRemove={removeFromCart}
+                   onUpdateDiscount={updateLineDiscount}
                  />
                ))}
             </div>
@@ -640,11 +768,63 @@ export default function POS() {
         </div>
 
         <div className="p-4 sm:p-6 border-t border-slate-50 bg-white shadow-[0_-20px_60px_rgba(0,0,0,0.04)] shrink-0">
+          <div className="mb-3 flex items-center gap-2 overflow-x-auto no-scrollbar">
+            <button
+              onClick={startNewOrder}
+              className={`shrink-0 rounded-lg border px-2 py-1 text-xs ${activeOrderTab === 'live' ? 'border-sky-600 bg-sky-100 text-sky-700' : 'border-sky-200 bg-sky-50 text-sky-700'}`}
+            >
+              Đơn hiện tại
+            </button>
+            {drafts.slice(0, 5).map((draft) => (
+              <div key={draft.id} className={`shrink-0 flex items-center gap-1 rounded-lg border px-2 py-1 ${activeOrderTab === draft.id ? 'border-sky-500 bg-sky-50' : 'border-slate-200 bg-slate-50'}`}>
+                <button
+                  onClick={() => loadDraft(draft)}
+                  className="text-xs text-slate-700"
+                >
+                  {draft.name}
+                </button>
+                <button
+                  onClick={() => removeDraft(draft.id)}
+                  className="text-slate-400 hover:text-rose-600"
+                  aria-label="Xóa đơn nháp"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="mb-3 grid grid-cols-2 gap-2">
+            <select
+              value={orderDiscountType}
+              onChange={(e) => setOrderDiscountType(e.target.value as 'percent' | 'amount')}
+              className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm"
+            >
+              <option value="amount">Giảm tổng (đ)</option>
+              <option value="percent">Giảm tổng (%)</option>
+            </select>
+            <Input
+              type="number"
+              value={orderDiscountValue || ''}
+              onChange={(e) => setOrderDiscountValue(Number(e.target.value))}
+              placeholder="Giảm giá đơn"
+              className="h-9 text-sm"
+            />
+            <Input
+              value={orderNote}
+              onChange={(e) => setOrderNote(e.target.value)}
+              placeholder="Ghi chú đơn"
+              className="col-span-2 h-9 text-sm"
+            />
+          </div>
           <div className="flex justify-between items-end mb-4 sm:mb-6">
             <div className="space-y-1">
               <p className="text-[7px] sm:text-[8px] font-black text-slate-400 uppercase tracking-[0.3em] pl-1 opacity-60">Phải thu</p>
-              <div className="text-xl sm:text-3xl font-black text-slate-900 font-display tabular-nums tracking-tighter leading-none">{formatCurrency(totalAmount)}</div>
+              <div className="text-xl sm:text-3xl font-black text-slate-900 font-display tabular-nums tracking-tighter leading-none">{formatCurrency(finalAmount)}</div>
+              {orderDiscountAmount > 0 && (
+                <p className="text-xs text-emerald-700">Đã giảm: {formatCurrency(orderDiscountAmount)}</p>
+              )}
             </div>
+            <Button variant="outline" className="h-10 text-sm" disabled={cart.length === 0} onClick={saveDraft}>Lưu đơn</Button>
           </div>
           <Button 
             className="w-full h-12 sm:h-16 text-base sm:text-xl font-black rounded-lg sm:rounded-lg shadow-xl shadow-sky-900/20 bg-sky-600 hover:bg-sky-700 active:scale-[0.98] transition-all text-white uppercase tracking-widest group relative overflow-hidden" 

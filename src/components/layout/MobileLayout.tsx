@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, ShoppingCart, Package, Users, Wallet, LogOut, Store, Receipt, Settings, PanelLeftClose, PanelLeftOpen, Bell, UserRound } from 'lucide-react';
+import { Home, ShoppingCart, Package, Users, Wallet, LogOut, Store, Receipt, Settings, PanelLeftClose, PanelLeftOpen, Bell, UserRound, BookText } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { useState } from 'react';
 import { authApi } from '../../lib/api';
@@ -51,6 +51,7 @@ export default function MobileLayout() {
     { icon: Package, label: 'Mặt hàng', shortLabel: 'Hàng', path: '/app/inventory' },
     { icon: Users, label: 'Khách hàng', shortLabel: 'Khách', path: '/app/customers' },
     { icon: Wallet, label: 'Công nợ', shortLabel: 'Nợ', path: '/app/debt' },
+    { icon: BookText, label: 'Sổ quỹ', shortLabel: 'Quỹ', path: '/app/cashbook' },
     { icon: Settings, label: 'Cài đặt', shortLabel: 'Tôi', path: '/app/settings' },
   ];
   const visibleMenuItems = menuItems.filter((item) => isMenuAllowed(currentUser.role, item.path));

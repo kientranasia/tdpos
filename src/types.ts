@@ -114,6 +114,7 @@ export interface Invoice {
   debtAmount: number;
   paymentMethod: PaymentMethod;
   status: 'completed' | 'partial' | 'unpaid';
+  note?: string;
   createdAt: string;
 }
 
@@ -143,4 +144,30 @@ export interface Currency {
   code: string;
   symbol: string;
   rate: number; // Tỷ giá so với base currency (VND)
+}
+
+export interface CashbookEntry {
+  id: string;
+  tenantId: string;
+  type: 'income' | 'expense';
+  amount: number;
+  category: string;
+  note: string;
+  referenceId?: string | null;
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface StockMovement {
+  id: string;
+  tenantId: string;
+  productId: string;
+  type: 'in' | 'out' | 'adjust';
+  quantity: number;
+  beforeStock: number;
+  afterStock: number;
+  note: string;
+  referenceId?: string | null;
+  createdAt: string;
+  createdBy: string;
 }
