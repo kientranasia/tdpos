@@ -1179,6 +1179,34 @@ export default function POS() {
             </div>
 
             <div className="max-h-[52vh] overflow-y-auto p-3 space-y-2">
+              <div className="mb-2 flex items-center gap-2 overflow-x-auto no-scrollbar">
+                <button
+                  onClick={startNewOrder}
+                  className={`shrink-0 rounded-lg border px-2 py-1 text-xs ${activeOrderTab === 'live' ? 'border-sky-600 bg-sky-100 text-sky-700' : 'border-sky-200 bg-sky-50 text-sky-700'}`}
+                >
+                  Đơn hiện tại
+                </button>
+                {drafts.slice(0, 20).map((draft) => (
+                  <div key={draft.id} className={`shrink-0 flex items-center gap-1 rounded-lg border px-2 py-1 ${activeOrderTab === draft.id ? 'border-sky-500 bg-sky-50' : 'border-slate-200 bg-slate-50'}`}>
+                    <button
+                      onClick={() => {
+                        loadDraft(draft);
+                        setMobileCartOpen(true);
+                      }}
+                      className="text-xs text-slate-700"
+                    >
+                      {draft.name}
+                    </button>
+                    <button
+                      onClick={() => removeDraft(draft.id)}
+                      className="text-slate-400 hover:text-rose-600"
+                      aria-label="Xóa đơn nháp"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
               {cart.length === 0 ? (
                 <p className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">Giỏ đang trống.</p>
               ) : (
