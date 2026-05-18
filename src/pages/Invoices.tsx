@@ -5,16 +5,18 @@ import { useApp } from '../context/AppContext';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { formatCurrency } from '../lib/utils';
-import { debtLedgerApi } from '../lib/api';
-import { DebtLedger } from '../types';
+import { debtLedgerApi, invoiceItemsApi } from '../lib/api';
+import { DebtLedger, InvoiceItem } from '../types';
 
 export default function Invoices() {
-  const { invoices, customers } = useApp();
+  const { invoices, customers, products } = useApp();
   const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'partial' | 'unpaid'>('all');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   const [debtPayments, setDebtPayments] = useState<DebtLedger[]>([]);
+  const [selectedInvoiceItems, setSelectedInvoiceItems] = useState<InvoiceItem[]>([]);
+  const [loadingInvoiceItems, setLoadingInvoiceItems] = useState(false);
 
   const customerNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -39,6 +41,22 @@ export default function Invoices() {
     [filteredInvoices, selectedInvoiceId]
   );
 
+  const invoiceOverview = useMemo(() => {
+    const totalRevenue = filteredInvoices.reduce((sum, inv) => sum + inv.finalAmount, 0);
+    const unpaidCount = filteredInvoices.filter((inv) => inv.status === 'unpaid').length;
+    const partialCount = filteredInvoices.filter((inv) => inv.status === 'partial').length;
+    const debtTotal = filteredInvoices.reduce((sum, inv) => sum + (inv.debtAmount || 0), 0);
+    return { totalRevenue, unpaidCount, partialCount, debtTotal };
+  }, [filteredInvoices]);
+
+  const statusMeta = (status: 'completed' | 'partial' | 'unpaid') => {
+    if (status === 'completed') return { label: 'Đã thanh toán', tone: 'status-chip-success' };
+    if (status === 'partial') return { label: 'Thanh toán một phần', tone: 'status-chip-warning' };
+    return { label: 'Chưa thanh toán', tone: 'status-chip-danger' };
+  };
+
+  const dayLabel = (value: string) => new Date(value).toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
+
   useEffect(() => {
     const loadDebtPayments = async () => {
       try {
@@ -50,6 +68,25 @@ export default function Invoices() {
     };
     loadDebtPayments();
   }, []);
+
+  useEffect(() => {
+    const loadInvoiceItems = async () => {
+      if (!selectedInvoiceId) {
+        setSelectedInvoiceItems([]);
+        return;
+      }
+      setLoadingInvoiceItems(true);
+      try {
+        const items = await invoiceItemsApi.list(selectedInvoiceId);
+        setSelectedInvoiceItems(items || []);
+      } catch {
+        setSelectedInvoiceItems([]);
+      } finally {
+        setLoadingInvoiceItems(false);
+      }
+    };
+    loadInvoiceItems();
+  }, [selectedInvoiceId]);
 
   const printInvoice = (invoiceId: string) => {
     const invoice = invoices.find((inv) => inv.id === invoiceId);
@@ -119,6 +156,53 @@ export default function Invoices() {
 
       <div className="flex-1 overflow-y-auto">
       <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-5 p-4 md:gap-6 md:p-6">
+      <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <p className="text-xs text-slate-500">Doanh thu theo bộ lọc</p>
+          <p className="mt-1 text-lg font-semibold text-sky-700 tabular-nums">{formatCurrency(invoiceOverview.totalRevenue)}</p>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <p className="text-xs text-slate-500">Đơn chưa thanh toán</p>
+          <p className="mt-1 text-lg font-semibold text-amber-700 tabular-nums">{invoiceOverview.unpaidCount}</p>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <p className="text-xs text-slate-500">Đơn thanh toán một phần</p>
+          <p className="mt-1 text-lg font-semibold text-orange-700 tabular-nums">{invoiceOverview.partialCount}</p>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <p className="text-xs text-slate-500">Tổng công nợ còn lại</p>
+          <p className="mt-1 text-lg font-semibold text-rose-700 tabular-nums">{formatCurrency(invoiceOverview.debtTotal)}</p>
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-slate-200 bg-white p-3">
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setStatusFilter('all')}
+            className={`h-9 rounded-lg px-3 text-sm ${statusFilter === 'all' ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-600'}`}
+          >
+            Tất cả
+          </button>
+          <button
+            onClick={() => setStatusFilter('completed')}
+            className={`h-9 rounded-lg px-3 text-sm ${statusFilter === 'completed' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}
+          >
+            Đã thanh toán
+          </button>
+          <button
+            onClick={() => setStatusFilter('partial')}
+            className={`h-9 rounded-lg px-3 text-sm ${statusFilter === 'partial' ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-600'}`}
+          >
+            Thanh toán một phần
+          </button>
+          <button
+            onClick={() => setStatusFilter('unpaid')}
+            className={`h-9 rounded-lg px-3 text-sm ${statusFilter === 'unpaid' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}
+          >
+            Chưa thanh toán
+          </button>
+        </div>
+      </section>
 
       <section className="rounded-lg border border-slate-200 bg-white">
         <div className="hidden border-b border-slate-100 px-4 py-3 text-xs text-slate-500 md:grid md:grid-cols-[1.2fr_1fr_1fr_1fr_auto] md:gap-3">
@@ -129,13 +213,22 @@ export default function Invoices() {
           <p className="text-right">Thao tác</p>
         </div>
         <div className="divide-y divide-slate-100">
-          {filteredInvoices.map((inv) => {
+          {filteredInvoices.map((inv, index) => {
             const customerName = inv.customerId ? customerNameById.get(inv.customerId) || 'Khách vãng lai' : 'Khách vãng lai';
+            const prev = filteredInvoices[index - 1];
+            const showDateGroup = !prev || new Date(prev.createdAt).toDateString() !== new Date(inv.createdAt).toDateString();
+            const meta = statusMeta(inv.status);
             return (
-              <div key={inv.id} className="p-4 md:grid md:grid-cols-[1.2fr_1fr_1fr_1fr_auto] md:items-center md:gap-3">
+              <div key={inv.id}>
+                {showDateGroup && (
+                  <div className="border-b border-slate-100 bg-slate-50 px-4 py-2 text-xs font-medium text-slate-500">
+                    {dayLabel(inv.createdAt)}
+                  </div>
+                )}
+              <div className="p-4 md:grid md:grid-cols-[1.2fr_1fr_1fr_1fr_auto] md:items-center md:gap-3">
                 <div className="mb-2 md:mb-0">
                   <p className="text-sm font-semibold text-slate-900">#{inv.id}</p>
-                  <p className="text-xs text-slate-500">{inv.status}</p>
+                  <span className={`status-chip mt-1 ${meta.tone}`}>{meta.label}</span>
                 </div>
                 <p className="mb-2 text-sm text-slate-800 md:mb-0">{customerName}</p>
                 <div className="mb-2 flex items-center gap-1 text-sm text-slate-600 md:mb-0">
@@ -154,6 +247,7 @@ export default function Invoices() {
                     <ChevronRight className="h-4 w-4" />
                   </Button>
                 </div>
+              </div>
               </div>
             );
           })}
@@ -189,7 +283,7 @@ export default function Invoices() {
 
       {selectedInvoice && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
-          <div className="w-full max-w-lg rounded-lg border border-slate-200 bg-white p-5">
+          <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-5">
             <div className="flex items-start justify-between">
               <div>
                 <h3 className="text-base font-semibold text-slate-900">Chi tiết hóa đơn #{selectedInvoice.id}</h3>
@@ -199,6 +293,45 @@ export default function Invoices() {
             </div>
 
             <div className="mt-4 space-y-3 rounded-lg border border-slate-100 p-4 text-sm">
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-slate-500">Hàng hóa trong đơn</span>
+                  <span className="status-chip status-chip-info">
+                    {selectedInvoiceItems.length} sản phẩm
+                  </span>
+                </div>
+                <div className="space-y-2 rounded-lg border border-slate-100 bg-slate-50 p-3">
+                  {loadingInvoiceItems ? (
+                    <p className="text-sm text-slate-500">Đang tải sản phẩm...</p>
+                  ) : selectedInvoiceItems.length === 0 ? (
+                    <p className="text-sm text-slate-500">Không có dữ liệu sản phẩm trong hóa đơn.</p>
+                  ) : (
+                    selectedInvoiceItems.map((item) => {
+                      const product = products.find((p) => p.id === item.productId);
+                      return (
+                        <div key={item.id} className="flex items-start justify-between gap-3 rounded-lg bg-white p-2.5">
+                          <div className="flex items-start gap-3 min-w-0">
+                            <div className="h-12 w-12 shrink-0 overflow-hidden rounded-md bg-slate-100">
+                              {product?.imageUrl ? (
+                                <img src={product.imageUrl} alt={item.productName} className="h-full w-full object-cover" />
+                              ) : (
+                                <div className="flex h-full w-full items-center justify-center text-xs text-slate-400">SP</div>
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-slate-900">{item.productName}</p>
+                              <p className="text-xs text-slate-500">{product?.sku || item.productId}</p>
+                              <p className="text-xs text-slate-600">{formatCurrency(item.price)} x {item.quantity}</p>
+                            </div>
+                          </div>
+                          <p className="shrink-0 text-sm font-semibold text-slate-900 tabular-nums">{formatCurrency(item.total)}</p>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Khách hàng</span>
                 <span className="font-medium text-slate-900">
@@ -213,7 +346,9 @@ export default function Invoices() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Trạng thái</span>
-                <span className="font-medium text-slate-900">{selectedInvoice.status}</span>
+                <span className={`status-chip ${statusMeta(selectedInvoice.status).tone}`}>
+                  {statusMeta(selectedInvoice.status).label}
+                </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Tổng tiền</span>

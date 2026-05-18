@@ -1,12 +1,21 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { Search, Plus, AlertTriangle, Package, ArrowUpDown, X, Save, Edit3, DollarSign, Tag, CheckCircle, Camera, Layers, Trash2 } from 'lucide-react';
+import { Search, Plus, AlertTriangle, Package, ArrowUpDown, X, Save, Edit3, Tag, CheckCircle, Camera, Layers, Trash2, Upload, Download, ScanLine, SlidersHorizontal, ListFilter } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { formatCurrency } from '../lib/utils';
 import { Product } from '../types';
 import { v4 as uuid } from 'uuid';
 import { productsApi, stockMovementsApi } from '../lib/api';
+import * as XLSX from 'xlsx';
+
+type ImportPreviewRow = {
+  rowNumber: number;
+  mode: 'create' | 'update' | 'skip';
+  errors: string[];
+  payload: Partial<Product>;
+  existingId?: string;
+};
 
 export default function Inventory() {
   const { products, addProduct, updateProduct, deleteProduct, activeTenant, categories, addCategory } = useApp();
@@ -28,6 +37,19 @@ export default function Inventory() {
   const [stockCheckActual, setStockCheckActual] = useState<number>(0);
   const [bulkCheckActuals, setBulkCheckActuals] = useState<Record<string, number>>({});
   const [movementTypeFilter, setMovementTypeFilter] = useState<'all' | 'in' | 'out' | 'adjust'>('all');
+  const [stockStatusFilter, setStockStatusFilter] = useState<'all' | 'in_stock' | 'low_stock' | 'out_of_stock'>('all');
+  const [categoryFilter, setCategoryFilter] = useState<string>('all');
+  const [sortBy, setSortBy] = useState<'updated_desc' | 'name_asc' | 'stock_asc' | 'stock_desc' | 'price_desc'>('updated_desc');
+  const [importing, setImporting] = useState(false);
+  const [showImportPreviewModal, setShowImportPreviewModal] = useState(false);
+  const [importPreviewRows, setImportPreviewRows] = useState<ImportPreviewRow[]>([]);
+  const [selectedImportRows, setSelectedImportRows] = useState<number[]>([]);
+  const [showBarcodeScannerModal, setShowBarcodeScannerModal] = useState(false);
+  const [barcodeScannerError, setBarcodeScannerError] = useState('');
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const barcodeVideoRef = React.useRef<HTMLVideoElement | null>(null);
+  const barcodeStreamRef = React.useRef<MediaStream | null>(null);
+  const barcodeScanIntervalRef = React.useRef<number | null>(null);
 
   const unitOptions = useMemo(() => {
     const defaults = ['Cái', 'Chai', 'Thùng', 'Hộp', 'Gói', 'Kg', 'Lít'];
@@ -38,6 +60,7 @@ export default function Inventory() {
   const [productForm, setProductForm] = useState({
     name: '',
     sku: '',
+    barcode: '',
     category: '',
     unit: '',
     purchasePrice: 0,
@@ -57,6 +80,7 @@ export default function Inventory() {
     setProductForm({
       name: '',
       sku: '',
+      barcode: '',
       category: categories[0]?.name || 'Tạp hóa',
       unit: unitOptions[0] || 'Cái',
       purchasePrice: 0,
@@ -152,7 +176,7 @@ export default function Inventory() {
 
   const openBulkCheck = () => {
     const defaults: Record<string, number> = {};
-    filteredProducts.forEach((p) => { defaults[p.id] = p.stock; });
+    visibleProducts.forEach((p) => { defaults[p.id] = p.stock; });
     setBulkCheckActuals(defaults);
     setShowBulkCheckModal(true);
   };
@@ -160,7 +184,7 @@ export default function Inventory() {
   const handleBulkCheckApply = async () => {
     setFormError('');
     try {
-      for (const product of filteredProducts) {
+      for (const product of visibleProducts) {
         const actual = bulkCheckActuals[product.id];
         if (!Number.isFinite(actual) || actual < 0) continue;
         if (actual === product.stock) continue;
@@ -180,6 +204,7 @@ export default function Inventory() {
     setProductForm({
       name: product.name,
       sku: product.sku,
+      barcode: product.barcode || '',
       category: product.category,
       unit: product.unit,
       purchasePrice: product.purchasePrice,
@@ -280,13 +305,330 @@ export default function Inventory() {
     }
   };
 
-  const filteredProducts = useMemo(() => {
-    return products.filter(p => 
-      p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      p.sku.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.category.toLowerCase().includes(searchTerm.toLowerCase())
+  const normalizeHeader = (value: unknown) =>
+    String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '')
+      .replace(/[^a-z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ_]/g, '');
+
+  const parseNumber = (value: unknown, fallback = 0) => {
+    if (value === null || value === undefined || value === '') return fallback;
+    const n = Number(String(value).replace(/,/g, '').trim());
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  const parseBoolean = (value: unknown, fallback = true) => {
+    if (value === null || value === undefined || value === '') return fallback;
+    const text = String(value).trim().toLowerCase();
+    return ['1', 'true', 'yes', 'y', 'có', 'co'].includes(text);
+  };
+
+  const handleImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !activeTenant) return;
+
+    setFormError('');
+    setImporting(true);
+    try {
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data, { type: 'array' });
+      const firstSheetName = workbook.SheetNames[0];
+      if (!firstSheetName) throw new Error('File không có sheet dữ liệu.');
+      const sheet = workbook.Sheets[firstSheetName];
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
+      if (!rows.length) throw new Error('File rỗng, chưa có dòng dữ liệu.');
+
+      const existingBySku = new Map<string, Product>(products.map((p) => [p.sku.trim().toLowerCase(), p]));
+      const preview: ImportPreviewRow[] = [];
+
+      for (const [index, rawRow] of rows.entries()) {
+        const mapped: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(rawRow)) {
+          const k = normalizeHeader(key);
+          if (['sku', 'mãsku', 'masanpham', 'ma'].includes(k)) mapped.sku = value;
+          else if (['name', 'ten', 'tensanpham', 'sanpham'].includes(k)) mapped.name = value;
+          else if (['barcode', 'mavach', 'ean', 'upc'].includes(k)) mapped.barcode = value;
+          else if (['category', 'danhmuc'].includes(k)) mapped.category = value;
+          else if (['unit', 'donvitinh', 'donvi'].includes(k)) mapped.unit = value;
+          else if (['purchaseprice', 'gianhap'].includes(k)) mapped.purchasePrice = value;
+          else if (['sellingprice', 'giaban'].includes(k)) mapped.sellingPrice = value;
+          else if (['stock', 'tonkho'].includes(k)) mapped.stock = value;
+          else if (['lowstockthreshold', 'muctoncanhbao', 'canhbao'].includes(k)) mapped.lowStockThreshold = value;
+          else if (['status', 'trangthai'].includes(k)) mapped.status = value;
+          else if (['trackstock', 'theodoitonkho'].includes(k)) mapped.trackStock = value;
+        }
+
+        const sku = String(mapped.sku || '').trim();
+        const name = String(mapped.name || '').trim();
+        const errors: string[] = [];
+        if (!sku) errors.push('Thiếu SKU');
+        if (!name) errors.push('Thiếu tên sản phẩm');
+
+        const payload: Partial<Product> = {
+          sku,
+          name,
+          barcode: String(mapped.barcode || '').trim(),
+          category: String(mapped.category || '').trim() || categories[0]?.name || 'Khác',
+          unit: String(mapped.unit || '').trim() || 'Cái',
+          purchasePrice: parseNumber(mapped.purchasePrice, 0),
+          sellingPrice: parseNumber(mapped.sellingPrice, 0),
+          stock: parseNumber(mapped.stock, 0),
+          lowStockThreshold: parseNumber(mapped.lowStockThreshold, 10),
+          status: String(mapped.status || '').trim() === 'inactive' ? 'inactive' : 'active',
+          trackStock: parseBoolean(mapped.trackStock, true),
+        };
+
+        const existing = existingBySku.get(sku.toLowerCase());
+        preview.push({
+          rowNumber: index + 2,
+          mode: errors.length ? 'skip' : existing ? 'update' : 'create',
+          errors,
+          payload,
+          existingId: existing?.id,
+        });
+      }
+
+      setImportPreviewRows(preview);
+      setSelectedImportRows(preview.map((row, idx) => (!row.errors.length ? idx : -1)).filter((idx) => idx >= 0));
+      setShowImportPreviewModal(true);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Không thể import file CSV/Excel.');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const applyImportPreview = async () => {
+    if (!activeTenant) return;
+    setFormError('');
+    setImporting(true);
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    try {
+      for (const [idx, row] of importPreviewRows.entries()) {
+        if (!selectedImportRows.includes(idx)) {
+          skipped += 1;
+          continue;
+        }
+        if (row.mode === 'skip' || row.errors.length) {
+          skipped += 1;
+          continue;
+        }
+
+        if (row.mode === 'update' && row.existingId) {
+          const ok = await updateProduct(row.existingId, row.payload);
+          if (ok) updated += 1;
+          else skipped += 1;
+          continue;
+        }
+
+        const product: Product = {
+          id: uuid(),
+          tenantId: activeTenant.id,
+          sku: row.payload.sku || '',
+          name: row.payload.name || '',
+          barcode: row.payload.barcode,
+          category: row.payload.category || 'Khác',
+          unit: row.payload.unit || 'Cái',
+          purchasePrice: row.payload.purchasePrice || 0,
+          sellingPrice: row.payload.sellingPrice || 0,
+          stock: row.payload.stock || 0,
+          trackStock: row.payload.trackStock ?? true,
+          lowStockThreshold: row.payload.lowStockThreshold || 10,
+          status: row.payload.status || 'active',
+        };
+        const ok = await addProduct(product);
+        if (ok) created += 1;
+        else skipped += 1;
+      }
+
+      setShowImportPreviewModal(false);
+      setImportPreviewRows([]);
+      setSelectedImportRows([]);
+      window.alert(`Import hoàn tất.\nTạo mới: ${created}\nCập nhật: ${updated}\nBỏ qua: ${skipped}`);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Không thể áp dụng import.');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const togglePreviewRowSelection = (idx: number) => {
+    setSelectedImportRows((prev) =>
+      prev.includes(idx) ? prev.filter((item) => item !== idx) : [...prev, idx]
     );
-  }, [products, searchTerm]);
+  };
+
+  const selectAllValidPreviewRows = () => {
+    setSelectedImportRows(
+      importPreviewRows
+        .map((row, idx) => (!row.errors.length ? idx : -1))
+        .filter((idx) => idx >= 0)
+    );
+  };
+
+  const clearAllPreviewRows = () => {
+    setSelectedImportRows([]);
+  };
+
+  const stopBarcodeScanner = () => {
+    if (barcodeScanIntervalRef.current) {
+      window.clearInterval(barcodeScanIntervalRef.current);
+      barcodeScanIntervalRef.current = null;
+    }
+    if (barcodeStreamRef.current) {
+      barcodeStreamRef.current.getTracks().forEach((track) => track.stop());
+      barcodeStreamRef.current = null;
+    }
+  };
+
+  const closeBarcodeScannerModal = () => {
+    stopBarcodeScanner();
+    setShowBarcodeScannerModal(false);
+  };
+
+  const openBarcodeScanner = async () => {
+    setBarcodeScannerError('');
+    if (!('BarcodeDetector' in window)) {
+      setBarcodeScannerError('Thiết bị chưa hỗ trợ BarcodeDetector. Vui lòng nhập tay hoặc dùng trình duyệt mới.');
+      setShowBarcodeScannerModal(true);
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+      });
+      barcodeStreamRef.current = stream;
+      setShowBarcodeScannerModal(true);
+      window.setTimeout(() => {
+        if (barcodeVideoRef.current) {
+          barcodeVideoRef.current.srcObject = stream;
+          void barcodeVideoRef.current.play();
+        }
+      }, 50);
+    } catch {
+      setBarcodeScannerError('Không mở được camera. Hãy cấp quyền camera rồi thử lại.');
+      setShowBarcodeScannerModal(true);
+    }
+  };
+
+  useEffect(() => {
+    if (!showBarcodeScannerModal || !barcodeVideoRef.current || !('BarcodeDetector' in window)) return;
+    const detector = new BarcodeDetector({
+      formats: ['ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e', 'qr_code'],
+    });
+    barcodeScanIntervalRef.current = window.setInterval(async () => {
+      if (!barcodeVideoRef.current) return;
+      try {
+        const codes = await detector.detect(barcodeVideoRef.current);
+        const code = codes?.[0]?.rawValue?.trim();
+        if (code) {
+          setProductForm((prev) => ({ ...prev, barcode: code }));
+          closeBarcodeScannerModal();
+        }
+      } catch {
+        // Ignore frame decode errors.
+      }
+    }, 300);
+
+    return () => {
+      if (barcodeScanIntervalRef.current) {
+        window.clearInterval(barcodeScanIntervalRef.current);
+        barcodeScanIntervalRef.current = null;
+      }
+    };
+  }, [showBarcodeScannerModal]);
+
+  useEffect(() => () => stopBarcodeScanner(), []);
+
+  const downloadTemplates = () => {
+    const templateRows = [
+      {
+        sku: 'SKU001',
+        name: 'Bút bi xanh',
+        barcode: '8931234567890',
+        category: 'Văn phòng phẩm',
+        unit: 'Cây',
+        purchasePrice: 3000,
+        sellingPrice: 5000,
+        stock: 120,
+        lowStockThreshold: 20,
+        status: 'active',
+        trackStock: true,
+      },
+      {
+        sku: 'SKU002',
+        name: 'Sổ tay A5',
+        barcode: '8939876543210',
+        category: 'Văn phòng phẩm',
+        unit: 'Quyển',
+        purchasePrice: 12000,
+        sellingPrice: 18000,
+        stock: 50,
+        lowStockThreshold: 10,
+        status: 'active',
+        trackStock: true,
+      },
+    ];
+
+    const ws = XLSX.utils.json_to_sheet(templateRows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Products');
+    XLSX.writeFile(wb, 'tdpos-product-import-template.xlsx');
+
+    const csv = XLSX.utils.sheet_to_csv(ws);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'tdpos-product-import-template.csv';
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  const filteredProducts = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase();
+    return products.filter((p) => {
+      const matchesKeyword =
+        !keyword ||
+        p.name.toLowerCase().includes(keyword) ||
+        p.sku.toLowerCase().includes(keyword) ||
+        (p.barcode || '').toLowerCase().includes(keyword) ||
+        p.category.toLowerCase().includes(keyword);
+      const matchesCategory = categoryFilter === 'all' || p.category === categoryFilter;
+      const matchesStockStatus =
+        stockStatusFilter === 'all' ||
+        (stockStatusFilter === 'in_stock' && p.stock > p.lowStockThreshold) ||
+        (stockStatusFilter === 'low_stock' && p.stock > 0 && p.stock <= p.lowStockThreshold) ||
+        (stockStatusFilter === 'out_of_stock' && p.stock <= 0);
+      return matchesKeyword && matchesCategory && matchesStockStatus;
+    });
+  }, [products, searchTerm, categoryFilter, stockStatusFilter]);
+
+  const visibleProducts = useMemo(() => {
+    const rows = [...filteredProducts];
+    switch (sortBy) {
+      case 'name_asc':
+        rows.sort((a, b) => a.name.localeCompare(b.name, 'vi'));
+        break;
+      case 'stock_asc':
+        rows.sort((a, b) => a.stock - b.stock);
+        break;
+      case 'stock_desc':
+        rows.sort((a, b) => b.stock - a.stock);
+        break;
+      case 'price_desc':
+        rows.sort((a, b) => b.sellingPrice - a.sellingPrice);
+        break;
+      default:
+        rows.sort((a, b) => b.id.localeCompare(a.id));
+        break;
+    }
+    return rows;
+  }, [filteredProducts, sortBy]);
 
   const visibleStockMovements = useMemo(() => {
     if (movementTypeFilter === 'all') return stockMovements;
@@ -312,8 +654,122 @@ export default function Inventory() {
     return { lowStock, totalUnits, totalStockValue };
   }, [products]);
 
+  const uniqueCategories = useMemo(
+    () => Array.from(new Set(products.map((p) => p.category).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'vi')),
+    [products]
+  );
+
+  const movementMeta = (type: 'in' | 'out' | 'adjust') => {
+    if (type === 'in') return { label: 'Nhập kho', tone: 'bg-emerald-50 text-emerald-700' };
+    if (type === 'out') return { label: 'Xuất kho', tone: 'bg-rose-50 text-rose-700' };
+    return { label: 'Kiểm kê', tone: 'bg-amber-50 text-amber-700' };
+  };
+
   return (
     <div className="flex h-full flex-col bg-slate-50 animate-in fade-in duration-500 overflow-hidden relative">
+      {showBarcodeScannerModal && (
+        <div className="fixed inset-0 z-[140] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-base font-semibold text-slate-900">Quét mã vạch sản phẩm</h3>
+              <button onClick={closeBarcodeScannerModal} className="text-slate-400 hover:text-slate-700">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="rounded-lg bg-slate-950 overflow-hidden aspect-video flex items-center justify-center">
+                {barcodeScannerError ? (
+                  <div className="px-4 text-center text-sm text-rose-300">{barcodeScannerError}</div>
+                ) : (
+                  <video ref={barcodeVideoRef} className="h-full w-full object-cover" muted playsInline />
+                )}
+              </div>
+              <p className="text-xs text-slate-500">Đưa mã vạch vào giữa khung, hệ thống sẽ tự điền vào trường mã vạch.</p>
+              <Button variant="outline" className="w-full" onClick={closeBarcodeScannerModal}>
+                Đóng
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showImportPreviewModal && (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="w-full max-w-5xl rounded-lg border border-slate-200 bg-white shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-base font-semibold text-slate-900">Preview Import Sản phẩm</h3>
+              <button onClick={() => setShowImportPreviewModal(false)} className="text-slate-400 hover:text-slate-700">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="px-5 py-3 text-xs text-slate-600 border-b border-slate-100">
+              Hợp lệ: {importPreviewRows.filter((r) => !r.errors.length).length} dòng ·
+              Đã chọn: {selectedImportRows.length} dòng ·
+              Có lỗi: {importPreviewRows.filter((r) => r.errors.length).length} dòng
+              <div className="mt-2 flex gap-2">
+                <button onClick={selectAllValidPreviewRows} className="rounded-md border border-slate-200 px-2 py-1 text-xs hover:bg-slate-50">
+                  Chọn tất cả hợp lệ
+                </button>
+                <button onClick={clearAllPreviewRows} className="rounded-md border border-slate-200 px-2 py-1 text-xs hover:bg-slate-50">
+                  Bỏ chọn tất cả
+                </button>
+              </div>
+            </div>
+            <div className="max-h-[60vh] overflow-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-slate-50 sticky top-0">
+                  <tr>
+                    <th className="px-3 py-2 w-10">Chọn</th>
+                    <th className="px-3 py-2">Dòng</th>
+                    <th className="px-3 py-2">Hành động</th>
+                    <th className="px-3 py-2">SKU</th>
+                    <th className="px-3 py-2">Tên</th>
+                    <th className="px-3 py-2">Danh mục</th>
+                    <th className="px-3 py-2">Giá bán</th>
+                    <th className="px-3 py-2">Lỗi</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {importPreviewRows.map((r, idx) => (
+                    <tr key={`${r.rowNumber}-${idx}`}>
+                      <td className="px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedImportRows.includes(idx)}
+                          onChange={() => togglePreviewRowSelection(idx)}
+                          disabled={r.errors.length > 0}
+                        />
+                      </td>
+                      <td className="px-3 py-2">{r.rowNumber}</td>
+                      <td className="px-3 py-2">
+                        <span className={`rounded-md px-2 py-1 text-xs ${
+                          r.mode === 'create' ? 'bg-emerald-50 text-emerald-700' :
+                          r.mode === 'update' ? 'bg-sky-50 text-sky-700' :
+                          'bg-rose-50 text-rose-700'
+                        }`}>
+                          {r.mode === 'create' ? 'Tạo mới' : r.mode === 'update' ? 'Cập nhật' : 'Bỏ qua'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 font-mono">{r.payload.sku || '-'}</td>
+                      <td className="px-3 py-2">{r.payload.name || '-'}</td>
+                      <td className="px-3 py-2">{r.payload.category || '-'}</td>
+                      <td className="px-3 py-2">{typeof r.payload.sellingPrice === 'number' ? formatCurrency(r.payload.sellingPrice) : '-'}</td>
+                      <td className="px-3 py-2 text-rose-700">{r.errors.join(', ') || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="px-5 py-4 border-t border-slate-100 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowImportPreviewModal(false)}>Hủy</Button>
+              <Button onClick={applyImportPreview} disabled={importing}>
+                {importing ? 'Đang import...' : 'Xác nhận import'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Product Modal */}
       {showBulkCheckModal && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
@@ -325,7 +781,7 @@ export default function Inventory() {
               </button>
             </div>
             <div className="max-h-[60vh] overflow-y-auto divide-y divide-slate-100">
-              {filteredProducts.map((p) => (
+              {visibleProducts.map((p) => (
                 <div key={p.id} className="px-5 py-3 grid grid-cols-12 items-center gap-3">
                   <div className="col-span-5">
                     <p className="text-sm font-medium text-slate-900">{p.name}</p>
@@ -421,6 +877,27 @@ export default function Inventory() {
                         </div>
                     </div>
                     <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Mã vạch</label>
+                        <div className="relative">
+                        <Tag className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300" />
+                        <Input 
+                            value={productForm.barcode}
+                            onChange={e => setProductForm({...productForm, barcode: e.target.value})}
+                            className="h-12 pl-12 pr-28 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700" 
+                            placeholder="EAN/UPC/Code128 (không bắt buộc)" 
+                        />
+                        <button
+                          type="button"
+                          onClick={openBarcodeScanner}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 h-8 px-2.5 rounded-md bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 flex items-center gap-1 text-xs font-semibold"
+                        >
+                          <Camera className="h-3.5 w-3.5" />
+                          <ScanLine className="h-3.5 w-3.5" />
+                          Quét
+                        </button>
+                        </div>
+                    </div>
+                    <div className="space-y-2">
                         <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Tên sản phẩm</label>
                         <Input 
                         value={productForm.name}
@@ -479,28 +956,28 @@ export default function Inventory() {
                </div>
 
                <div className="grid grid-cols-2 gap-6">
-                  <div className="space-y-2">
+                    <div className="space-y-2">
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Giá nhập</label>
                     <div className="relative">
-                       <DollarSign className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-sky-600" />
                        <Input 
                          type="number"
                          value={productForm.purchasePrice}
                          onChange={e => setProductForm({...productForm, purchasePrice: Number(e.target.value)})}
-                         className="h-12 pl-12 rounded-lg bg-sky-50/30 border-none shadow-inner font-bold text-sky-700 font-mono" 
+                         className="h-12 pr-9 rounded-lg bg-sky-50/30 border-none shadow-inner font-bold text-sky-700 font-mono" 
                        />
+                       <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-semibold text-sky-700">đ</span>
                     </div>
                   </div>
                   <div className="space-y-2">
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Giá bán</label>
                     <div className="relative">
-                       <DollarSign className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-sky-600" />
                        <Input 
                          type="number"
                          value={productForm.sellingPrice}
                          onChange={e => setProductForm({...productForm, sellingPrice: Number(e.target.value)})}
-                         className="h-12 pl-12 rounded-lg bg-sky-50/30 border-none shadow-inner font-bold text-sky-700 font-mono" 
+                         className="h-12 pr-9 rounded-lg bg-sky-50/30 border-none shadow-inner font-bold text-sky-700 font-mono" 
                        />
+                       <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-semibold text-sky-700">đ</span>
                     </div>
                   </div>
                </div>
@@ -703,6 +1180,13 @@ export default function Inventory() {
         </div>
         
         <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,.xlsx,.xls"
+            className="hidden"
+            onChange={handleImportFile}
+          />
           <div className="relative group flex-1 lg:w-72">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-sky-600 transition-colors" />
             <Input 
@@ -721,6 +1205,23 @@ export default function Inventory() {
           >
             <Plus className="h-4 w-4 sm:h-5 sm:w-5" />
             <span>Thêm mới</span>
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            className="h-10 lg:h-11 px-4 rounded-lg text-sm gap-2"
+          >
+            <Upload className="h-4 w-4" />
+            {importing ? 'Đang import...' : 'Import CSV/Excel'}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={downloadTemplates}
+            className="h-10 lg:h-11 px-4 rounded-lg text-sm gap-2"
+          >
+            <Download className="h-4 w-4" />
+            Tải mẫu
           </Button>
           <Button variant="outline" onClick={openBulkCheck} className="h-10 lg:h-11 px-4 rounded-lg text-sm">
             Kiểm kê
@@ -746,10 +1247,62 @@ export default function Inventory() {
           </div>
         </div>
 
+        <div className="mb-4 rounded-lg border border-slate-200 bg-white p-3 lg:p-4">
+          <div className="mb-3 flex items-center gap-2 text-xs font-medium text-slate-600">
+            <SlidersHorizontal className="h-4 w-4 text-slate-500" />
+            Bộ lọc & sắp xếp hàng hóa
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
+            >
+              <option value="all">Tất cả danh mục</option>
+              {uniqueCategories.map((cat) => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </select>
+            <select
+              value={stockStatusFilter}
+              onChange={(e) => setStockStatusFilter(e.target.value as any)}
+              className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
+            >
+              <option value="all">Tất cả tồn kho</option>
+              <option value="in_stock">Còn hàng</option>
+              <option value="low_stock">Sắp hết</option>
+              <option value="out_of_stock">Hết hàng</option>
+            </select>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as any)}
+              className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
+            >
+              <option value="updated_desc">Mới cập nhật</option>
+              <option value="name_asc">Tên A → Z</option>
+              <option value="stock_asc">Tồn kho thấp → cao</option>
+              <option value="stock_desc">Tồn kho cao → thấp</option>
+              <option value="price_desc">Giá bán cao → thấp</option>
+            </select>
+            <Button
+              variant="outline"
+              className="h-10 justify-start gap-2 px-3 text-sm"
+              onClick={() => {
+                setCategoryFilter('all');
+                setStockStatusFilter('all');
+                setSortBy('updated_desc');
+              }}
+            >
+              <ListFilter className="h-4 w-4" />
+              Đặt lại bộ lọc
+            </Button>
+          </div>
+        </div>
+
         <div className="bg-white rounded-lg shadow-xl shadow-slate-900/5 border border-white overflow-hidden">
           {/* Mobile View: High-polish Cards */}
           <div className="grid grid-cols-1 gap-px bg-slate-100 lg:hidden">
-            {filteredProducts.map(product => (
+            {visibleProducts.map(product => (
               <div key={product.id} className="p-4 bg-white space-y-3 relative group active:bg-slate-50 transition-colors" onClick={() => openStockEntry(product)}>
                 <div className="flex justify-between items-start">
                   <div className="space-y-1">
@@ -812,43 +1365,55 @@ export default function Inventory() {
 
           {/* Desktop View: Polished Table */}
           <div className="hidden lg:block overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full min-w-[1120px] text-left border-collapse table-fixed">
+              <colgroup>
+                <col className="w-[130px]" />
+                <col className="w-[340px]" />
+                <col className="w-[150px]" />
+                <col className="w-[140px]" />
+                <col className="w-[170px]" />
+                <col className="w-[170px]" />
+                <col className="w-[140px]" />
+              </colgroup>
               <thead>
                 <tr className="bg-slate-50/50">
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 border-b border-slate-100">
+                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100">
                     <div className="flex items-center gap-2">Mã SKU <ArrowUpDown className="h-3 w-3" /></div>
                   </th>
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 border-b border-slate-100">Sản phẩm</th>
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 border-b border-slate-100">Danh mục</th>
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 border-b border-slate-100 text-right">Giá nhập</th>
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 border-b border-slate-100 text-right">Giá bán</th>
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 border-b border-slate-100 text-center">Tồn kho</th>
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 border-b border-slate-100 text-center">Thao tác</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100">Sản phẩm</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100">Danh mục</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100 text-right">Giá nhập</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100 text-right">Giá bán</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100 text-center">Tồn kho</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100 text-center">Thao tác</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {filteredProducts.map(product => (
-                  <tr key={product.id} className="group hover:bg-sky-50/20 transition-all duration-300">
-                    <td className="px-6 py-4">
-                      <span className="font-mono text-xs font-semibold text-slate-500 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200/50">{product.sku}</span>
+                {visibleProducts.map(product => (
+                  <tr key={product.id} className="group h-[84px] hover:bg-sky-50/20 transition-all duration-300">
+                    <td className="px-4 py-3 align-middle">
+                      <span className="inline-flex max-w-full truncate font-mono text-xs font-semibold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-md border border-slate-200/50">{product.sku}</span>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-4 py-3 align-middle">
                       <div className="flex items-center gap-4">
-                        <div className="h-12 w-12 rounded-lg bg-slate-50 group-hover:bg-white group-hover:shadow-lg transition-all flex items-center justify-center text-slate-400 group-hover:text-sky-600 border border-transparent group-hover:border-sky-100">
-                           <Package className="h-6 w-6 transform group-hover:rotate-12 transition-transform" />
+                        <div className="h-10 w-10 rounded-lg bg-slate-50 group-hover:bg-white group-hover:shadow-lg transition-all flex items-center justify-center text-slate-400 group-hover:text-sky-600 border border-transparent group-hover:border-sky-100 shrink-0">
+                           <Package className="h-5 w-5 transform group-hover:rotate-12 transition-transform" />
                         </div>
-                        <div className="font-semibold text-slate-900 tracking-tight text-xl leading-tight">{product.name}</div>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-slate-900 tracking-tight text-base leading-tight truncate">{product.name}</div>
+                          {product.barcode && <div className="text-xs text-slate-500 font-mono truncate">{product.barcode}</div>}
+                        </div>
                       </div>
                     </td>
-                    <td className="px-6 py-4">
-                      <span className="text-xs font-medium text-slate-600 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100">{product.category}</span>
+                    <td className="px-4 py-3 align-middle">
+                      <span className="inline-flex max-w-full truncate text-xs font-medium text-slate-600 bg-slate-50 px-2.5 py-1 rounded-md border border-slate-100">{product.category}</span>
                     </td>
-                    <td className="px-6 py-4 text-right font-semibold text-slate-500 tabular-nums">
+                    <td className="px-4 py-3 align-middle text-right font-semibold text-slate-500 tabular-nums text-sm whitespace-nowrap">
                         {formatCurrency(product.purchasePrice)}
                     </td>
-                    <td className="px-6 py-4 text-right">
+                    <td className="px-4 py-3 align-middle text-right">
                       <div className="flex flex-col items-end">
-                        <div className="font-semibold text-sky-700 text-2xl tabular-nums">{formatCurrency(product.sellingPrice)}</div>
+                        <div className="font-semibold text-sky-700 text-lg tabular-nums whitespace-nowrap">{formatCurrency(product.sellingPrice)}</div>
                         <button 
                           onClick={(e) => {
                             e.stopPropagation();
@@ -860,9 +1425,9 @@ export default function Inventory() {
                         </button>
                       </div>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-4 py-3 align-middle">
                       <div className="flex justify-center">
-                        <div className={`px-5 py-2 rounded-lg text-xs font-semibold flex items-center gap-3 shadow-sm transition-transform group-hover:scale-105 ${
+                        <div className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2.5 shadow-sm transition-transform group-hover:scale-105 ${
                           product.stock <= product.lowStockThreshold 
                             ? 'bg-orange-600 text-white ring-4 ring-orange-100' 
                             : 'bg-slate-900 text-white ring-4 ring-slate-100'
@@ -871,19 +1436,19 @@ export default function Inventory() {
                              e.stopPropagation();
                              openStockEntry(product);
                           }}><Plus className="h-4 w-4" /></button>
-                          <span className="text-base font-semibold tabular-nums">{product.stock}</span>
+                          <span className="text-sm font-semibold tabular-nums whitespace-nowrap">{product.stock}</span>
                           <span className="opacity-70">{product.unit}</span>
                           {product.stock <= product.lowStockThreshold && <AlertTriangle className="h-4 w-4" />}
                         </div>
                       </div>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-4 py-3 align-middle">
                       <div className="flex justify-center gap-2">
                         <Button 
                           variant="ghost" 
                           size="sm" 
                           onClick={() => openEditProduct(product)}
-                          className="h-10 w-10 rounded-lg bg-slate-50 hover:bg-sky-600 text-slate-400 hover:text-white transition-all shadow-sm ring-1 ring-slate-100 hover:ring-sky-500"
+                          className="h-9 w-9 rounded-lg bg-slate-50 hover:bg-sky-600 text-slate-400 hover:text-white transition-all shadow-sm ring-1 ring-slate-100 hover:ring-sky-500"
                         >
                           <Edit3 className="h-4 w-4" />
                         </Button>
@@ -891,7 +1456,7 @@ export default function Inventory() {
                           variant="ghost"
                           size="sm"
                           onClick={() => handleDeleteProduct(product)}
-                          className="h-10 w-10 rounded-lg bg-rose-50 hover:bg-rose-600 text-rose-500 hover:text-white transition-all shadow-sm ring-1 ring-rose-100 hover:ring-rose-500"
+                          className="h-9 w-9 rounded-lg bg-rose-50 hover:bg-rose-600 text-rose-500 hover:text-white transition-all shadow-sm ring-1 ring-rose-100 hover:ring-rose-500"
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -903,7 +1468,7 @@ export default function Inventory() {
             </table>
           </div>
           
-          {filteredProducts.length === 0 && (
+          {visibleProducts.length === 0 && (
             <div className="p-32 text-center space-y-8 animate-pulse">
               <div className="inline-flex h-32 w-32 items-center justify-center rounded-lg bg-slate-50 text-slate-200 shadow-inner">
                 <Search className="h-16 w-16 opacity-10" />
@@ -933,13 +1498,29 @@ export default function Inventory() {
             ) : (
               visibleStockMovements.slice(0, 12).map((m) => (
                 <div key={m.id} className="px-4 py-3 flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">{m.note || 'Biến động kho'}</p>
-                    <p className="text-xs text-slate-500">{new Date(m.createdAt).toLocaleString('vi-VN')}</p>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${movementMeta(m.type).tone}`}>
+                        {movementMeta(m.type).label}
+                      </span>
+                      <span className="text-xs font-mono text-slate-500">{m.productSku || 'N/A'}</span>
+                    </div>
+                    <p className="text-sm font-medium text-slate-900 truncate">
+                      {m.productName || 'Sản phẩm'} {m.note ? `· ${m.note}` : ''}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {new Date(m.createdAt).toLocaleString('vi-VN')} · {m.actorName || 'N/A'}
+                      {m.actorRole ? ` (${m.actorRole})` : ''}
+                    </p>
                   </div>
-                  <p className="text-sm text-slate-700 tabular-nums">
-                    {m.beforeStock} → {m.afterStock} ({m.type === 'in' ? '+' : m.type === 'out' ? '-' : '±'}{m.quantity})
-                  </p>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm text-slate-700 tabular-nums">
+                      {m.beforeStock} → {m.afterStock}
+                    </p>
+                    <p className={`text-xs font-semibold tabular-nums ${m.type === 'in' ? 'text-emerald-700' : m.type === 'out' ? 'text-rose-700' : 'text-amber-700'}`}>
+                      {m.type === 'in' ? '+' : m.type === 'out' ? '-' : '±'}{m.quantity} {m.productUnit || ''}
+                    </p>
+                  </div>
                 </div>
               ))
             )}

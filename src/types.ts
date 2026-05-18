@@ -43,6 +43,18 @@ export interface TenantSettings {
     close: string;
   };
   defaultLanguage: string;
+  invoice?: {
+    storeDisplayName?: string;
+    headerLine1?: string;
+    headerLine2?: string;
+    showAddress?: boolean;
+    showPhone?: boolean;
+    showCustomerPhone?: boolean;
+    showOperator?: boolean;
+    showOrderNote?: boolean;
+    footerNote?: string;
+    printSize?: 'a5' | 'receipt_80mm';
+  };
   insights?: {
     businessModel?: string;
     industry?: string;
@@ -97,6 +109,7 @@ export interface Customer {
   address: string;
   totalDebt: number;
   type: 'retail' | 'loyal'; // lẻ hay thân thiết
+  tags?: string[];
 }
 
 export type PaymentMethod = 'cash' | 'transfer' | 'debt';
@@ -138,6 +151,22 @@ export interface DebtLedger {
   note: string;
   createdAt: string;
   createdBy: string;
+}
+
+export interface CustomerCareLog {
+  id: string;
+  tenantId: string;
+  customerId: string;
+  channel: 'zalo' | 'call' | 'sms' | 'other';
+  templateType: 'pre_due' | 'due_today' | 'overdue' | 'thanks_after_payment' | 'repurchase_invite' | 'new_arrival';
+  message: string;
+  dueDate?: string | null;
+  status: 'not_sent' | 'sent' | 'promised' | 'paid';
+  responded: boolean;
+  note?: string;
+  createdAt: string;
+  createdBy: string;
+  createdByName?: string | null;
 }
 
 export interface Currency {

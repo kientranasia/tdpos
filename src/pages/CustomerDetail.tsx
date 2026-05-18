@@ -15,7 +15,6 @@ import {
   ShoppingCart,
   Calendar,
   ChevronRight,
-  MoreVertical,
   Plus,
   Receipt,
   UserCheck,
@@ -86,6 +85,20 @@ export default function CustomerDetail() {
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
   }, [customerInvoices, debtPayments]);
+
+  const statusMeta = (status: 'completed' | 'partial' | 'unpaid') => {
+    if (status === 'completed') return { label: 'Đã thanh toán', tone: 'status-chip-success' };
+    if (status === 'partial') return { label: 'Thanh toán một phần', tone: 'status-chip-warning' };
+    return { label: 'Chưa thanh toán', tone: 'status-chip-danger' };
+  };
+
+  const dayLabel = (value: string) =>
+    new Date(value).toLocaleDateString('vi-VN', {
+      weekday: 'long',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
 
   const stats = [
     { 
@@ -164,7 +177,7 @@ export default function CustomerDetail() {
             <div className="flex items-center justify-between">
               <h3 className="text-base font-black text-slate-900 uppercase tracking-tight">Sửa hồ sơ khách hàng</h3>
               <button onClick={() => setShowEditModal(false)} className="text-slate-400 hover:text-red-500">
-                <MoreVertical className="h-5 w-5" />
+                <Plus className="h-5 w-5 rotate-45" />
               </button>
             </div>
 
@@ -243,15 +256,15 @@ export default function CustomerDetail() {
             </div>
             <div>
               <div className="flex items-center gap-3">
-                <h1 className="text-2xl font-black text-slate-900 font-display tracking-tight uppercase italic">{customer.name}</h1>
-                <span className={`text-[8px] font-black px-2 py-0.5 rounded-lg uppercase tracking-widest ${
+                <h1 className="text-xl md:text-2xl font-semibold text-slate-900 tracking-tight">{customer.name}</h1>
+                <span className={`text-[10px] font-medium px-2 py-0.5 rounded-lg ${
                     customer.type === 'loyal' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-400'
                 }`}>
-                    {customer.type === 'loyal' ? 'VIP MEMBER' : 'RETAIL'}
+                    {customer.type === 'loyal' ? 'VIP' : 'Khách lẻ'}
                 </span>
               </div>
               <div className="flex items-center gap-3 mt-1">
-                <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">ID: #{customer.id.toUpperCase()}</span>
+                <span className="text-xs text-slate-400">ID: #{customer.id.toUpperCase()}</span>
               </div>
             </div>
           </div>
@@ -260,11 +273,11 @@ export default function CustomerDetail() {
           <Button
             onClick={openEditModal}
             variant="outline"
-            className="flex-1 md:flex-none h-12 px-6 rounded-lg font-black text-[10px] uppercase tracking-widest bg-white border-slate-200 text-slate-600 hover:bg-slate-50 gap-2"
+            className="flex-1 md:flex-none h-11 md:h-12 px-5 rounded-lg font-medium text-sm bg-white border-slate-200 text-slate-600 hover:bg-slate-50 gap-2"
           >
             <Edit2 className="h-4 w-4" /> Sửa hồ sơ
           </Button>
-          <Button className="flex-1 md:flex-none h-12 px-8 rounded-lg bg-slate-900 hover:bg-slate-800 shadow-lg font-black text-[10px] uppercase tracking-widest text-white gap-2" onClick={() => navigate('/app/pos')}>
+          <Button className="flex-1 md:flex-none h-11 md:h-12 px-6 rounded-lg bg-slate-900 hover:bg-slate-800 shadow-lg font-medium text-sm text-white gap-2" onClick={() => navigate('/app/pos')}>
             <Plus className="h-4 w-4" /> Bán hàng
           </Button>
         </div>
@@ -381,21 +394,29 @@ export default function CustomerDetail() {
                                     <Receipt className="h-6 w-6" />
                                 </div>
                                 <div>
-                                    <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight italic leading-none">Lịch sử giao dịch</h3>
-                                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">Toàn bộ hóa đơn mua hàng, ghi nợ & thanh toán công nợ</p>
+                                    <h3 className="text-base sm:text-lg font-semibold text-slate-900 leading-none">Lịch sử giao dịch</h3>
+                                    <p className="text-xs text-slate-500 mt-1">Toàn bộ hóa đơn mua hàng, ghi nợ và thanh toán công nợ</p>
                                 </div>
                              </div>
                         </div>
                         
                         <div className="flex-1 overflow-y-auto">
                             <div className="divide-y divide-slate-50">
-                                {customerTimeline.map((event, idx) => (
+                                {customerTimeline.map((event, idx) => {
+                                    const prev = customerTimeline[idx - 1];
+                                    const showDateGroup = !prev || new Date(prev.createdAt).toDateString() !== new Date(event.createdAt).toDateString();
+                                    return (
+                                    <div key={event.id}>
+                                    {showDateGroup && (
+                                      <div className="bg-slate-50 px-6 py-2 text-xs font-medium text-slate-500">
+                                        {dayLabel(event.createdAt)}
+                                      </div>
+                                    )}
                                     <motion.div 
-                                        key={event.id}
                                         initial={{ opacity: 0, y: 20 }}
                                         animate={{ opacity: 1, y: 0 }}
                                         transition={{ delay: idx * 0.05 }}
-                                        className="p-6 sm:p-8 hover:bg-indigo-50/30 transition-all group flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6 border-l-4 border-transparent hover:border-indigo-600"
+                                        className="p-5 sm:p-6 hover:bg-indigo-50/30 transition-all group flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6 border-l-4 border-transparent hover:border-indigo-600"
                                     >
                                         <div className="flex items-center gap-6">
                                             <div className="h-12 w-12 rounded-lg bg-white shadow-sm ring-1 ring-slate-100 flex items-center justify-center text-slate-300 group-hover:text-indigo-600 transition-colors">
@@ -407,20 +428,20 @@ export default function CustomerDetail() {
                                             </div>
                                             <div className="space-y-1">
                                                 <div className="flex items-center gap-3">
-                                                    <p className="text-lg font-black text-slate-900 tracking-tight">
+                                                    <p className="text-base sm:text-lg font-semibold text-slate-900 tracking-tight">
                                                       {event.kind === 'invoice' ? `#${event.invoice.id}` : 'Thanh toán công nợ'}
                                                     </p>
-                                                    <span className={`text-[8px] font-black px-2 py-0.5 rounded-lg uppercase tracking-widest ${
+                                                    <span className={`status-chip ${
                                                         event.kind === 'invoice'
-                                                          ? (event.invoice.status === 'completed' ? 'bg-sky-100 text-sky-700' : 'bg-orange-100 text-orange-700')
-                                                          : 'bg-emerald-100 text-emerald-700'
+                                                          ? statusMeta(event.invoice.status).tone
+                                                          : 'status-chip-success'
                                                     }`}>
                                                         {event.kind === 'invoice'
-                                                          ? (event.invoice.status === 'completed' ? 'PAID' : 'DEBT')
-                                                          : 'DEBT PAYMENT'}
+                                                          ? statusMeta(event.invoice.status).label
+                                                          : 'Đã thu nợ'}
                                                     </span>
                                                 </div>
-                                                <div className="flex items-center gap-2 text-slate-400 font-bold text-[10px] uppercase tracking-widest">
+                                                <div className="flex items-center gap-2 text-slate-400 text-xs">
                                                     <Calendar className="h-3 w-3" />
                                                     {new Date(event.createdAt).toLocaleString('vi-VN')}
                                                 </div>
@@ -435,7 +456,7 @@ export default function CustomerDetail() {
                                                 <p className="text-[8px] font-black text-slate-300 uppercase tracking-widest mb-1">
                                                   {event.kind === 'invoice' ? 'Thành tiền' : 'Đã thu nợ'}
                                                 </p>
-                                                <p className={`text-2xl font-black font-display tracking-tight tabular-nums ${
+                                                <p className={`text-xl sm:text-2xl font-semibold tracking-tight tabular-nums ${
                                                   event.kind === 'invoice' ? 'text-indigo-700' : 'text-emerald-700'
                                                 }`}>
                                                   {event.kind === 'invoice'
@@ -454,7 +475,9 @@ export default function CustomerDetail() {
                                             )}
                                         </div>
                                     </motion.div>
-                                ))}
+                                    </div>
+                                    );
+                                  })}
 
                                 {customerTimeline.length === 0 && (
                                     <div className="p-20 text-center space-y-6">
@@ -462,7 +485,7 @@ export default function CustomerDetail() {
                                             <ShoppingCart className="h-12 w-12 opacity-5" />
                                         </div>
                                         <div className="space-y-1">
-                                            <p className="text-slate-300 font-black uppercase tracking-widest text-[9px]">Chưa có giao dịch</p>
+                                            <p className="text-slate-400 text-sm">Chưa có giao dịch</p>
                                         </div>
                                     </div>
                                 )}

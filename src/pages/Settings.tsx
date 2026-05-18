@@ -7,7 +7,7 @@ import { usersApi } from '../lib/api';
 import { User } from '../types';
 import { Save, Settings2, ShieldCheck, Store, Users } from 'lucide-react';
 
-type SettingsTab = 'profile' | 'system' | 'users';
+type SettingsTab = 'profile' | 'system' | 'invoice' | 'users';
 
 export default function Settings() {
   const { activeTenant, currentUser, updateTenant } = useApp();
@@ -29,6 +29,16 @@ export default function Settings() {
     maxDebtDays: activeTenant?.settings?.debtPolicy?.maxDebtDays || 30,
     openTime: activeTenant?.settings?.workingHours?.open || '07:00',
     closeTime: activeTenant?.settings?.workingHours?.close || '18:00',
+    invoiceStoreDisplayName: activeTenant?.settings?.invoice?.storeDisplayName || '',
+    invoiceHeaderLine1: activeTenant?.settings?.invoice?.headerLine1 || '',
+    invoiceHeaderLine2: activeTenant?.settings?.invoice?.headerLine2 || '',
+    invoiceShowAddress: activeTenant?.settings?.invoice?.showAddress ?? true,
+    invoiceShowPhone: activeTenant?.settings?.invoice?.showPhone ?? true,
+    invoiceShowCustomerPhone: activeTenant?.settings?.invoice?.showCustomerPhone ?? true,
+    invoiceShowOperator: activeTenant?.settings?.invoice?.showOperator ?? true,
+    invoiceShowOrderNote: activeTenant?.settings?.invoice?.showOrderNote ?? true,
+    invoiceFooterNote: activeTenant?.settings?.invoice?.footerNote || 'Cảm ơn quý khách và hẹn gặp lại.',
+    invoicePrintSize: activeTenant?.settings?.invoice?.printSize || 'receipt_80mm',
   });
 
   const [tenantUsers, setTenantUsers] = useState<User[]>([]);
@@ -69,6 +79,16 @@ export default function Settings() {
       maxDebtDays: activeTenant?.settings?.debtPolicy?.maxDebtDays || 30,
       openTime: activeTenant?.settings?.workingHours?.open || '07:00',
       closeTime: activeTenant?.settings?.workingHours?.close || '18:00',
+      invoiceStoreDisplayName: activeTenant?.settings?.invoice?.storeDisplayName || '',
+      invoiceHeaderLine1: activeTenant?.settings?.invoice?.headerLine1 || '',
+      invoiceHeaderLine2: activeTenant?.settings?.invoice?.headerLine2 || '',
+      invoiceShowAddress: activeTenant?.settings?.invoice?.showAddress ?? true,
+      invoiceShowPhone: activeTenant?.settings?.invoice?.showPhone ?? true,
+      invoiceShowCustomerPhone: activeTenant?.settings?.invoice?.showCustomerPhone ?? true,
+      invoiceShowOperator: activeTenant?.settings?.invoice?.showOperator ?? true,
+      invoiceShowOrderNote: activeTenant?.settings?.invoice?.showOrderNote ?? true,
+      invoiceFooterNote: activeTenant?.settings?.invoice?.footerNote || 'Cảm ơn quý khách và hẹn gặp lại.',
+      invoicePrintSize: activeTenant?.settings?.invoice?.printSize || 'receipt_80mm',
     });
   }, [activeTenant]);
 
@@ -115,6 +135,18 @@ export default function Settings() {
           workingHours: {
             open: formData.openTime,
             close: formData.closeTime,
+          },
+          invoice: {
+            storeDisplayName: formData.invoiceStoreDisplayName?.trim() || '',
+            headerLine1: formData.invoiceHeaderLine1?.trim() || '',
+            headerLine2: formData.invoiceHeaderLine2?.trim() || '',
+            showAddress: !!formData.invoiceShowAddress,
+            showPhone: !!formData.invoiceShowPhone,
+            showCustomerPhone: !!formData.invoiceShowCustomerPhone,
+            showOperator: !!formData.invoiceShowOperator,
+            showOrderNote: !!formData.invoiceShowOrderNote,
+            footerNote: formData.invoiceFooterNote?.trim() || '',
+            printSize: formData.invoicePrintSize as 'a5' | 'receipt_80mm',
           },
         },
       });
@@ -219,6 +251,9 @@ export default function Settings() {
             <button onClick={() => setActiveTab('users')} className={`h-10 px-4 rounded-lg text-sm ${activeTab === 'users' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-700'}`}>
               Users & Gói
             </button>
+            <button onClick={() => setActiveTab('invoice')} className={`h-10 px-4 rounded-lg text-sm ${activeTab === 'invoice' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-700'}`}>
+              Hóa đơn
+            </button>
             <button onClick={() => navigate('/app/subscription')} className="h-10 px-4 rounded-lg text-sm bg-white border border-slate-200 text-slate-700 hover:border-sky-300 hover:text-sky-700">
               Subscription
             </button>
@@ -297,6 +332,32 @@ export default function Settings() {
           {!isOwner && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
               Chỉ Owner mới có quyền quản lý user theo gói.
+            </div>
+          )}
+
+          {activeTab === 'invoice' && (
+            <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 space-y-4">
+              <div className="flex items-center gap-2 text-slate-900">
+                <Store className="h-4 w-4" />
+                <h2 className="text-base font-semibold">Cấu hình in hóa đơn</h2>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <Input value={formData.invoiceStoreDisplayName} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceStoreDisplayName: e.target.value }))} placeholder="Tên hiển thị trên hóa đơn (nếu khác tên cửa hàng)" />
+                <select className="h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm" value={formData.invoicePrintSize} onChange={(e) => setFormData((prev) => ({ ...prev, invoicePrintSize: e.target.value }))}>
+                  <option value="receipt_80mm">Khổ K80 (máy in bill)</option>
+                  <option value="a5">Khổ A5</option>
+                </select>
+                <Input value={formData.invoiceHeaderLine1} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceHeaderLine1: e.target.value }))} placeholder="Dòng header 1 (VD: MST / slogan)" />
+                <Input value={formData.invoiceHeaderLine2} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceHeaderLine2: e.target.value }))} placeholder="Dòng header 2 (VD: Website / Facebook)" />
+              </div>
+              <Input value={formData.invoiceFooterNote} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceFooterNote: e.target.value }))} placeholder="Lời cảm ơn / chính sách đổi trả ở cuối bill" />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={formData.invoiceShowAddress} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceShowAddress: e.target.checked }))} />Hiện địa chỉ cửa hàng</label>
+                <label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={formData.invoiceShowPhone} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceShowPhone: e.target.checked }))} />Hiện số điện thoại cửa hàng</label>
+                <label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={formData.invoiceShowCustomerPhone} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceShowCustomerPhone: e.target.checked }))} />Hiện SĐT khách hàng</label>
+                <label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={formData.invoiceShowOperator} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceShowOperator: e.target.checked }))} />Hiện nhân viên thao tác</label>
+                <label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={formData.invoiceShowOrderNote} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceShowOrderNote: e.target.checked }))} />Hiện ghi chú đơn</label>
+              </div>
             </div>
           )}
 

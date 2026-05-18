@@ -20,6 +20,7 @@ export default function Customers() {
   const [sortKey, setSortKey] = useState<CustomerSortKey>('vip');
   const [page, setPage] = useState(1);
   const [isOpenCreateModal, setIsOpenCreateModal] = useState(false);
+  const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
   const [submitError, setSubmitError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createForm, setCreateForm] = useState({
@@ -182,7 +183,23 @@ export default function Customers() {
         <p className="text-sm text-slate-600">
           Hiển thị <span className="font-semibold text-slate-900">{pagedCustomers.length}</span> / {filteredCustomers.length} khách phù hợp
         </p>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded-lg border border-slate-200 p-0.5">
+            <button
+              type="button"
+              onClick={() => setViewMode('cards')}
+              className={`h-8 rounded-md px-3 text-xs ${viewMode === 'cards' ? 'bg-sky-100 text-sky-700' : 'text-slate-600'}`}
+            >
+              Dạng thẻ
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('table')}
+              className={`h-8 rounded-md px-3 text-xs ${viewMode === 'table' ? 'bg-sky-100 text-sky-700' : 'text-slate-600'}`}
+            >
+              Dạng bảng
+            </button>
+          </div>
           <label className="text-xs text-slate-500">Sắp xếp</label>
           <select
             value={sortKey}
@@ -197,62 +214,98 @@ export default function Customers() {
         </div>
       </section>
 
-      <section className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {pagedCustomers.map((customer) => (
-          <button
-            key={customer.id}
-            className="rounded-lg border border-slate-200 bg-white p-4 text-left hover:bg-slate-50"
-            onClick={() => navigate(`/app/customers/${customer.id}`)}
-          >
-            <div className="mb-3 flex items-start justify-between">
-              <div className="flex items-center gap-2">
-                <div className="rounded-lg bg-slate-100 p-2">
-                  <Users className="h-4 w-4 text-slate-700" />
+      {viewMode === 'cards' ? (
+        <section className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {pagedCustomers.map((customer) => (
+            <button
+              key={customer.id}
+              className="rounded-lg border border-slate-200 bg-white p-4 text-left hover:bg-slate-50"
+              onClick={() => navigate(`/app/customers/${customer.id}`)}
+            >
+              <div className="mb-3 flex items-start justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="rounded-lg bg-slate-100 p-2">
+                    <Users className="h-4 w-4 text-slate-700" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">{customer.name}</p>
+                    <p className="text-xs text-slate-500 flex items-center gap-1">
+                      {customer.type === 'loyal' ? <Crown className="h-3 w-3 text-amber-600" /> : null}
+                      {customer.type === 'loyal' ? 'Khách VIP' : 'Khách lẻ'}
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-sm font-semibold text-slate-900">{customer.name}</p>
+                <ChevronRight className="h-4 w-4 text-slate-400" />
+              </div>
+              <div className="space-y-2 text-sm text-slate-600">
+                <p className="flex items-center gap-2">
+                  <Phone className="h-4 w-4 text-slate-400" />
+                  {customer.phone}
+                </p>
+                <p className="flex items-start gap-2">
+                  <MapPin className="mt-[2px] h-4 w-4 text-slate-400" />
+                  <span className="line-clamp-2">{customer.address || 'Chưa cập nhật địa chỉ'}</span>
+                </p>
+              </div>
+              <div className="mt-3 border-t border-slate-100 pt-3">
+                <div className="mb-2 flex items-center justify-between">
                   <p className="text-xs text-slate-500 flex items-center gap-1">
-                    {customer.type === 'loyal' ? <Crown className="h-3 w-3 text-amber-600" /> : null}
-                    {customer.type === 'loyal' ? 'Khách VIP' : 'Khách lẻ'}
+                    <DollarSign className="h-3.5 w-3.5 text-sky-600" />
+                    Tổng chi tiêu
+                  </p>
+                  <p className="text-sm font-semibold text-sky-700 tabular-nums">
+                    {formatCurrency(customerSpendingMap.get(customer.id) || 0)}
                   </p>
                 </div>
-              </div>
-              <ChevronRight className="h-4 w-4 text-slate-400" />
-            </div>
-            <div className="space-y-2 text-sm text-slate-600">
-              <p className="flex items-center gap-2">
-                <Phone className="h-4 w-4 text-slate-400" />
-                {customer.phone}
-              </p>
-              <p className="flex items-start gap-2">
-                <MapPin className="mt-[2px] h-4 w-4 text-slate-400" />
-                <span className="line-clamp-2">{customer.address || 'Chưa cập nhật địa chỉ'}</span>
-              </p>
-            </div>
-            <div className="mt-3 border-t border-slate-100 pt-3">
-              <div className="mb-2 flex items-center justify-between">
                 <p className="text-xs text-slate-500 flex items-center gap-1">
-                  <DollarSign className="h-3.5 w-3.5 text-sky-600" />
-                  Tổng chi tiêu
+                  <Wallet className="h-3.5 w-3.5 text-slate-500" />
+                  Dư nợ
                 </p>
-                <p className="text-sm font-semibold text-sky-700 tabular-nums">
+                <p className={`text-base font-semibold ${customer.totalDebt > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
+                  {formatCurrency(customer.totalDebt)}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Tạo bởi: {customer.createdByName || customer.createdBy || 'N/A'}
+                </p>
+              </div>
+            </button>
+          ))}
+        </section>
+      ) : (
+        <section className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+          <div className="hidden grid-cols-[1.6fr_1fr_1fr_1fr_auto] gap-3 border-b border-slate-100 px-4 py-3 text-xs text-slate-500 md:grid">
+            <p>Khách hàng</p>
+            <p>Số điện thoại</p>
+            <p className="text-right">Tổng chi tiêu</p>
+            <p className="text-right">Dư nợ</p>
+            <p className="text-right">Chi tiết</p>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {pagedCustomers.map((customer) => (
+              <button
+                key={customer.id}
+                className="w-full p-4 text-left hover:bg-slate-50 md:grid md:grid-cols-[1.6fr_1fr_1fr_1fr_auto] md:items-center md:gap-3"
+                onClick={() => navigate(`/app/customers/${customer.id}`)}
+              >
+                <div className="mb-2 md:mb-0">
+                  <p className="text-sm font-semibold text-slate-900">{customer.name}</p>
+                  <p className="text-xs text-slate-500">{customer.type === 'loyal' ? 'Khách VIP' : 'Khách lẻ'}</p>
+                </div>
+                <p className="mb-2 text-sm text-slate-700 md:mb-0">{customer.phone}</p>
+                <p className="mb-2 text-sm font-semibold text-sky-700 tabular-nums md:mb-0 md:text-right">
                   {formatCurrency(customerSpendingMap.get(customer.id) || 0)}
                 </p>
-              </div>
-              <p className="text-xs text-slate-500 flex items-center gap-1">
-                <Wallet className="h-3.5 w-3.5 text-slate-500" />
-                Dư nợ
-              </p>
-              <p className={`text-base font-semibold ${customer.totalDebt > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
-                {formatCurrency(customer.totalDebt)}
-              </p>
-              <p className="mt-1 text-xs text-slate-500">
-                Tạo bởi: {customer.createdByName || customer.createdBy || 'N/A'}
-              </p>
-            </div>
-          </button>
-        ))}
-      </section>
+                <p className={`mb-2 text-sm font-semibold tabular-nums md:mb-0 md:text-right ${customer.totalDebt > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
+                  {formatCurrency(customer.totalDebt)}
+                </p>
+                <div className="flex justify-end">
+                  <ChevronRight className="h-4 w-4 text-slate-400" />
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
 
       {filteredCustomers.length === 0 && (
         <div className="rounded-lg border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">

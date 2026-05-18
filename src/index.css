@@ -94,6 +94,34 @@
 }
 
 @layer utilities {
+  .control-md {
+    @apply h-10 rounded-lg text-sm;
+  }
+
+  .control-lg {
+    @apply h-11 rounded-lg text-sm;
+  }
+
+  .status-chip {
+    @apply inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium;
+  }
+
+  .status-chip-success {
+    @apply bg-emerald-100 text-emerald-700;
+  }
+
+  .status-chip-warning {
+    @apply bg-orange-100 text-orange-700;
+  }
+
+  .status-chip-danger {
+    @apply bg-rose-100 text-rose-700;
+  }
+
+  .status-chip-info {
+    @apply bg-sky-100 text-sky-700;
+  }
+
   .brand-surface {
     @apply bg-white border border-slate-200 shadow-sm;
   }
@@ -123,7 +151,7 @@
   }
 
   .text-page-title {
-    @apply text-[2rem] leading-tight font-semibold text-slate-900;
+    @apply text-2xl md:text-3xl leading-tight font-semibold text-slate-900;
   }
 
   .text-page-subtitle {

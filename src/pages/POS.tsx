@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Product, Customer, PaymentMethod, InvoiceItem, Invoice } from '../types';
 import { formatCurrency } from '../lib/utils';
-import { Search, X, CheckCircle, ShoppingCart, Users, Wallet, TrendingUp, Package, Printer, ChevronRight, AlertCircle, Plus, MapPin, Phone, User } from 'lucide-react';
+import { Search, X, CheckCircle, ShoppingCart, Wallet, TrendingUp, Package, Printer, ChevronRight, AlertCircle, Plus, MapPin, Phone, User, ScanLine, Camera } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { toPng } from 'html-to-image';
@@ -36,6 +36,8 @@ export default function POS() {
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [newCustomer, setNewCustomer] = useState({ name: '', phone: '', address: '' });
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
+  const [mobileSortKey, setMobileSortKey] = useState<'default' | 'price_asc' | 'price_desc' | 'stock_asc' | 'stock_desc' | 'name_asc'>('default');
+  const [mobileStockFilter, setMobileStockFilter] = useState<'all' | 'in_stock' | 'low_stock' | 'out_of_stock'>('all');
   const [cart, setCart] = useState<CartLine[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
@@ -52,9 +54,18 @@ export default function POS() {
   const [formError, setFormError] = useState('');
   const [lastAddedProductId, setLastAddedProductId] = useState<string | null>(null);
   const [cartPulse, setCartPulse] = useState(false);
+  const [showScannerModal, setShowScannerModal] = useState(false);
+  const [scanError, setScanError] = useState('');
+  const [scanHint, setScanHint] = useState('');
+  const [mobileCartOpen, setMobileCartOpen] = useState(false);
   const isCashier = currentUser?.role === 'cashier';
 
   const invoiceRef = useRef<HTMLDivElement>(null);
+  const scannerVideoRef = useRef<HTMLVideoElement>(null);
+  const scannerStreamRef = useRef<MediaStream | null>(null);
+  const scannerIntervalRef = useRef<number | null>(null);
+  const scannerBufferRef = useRef('');
+  const scannerLastKeyTimeRef = useRef(0);
   const addedPulseTimerRef = useRef<number | null>(null);
   const cartPulseTimerRef = useRef<number | null>(null);
   const draftStorageKey = activeTenant?.id ? `tdpos_pos_drafts_${activeTenant.id}` : 'tdpos_pos_drafts';
@@ -85,13 +96,47 @@ export default function POS() {
   }, [appCategories]);
 
   const filteredProducts = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase();
     return products.filter(p => {
-      const matchSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          p.sku.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchSearch =
+        !keyword ||
+        p.name.toLowerCase().includes(keyword) ||
+        p.sku.toLowerCase().includes(keyword) ||
+        (p.barcode || '').toLowerCase().includes(keyword);
       const matchCategory = selectedCategory === 'All' || p.category === selectedCategory;
       return matchSearch && matchCategory;
     });
   }, [products, searchTerm, selectedCategory]);
+
+  const mobileVisibleProducts = useMemo(() => {
+    const rows = filteredProducts.filter((p) => {
+      if (mobileStockFilter === 'all') return true;
+      if (mobileStockFilter === 'in_stock') return p.stock > p.lowStockThreshold;
+      if (mobileStockFilter === 'low_stock') return p.stock > 0 && p.stock <= p.lowStockThreshold;
+      return p.stock <= 0;
+    });
+
+    switch (mobileSortKey) {
+      case 'price_asc':
+        rows.sort((a, b) => a.sellingPrice - b.sellingPrice);
+        break;
+      case 'price_desc':
+        rows.sort((a, b) => b.sellingPrice - a.sellingPrice);
+        break;
+      case 'stock_asc':
+        rows.sort((a, b) => a.stock - b.stock);
+        break;
+      case 'stock_desc':
+        rows.sort((a, b) => b.stock - a.stock);
+        break;
+      case 'name_asc':
+        rows.sort((a, b) => a.name.localeCompare(b.name, 'vi'));
+        break;
+      default:
+        break;
+    }
+    return rows;
+  }, [filteredProducts, mobileSortKey, mobileStockFilter]);
 
   const filteredCustomers = useMemo(() => {
     if (!customerSearchTerm) return [];
@@ -106,6 +151,28 @@ export default function POS() {
     const lowStockCount = products.filter((p) => p.stock > 0 && p.stock <= p.lowStockThreshold).length;
     return { total: products.length, inStockCount, lowStockCount };
   }, [products]);
+
+  const findProductByScanCode = (rawCode: string) => {
+    const code = rawCode.trim().toLowerCase();
+    if (!code) return null;
+    return (
+      products.find((p) => (p.barcode || '').trim().toLowerCase() === code) ||
+      products.find((p) => p.sku.trim().toLowerCase() === code) ||
+      null
+    );
+  };
+
+  const handleScannedCode = (code: string) => {
+    const matched = findProductByScanCode(code);
+    if (!matched) {
+      setSearchTerm(code);
+      setScanHint(`Không tìm thấy mã: ${code}`);
+      return;
+    }
+    addToCart(matched);
+    setSearchTerm(matched.name);
+    setScanHint(`Đã thêm: ${matched.name}`);
+  };
 
   const addToCart = (product: Product) => {
     if (product.stock <= 0) return;
@@ -241,6 +308,7 @@ export default function POS() {
     setOrderDiscountValue(0);
     setStep('cart');
     setActiveOrderTab('live');
+    setMobileCartOpen(false);
   };
 
   const handleCheckout = () => {
@@ -347,25 +415,133 @@ export default function POS() {
     window.print();
   };
 
+  const stopCameraScanner = () => {
+    if (scannerIntervalRef.current) {
+      window.clearInterval(scannerIntervalRef.current);
+      scannerIntervalRef.current = null;
+    }
+    if (scannerStreamRef.current) {
+      scannerStreamRef.current.getTracks().forEach((t) => t.stop());
+      scannerStreamRef.current = null;
+    }
+  };
+
+  const closeScannerModal = () => {
+    stopCameraScanner();
+    setShowScannerModal(false);
+  };
+
+  const openCameraScanner = async () => {
+    setScanError('');
+    setScanHint('');
+    if (!('BarcodeDetector' in window)) {
+      setScanError('Thiết bị chưa hỗ trợ BarcodeDetector. Vui lòng dùng máy quét mã vạch hoặc Chrome mới.');
+      setShowScannerModal(true);
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } }
+      });
+      scannerStreamRef.current = stream;
+      setShowScannerModal(true);
+      window.setTimeout(() => {
+        if (scannerVideoRef.current) {
+          scannerVideoRef.current.srcObject = stream;
+          void scannerVideoRef.current.play();
+        }
+      }, 40);
+    } catch {
+      setScanError('Không mở được camera. Hãy cấp quyền camera hoặc dùng máy quét mã vạch.');
+      setShowScannerModal(true);
+    }
+  };
+
+  useEffect(() => {
+    if (!showScannerModal || !scannerVideoRef.current || !('BarcodeDetector' in window)) return;
+    const detector = new (window as any).BarcodeDetector({
+      formats: ['ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e', 'qr_code'],
+    });
+
+    scannerIntervalRef.current = window.setInterval(async () => {
+      try {
+        if (!scannerVideoRef.current) return;
+        const barcodes = await detector.detect(scannerVideoRef.current);
+        if (barcodes?.length) {
+          const code = barcodes[0]?.rawValue || '';
+          if (code) {
+            handleScannedCode(code);
+            closeScannerModal();
+          }
+        }
+      } catch {
+        // ignore frame-level detect error
+      }
+    }, 320);
+
+    return () => {
+      if (scannerIntervalRef.current) {
+        window.clearInterval(scannerIntervalRef.current);
+        scannerIntervalRef.current = null;
+      }
+    };
+  }, [showScannerModal, products]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTypingField =
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        (target as HTMLElement)?.isContentEditable;
+      if (isTypingField) return;
+
+      const now = Date.now();
+      if (now - scannerLastKeyTimeRef.current > 70) {
+        scannerBufferRef.current = '';
+      }
+      scannerLastKeyTimeRef.current = now;
+
+      if (event.key === 'Enter') {
+        const code = scannerBufferRef.current.trim();
+        scannerBufferRef.current = '';
+        if (code.length >= 3) {
+          handleScannedCode(code);
+        }
+        return;
+      }
+
+      if (event.key.length === 1) {
+        scannerBufferRef.current += event.key;
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [products]);
+
+  useEffect(() => () => stopCameraScanner(), []);
+
   if (step === 'success') {
     return (
       <div className="flex h-full flex-col items-center justify-center p-8 bg-slate-50 text-center animate-in fade-in zoom-in duration-300">
         <div className="h-28 w-28 rounded-full bg-sky-100 flex items-center justify-center mb-8 shadow-sm ring-4 ring-sky-50">
           <CheckCircle className="h-14 w-14 text-sky-600" />
         </div>
-        <h2 className="text-4xl font-black text-slate-900 font-display mb-3 tracking-tighter uppercase">Thành công!</h2>
-        <p className="text-slate-500 font-medium mb-10 text-lg">Mã hóa đơn <span className="text-sky-700 font-bold">{lastInvoiceId}</span> đã được ghi nhận.</p>
+        <h2 className="text-3xl font-semibold text-slate-900 mb-3">Thanh toán thành công</h2>
+        <p className="text-slate-500 mb-10 text-base">Mã hóa đơn <span className="text-sky-700 font-semibold">{lastInvoiceId}</span> đã được ghi nhận.</p>
         
         <div className="flex flex-col gap-4 w-full max-w-sm">
           <Button 
-            className="h-16 rounded-lg bg-sky-600 hover:bg-sky-700 shadow-2xl shadow-sky-900/40 font-black text-xl uppercase tracking-widest transition-all hover:scale-105 active:scale-95" 
+            className="h-14 rounded-lg bg-sky-600 hover:bg-sky-700 shadow-xl shadow-sky-900/30 text-base font-semibold transition-all hover:scale-[1.01] active:scale-100" 
             onClick={() => setShowInvoice(true)}
           >
             <Printer className="mr-2 h-6 w-6" /> Xuất hóa đơn
           </Button>
           <Button 
             variant="ghost" 
-            className="h-14 rounded-lg text-slate-400 font-black uppercase tracking-widest hover:text-slate-900" 
+            className="h-12 rounded-lg text-slate-500 font-medium hover:text-slate-900" 
             onClick={resetPOS}
           >
             Bán đơn tiếp theo
@@ -391,25 +567,35 @@ export default function POS() {
 
   if (step === 'payment') {
     return (
-      <div className="flex flex-col h-full bg-slate-50">
-        <div className="p-6 glass flex items-center justify-between sticky top-0 z-40 border-b border-sky-100/30">
-          <Button variant="ghost" size="sm" onClick={() => setStep('cart')} className="h-12 px-6 rounded-lg font-black text-slate-500 uppercase tracking-widest hover:text-sky-700 flex items-center gap-2">
+      <div className="flex h-full flex-col bg-slate-900/5 lg:bg-slate-50">
+        <div className="hidden p-6 lg:flex items-center justify-between sticky top-0 z-40 border-b border-sky-100/30 bg-white">
+          <Button variant="ghost" size="sm" onClick={() => setStep('cart')} className="h-11 px-5 rounded-lg font-medium text-slate-600 hover:text-sky-700 flex items-center gap-2">
             <ChevronRight className="h-5 w-5 rotate-180" /> Trở lại
           </Button>
-          <h2 className="font-black text-slate-900 font-display text-xl tracking-tight uppercase">Thanh toán</h2>
+          <h2 className="font-semibold text-slate-900 text-lg">Thanh toán</h2>
           <div className="h-10 w-10"></div>
         </div>
-        
-        <div className="p-6 flex-1 overflow-y-auto space-y-10 max-w-2xl mx-auto w-full animate-in slide-in-from-bottom-4 duration-500">
+
+        <div className="relative flex-1">
+          <div className="absolute inset-0 overflow-y-auto lg:static lg:inset-auto lg:p-6 lg:space-y-10 lg:max-w-2xl lg:mx-auto lg:w-full lg:animate-in lg:slide-in-from-bottom-4 lg:duration-500">
+            <div className="mt-3 rounded-t-2xl border border-slate-200 bg-white p-4 shadow-xl lg:mt-0 lg:rounded-lg lg:p-6 lg:shadow-none">
+              <div className="mb-4 flex items-center justify-between lg:hidden">
+                <Button variant="ghost" size="sm" onClick={() => setStep('cart')} className="h-9 px-3 rounded-lg font-medium text-slate-600 hover:text-sky-700 flex items-center gap-1.5">
+                  <ChevronRight className="h-4 w-4 rotate-180" /> Trở lại
+                </Button>
+                <h2 className="font-semibold text-slate-900">Thanh toán</h2>
+                <div className="w-14" />
+              </div>
+
         {formError && (
           <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
             {formError}
           </div>
         )}
-        <div className="bg-white p-6 rounded-lg shadow-xl shadow-sky-900/5 border border-white flex flex-col sm:flex-row justify-between items-center gap-6">
+        <div className="bg-slate-50 p-4 lg:p-6 rounded-lg border border-slate-200 flex flex-col sm:flex-row justify-between items-center gap-6">
             <div className="space-y-1 text-center sm:text-left">
-              <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.3em] leading-none mb-1">Tổng cộng hóa đơn</p>
-              <div className="text-3xl font-black text-sky-700 font-display tabular-nums tracking-tighter leading-none">{formatCurrency(finalAmount)}</div>
+              <p className="text-xs font-medium text-slate-500 leading-none mb-1">Khách cần trả</p>
+              <div className="text-3xl font-semibold text-sky-700 tabular-nums leading-none">{formatCurrency(finalAmount)}</div>
               {orderDiscountAmount > 0 && (
                 <p className="text-xs text-emerald-700">Giảm: {formatCurrency(orderDiscountAmount)}</p>
               )}
@@ -420,12 +606,12 @@ export default function POS() {
           </div>
 
           <div className="space-y-6">
-            <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] pl-6">Xác nhận khách hàng</h3>
+            <h3 className="text-xs font-medium text-slate-500 pl-1">Khách hàng</h3>
             <div className="relative">
               <div className="relative group">
                 <Search className="absolute left-6 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-300 group-focus-within:text-sky-600 transition-colors" />
                 <Input 
-                   className="h-14 pl-14 pr-12 rounded-lg border-none bg-white shadow-lg shadow-sky-900/5 ring-1 ring-slate-100 focus:ring-4 focus:ring-sky-500/20 transition-all font-bold text-slate-900 text-lg placeholder:text-slate-300 placeholder:font-black placeholder:uppercase placeholder:tracking-widest" 
+                   className="h-12 pl-12 pr-12 rounded-lg border border-slate-200 bg-white focus:ring-2 focus:ring-sky-500/20 transition-all font-medium text-slate-900 text-sm placeholder:text-slate-400" 
                    placeholder="Tìm theo tên hoặc số điện thoại"
                    value={customerSearchTerm}
                    onChange={(e) => {
@@ -462,8 +648,8 @@ export default function POS() {
                           }}
                         >
                           <div>
-                            <div className="font-black text-slate-900 uppercase italic tracking-tight">{c.name}</div>
-                            <div className="text-[10px] font-bold text-slate-400 font-mono">{c.phone}</div>
+                            <div className="font-semibold text-slate-900">{c.name}</div>
+                            <div className="text-xs text-slate-500">{c.phone}</div>
                           </div>
                           <div className="h-8 w-8 rounded-lg bg-slate-50 text-slate-300 flex items-center justify-center group-hover:bg-sky-600 group-hover:text-white transition-all">
                             <ChevronRight className="h-4 w-4" />
@@ -472,7 +658,7 @@ export default function POS() {
                       ))}
                     </div>
                   ) : (
-                    <div className="p-8 text-center text-slate-300 font-black uppercase tracking-widest text-[9px]">
+                    <div className="p-8 text-center text-slate-400 text-xs">
                       Không tìm thấy khách hàng
                     </div>
                   )}
@@ -483,14 +669,14 @@ export default function POS() {
                 <div className="mt-4 flex flex-col gap-4">
                   <div className="flex items-center gap-3 px-6">
                     <div className="h-2 w-2 rounded-full bg-slate-200 animate-pulse" />
-                    <p className="text-[9px] font-black text-slate-300 uppercase tracking-widest">Đang mặc định: Khách vãng lai</p>
+                    <p className="text-xs text-slate-500">Mặc định: Khách vãng lai</p>
                   </div>
                   
                   {!showAddCustomer && (
                     <Button 
                       onClick={() => setShowAddCustomer(true)}
                       disabled={isCashier}
-                      className="mx-6 h-12 rounded-lg bg-slate-100 hover:bg-sky-50 text-slate-600 hover:text-sky-700 border-none shadow-none font-black text-[10px] uppercase tracking-widest gap-2"
+                      className="mx-6 h-11 rounded-lg bg-slate-100 hover:bg-sky-50 text-slate-600 hover:text-sky-700 border-none shadow-none text-sm gap-2"
                     >
                       <Plus className="h-4 w-4" />
                       <span>Thêm khách hàng mới</span>
@@ -502,7 +688,7 @@ export default function POS() {
               {showAddCustomer && (
                 <div className="mt-4 bg-sky-50/50 rounded-lg p-6 border border-sky-100/50 space-y-4 animate-in slide-in-from-top-4 duration-500">
                   <div className="flex justify-between items-center px-2">
-                    <h4 className="text-[10px] font-black text-sky-800 uppercase tracking-widest">Đăng ký khách mới</h4>
+                    <h4 className="text-xs font-semibold text-sky-800">Đăng ký khách mới</h4>
                     <button onClick={() => setShowAddCustomer(false)} className="text-sky-400 hover:text-red-500 transition-colors">
                       <X className="h-4 w-4" />
                     </button>
@@ -536,7 +722,7 @@ export default function POS() {
                       />
                     </div>
                     <Button 
-                      className="w-full h-14 rounded-lg bg-sky-600 hover:bg-sky-700 font-black text-white uppercase tracking-widest shadow-lg shadow-sky-900/20"
+                      className="w-full h-12 rounded-lg bg-sky-600 hover:bg-sky-700 font-semibold text-white shadow-lg shadow-sky-900/20"
                       onClick={handleCreateCustomer}
                     >
                       Lưu & Chọn khách hàng
@@ -561,8 +747,8 @@ export default function POS() {
                      <AlertCircle className="h-6 w-6" />
                    </div>
                    <div>
-                     <span className="text-[10px] font-black text-orange-800 uppercase tracking-widest block opacity-50 mb-1">Số dư nợ cũ</span>
-                     <span className="font-black text-2xl text-orange-600 tabular-nums tracking-tighter">{formatCurrency(selectedCustomer.totalDebt)}</span>
+                     <span className="text-xs font-medium text-orange-800 block opacity-70 mb-1">Số dư nợ cũ</span>
+                     <span className="font-semibold text-2xl text-orange-600 tabular-nums">{formatCurrency(selectedCustomer.totalDebt)}</span>
                    </div>
                  </div>
                </div>
@@ -570,7 +756,7 @@ export default function POS() {
           </div>
 
           <div className="space-y-4">
-            <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] pl-6">Hình thức thanh toán</h3>
+            <h3 className="text-xs font-medium text-slate-500 pl-1">Hình thức thanh toán</h3>
             <div className="grid grid-cols-3 gap-3 px-2">
               <button
                 onClick={() => setPaymentMethod('cash')}
@@ -583,7 +769,7 @@ export default function POS() {
                 <div className={`p-3 rounded-lg transition-all duration-500 ${paymentMethod === 'cash' ? 'bg-sky-600 text-white shadow-md' : 'bg-slate-50'}`}>
                   <CheckCircle className="h-5 w-5" />
                 </div>
-                <span className="font-black text-[10px] uppercase tracking-tight">Tiền mặt</span>
+                <span className="font-medium text-xs">Tiền mặt</span>
               </button>
               
               <button
@@ -597,7 +783,7 @@ export default function POS() {
                 <div className={`p-3 rounded-lg transition-all duration-500 ${paymentMethod === 'transfer' ? 'bg-sky-600 text-white shadow-md' : 'bg-slate-50'}`}>
                   <TrendingUp className="h-5 w-5" />
                 </div>
-                <span className="font-black text-[10px] uppercase tracking-tight">Chuyển khoản</span>
+                <span className="font-medium text-xs">Chuyển khoản</span>
               </button>
 
               <button
@@ -612,23 +798,24 @@ export default function POS() {
                 <div className={`p-3 rounded-lg transition-all duration-500 ${paymentMethod === 'debt' ? 'bg-orange-600 text-white shadow-md' : 'bg-slate-50'}`}>
                   <Wallet className="h-5 w-5" />
                 </div>
-                <span className="font-black text-[10px] uppercase tracking-tight">Ghi nợ</span>
+                <span className="font-medium text-xs">Ghi nợ</span>
               </button>
             </div>
             
             {paymentMethod === 'debt' && !selectedCustomer && (
               <div className="mx-2 bg-orange-50 border border-orange-100 p-4 rounded-lg flex items-center gap-3 animate-bounce">
                 <AlertCircle className="h-5 w-5 text-orange-600 shrink-0" />
-                <p className="text-orange-700 text-[9px] font-black uppercase tracking-widest leading-tight">Vui lòng chọn khách hàng để ghi nợ!</p>
-              </div>
-            )}
+                <p className="text-orange-700 text-xs font-medium leading-tight">Vui lòng chọn khách hàng để ghi nợ.</p>
+            </div>
+          )}
           </div>
         </div>
+        </div>
 
-        <div className="p-4 sm:p-6 bg-white/80 backdrop-blur-xl border-t border-slate-100 fixed bottom-0 left-0 right-0 z-50 shadow-[0_-10px_40px_rgba(0,0,0,0.05)]">
+        <div className="p-4 sm:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-100 fixed bottom-0 left-0 right-0 z-50 shadow-[0_-10px_40px_rgba(0,0,0,0.05)]">
           <div className="max-w-2xl mx-auto">
             <Button 
-              className="w-full h-14 sm:h-16 text-lg sm:text-xl font-black rounded-lg sm:rounded-lg shadow-xl shadow-sky-900/30 bg-sky-600 hover:bg-sky-700 active:scale-[0.98] transition-all uppercase tracking-[0.15em] group relative overflow-hidden" 
+              className="w-full h-12 sm:h-14 text-base sm:text-lg font-semibold rounded-lg shadow-xl shadow-sky-900/30 bg-sky-600 hover:bg-sky-700 active:scale-[0.98] transition-all group relative overflow-hidden" 
               onClick={handleCheckout}
               disabled={paymentMethod === 'debt' && !selectedCustomer}
             >
@@ -637,15 +824,44 @@ export default function POS() {
             </Button>
           </div>
         </div>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="flex flex-col h-full lg:flex-row bg-slate-50 overflow-y-auto lg:overflow-hidden font-sans relative">
+      {showScannerModal && (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-slate-900/70 p-4">
+          <div className="w-full max-w-md rounded-lg bg-white border border-slate-200 shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-base font-semibold text-slate-900">Quét mã vạch</h3>
+              <button onClick={closeScannerModal} className="text-slate-400 hover:text-slate-700">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="rounded-lg bg-slate-950 overflow-hidden aspect-video flex items-center justify-center">
+                {scanError ? (
+                  <div className="px-4 text-center text-sm text-rose-300">{scanError}</div>
+                ) : (
+                  <video ref={scannerVideoRef} className="h-full w-full object-cover" muted playsInline />
+                )}
+              </div>
+              <p className="text-xs text-slate-500">
+                Đưa mã vạch vào giữa khung để tự động thêm vào giỏ.
+              </p>
+              <Button variant="outline" className="w-full" onClick={closeScannerModal}>
+                Đóng
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Product List Section */}
       <div className="w-full lg:flex-1 flex flex-col min-h-0 border-b lg:border-b-0 lg:border-r border-slate-200/50 bg-slate-50 relative shrink-0">
-        <div className="p-3 sm:p-5 space-y-3 bg-white/95 backdrop-blur-xl sticky top-0 z-40 border-b border-slate-200 shadow-sm shrink-0">
+        <div className="p-3 sm:p-4 space-y-3 bg-white sticky top-0 z-40 border-b border-slate-200 shadow-sm shrink-0">
           <div className="hidden lg:flex items-center justify-between gap-4 pb-2">
             <div className="flex items-center gap-4">
               <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-sky-600 text-white shadow-lg">
@@ -670,25 +886,37 @@ export default function POS() {
             </div>
           </div>
 
-          <div className="relative group">
-            <Search className="absolute left-5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-sky-600 transition-colors" />
-            <Input 
-              className="h-10 sm:h-12 pl-12 rounded-lg border-none bg-slate-100/50 shadow-inner focus:ring-4 focus:ring-sky-500/10 transition-all font-bold text-xs sm:text-sm placeholder:text-slate-300 placeholder:font-black placeholder:uppercase placeholder:tracking-widest" 
-              placeholder="Quét mã hoặc tìm sản phẩm" 
-              value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
-            />
+          <div className="flex gap-2">
+            <div className="relative group flex-1">
+              <Search className="absolute left-5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-sky-600 transition-colors" />
+              <Input 
+                className="h-10 sm:h-11 pl-12 rounded-lg border border-slate-200 bg-white focus:ring-4 focus:ring-sky-500/10 transition-all font-medium text-sm placeholder:text-slate-400" 
+                placeholder="Quét mã hoặc tìm sản phẩm" 
+                value={searchTerm}
+                onChange={e => setSearchTerm(e.target.value)}
+              />
+            </div>
+            <Button
+              onClick={openCameraScanner}
+              variant="outline"
+              className="h-10 sm:h-11 px-3 sm:px-4 rounded-lg border-slate-200 bg-white text-slate-700"
+              title="Quét bằng camera"
+            >
+              <Camera className="h-4 w-4 sm:h-5 sm:w-5" />
+              <ScanLine className="h-4 w-4 sm:h-5 sm:w-5 ml-1" />
+            </Button>
           </div>
+          {scanHint && <p className="text-xs text-sky-700">{scanHint}</p>}
 
           <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none no-scrollbar">
             {categories.map(cat => (
               <button
                 key={cat}
                 onClick={() => setSelectedCategory(cat)}
-                className={`h-8 sm:h-10 px-4 sm:px-6 rounded-lg sm:rounded-lg font-black whitespace-nowrap transition-all text-[8px] sm:text-[9px] uppercase tracking-widest shadow-sm shrink-0 ${
+                className={`h-8 sm:h-9 px-4 sm:px-5 rounded-lg font-medium whitespace-nowrap transition-all text-xs shadow-sm shrink-0 ${
                   selectedCategory === cat 
-                  ? 'bg-sky-600 text-white shadow-xl shadow-sky-900/20 ring-4 ring-sky-50' 
-                  : 'bg-white text-slate-400 hover:bg-slate-50 ring-1 ring-slate-100'
+                  ? 'bg-sky-600 text-white shadow-md' 
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
               >
                 {cat === 'All' ? 'Tất cả' : cat}
@@ -697,8 +925,92 @@ export default function POS() {
           </div>
         </div>
         
-        <div className="flex-1 lg:overflow-y-auto p-3 sm:p-6">
-          <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3 sm:gap-6">
+        <div className="flex-1 lg:overflow-y-auto p-3 pb-28 sm:p-4 sm:pb-28 lg:pb-4">
+          <div className="mb-2 grid grid-cols-2 gap-2 lg:hidden">
+            <select
+              value={mobileSortKey}
+              onChange={(e) => setMobileSortKey(e.target.value as any)}
+              className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700"
+            >
+              <option value="default">Sắp xếp mặc định</option>
+              <option value="name_asc">Tên A → Z</option>
+              <option value="price_asc">Giá thấp → cao</option>
+              <option value="price_desc">Giá cao → thấp</option>
+              <option value="stock_asc">Tồn thấp → cao</option>
+              <option value="stock_desc">Tồn cao → thấp</option>
+            </select>
+            <select
+              value={mobileStockFilter}
+              onChange={(e) => setMobileStockFilter(e.target.value as any)}
+              className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700"
+            >
+              <option value="all">Tất cả tồn kho</option>
+              <option value="in_stock">Còn hàng</option>
+              <option value="low_stock">Sắp hết</option>
+              <option value="out_of_stock">Hết hàng</option>
+            </select>
+          </div>
+
+          <div className="space-y-2 lg:hidden">
+            {mobileVisibleProducts.map((product) => {
+              const inCart = cart.find((line) => line.productId === product.id);
+              const isOutOfStock = product.stock <= 0;
+              const isLowStock = product.stock > 0 && product.stock <= product.lowStockThreshold;
+              return (
+                <div key={product.id} className={`rounded-lg border bg-white p-3 ${isOutOfStock ? 'border-slate-200 opacity-60' : 'border-slate-200'}`}>
+                  <div className="flex items-start gap-3">
+                    <div className="h-14 w-14 shrink-0 overflow-hidden rounded-md bg-slate-100">
+                      {product.imageUrl ? (
+                        <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover" />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-xs text-slate-400">SP</div>
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-slate-900">{product.name}</p>
+                      <p className="text-xs text-slate-500">{product.sku}</p>
+                      <div className="mt-1 flex items-center gap-2">
+                        <span className="text-sm font-semibold text-sky-700 tabular-nums">{formatCurrency(product.sellingPrice)}</span>
+                        <span className={`status-chip ${isOutOfStock ? 'status-chip-danger' : isLowStock ? 'status-chip-warning' : 'status-chip-info'}`}>
+                          {isOutOfStock ? 'Hết hàng' : `${product.stock} ${product.unit}`}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex items-center justify-end">
+                    {inCart ? (
+                      <div className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-50 p-1">
+                        <button
+                          onClick={() => updateQuantity(product.id, -1)}
+                          className="h-8 w-8 rounded-md text-slate-500 hover:bg-white"
+                        >
+                          -
+                        </button>
+                        <span className="w-8 text-center text-sm font-semibold text-slate-900 tabular-nums">{inCart.quantity}</span>
+                        <button
+                          onClick={() => updateQuantity(product.id, 1)}
+                          disabled={inCart.quantity >= inCart.maxStock}
+                          className="h-8 w-8 rounded-md bg-sky-600 text-white disabled:opacity-40"
+                        >
+                          +
+                        </button>
+                      </div>
+                    ) : (
+                      <Button
+                        className="h-9 px-3 text-sm"
+                        disabled={isOutOfStock}
+                        onClick={() => addToCart(product)}
+                      >
+                        Thêm
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="hidden lg:grid lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3 sm:gap-4">
             {filteredProducts.map(product => (
               <POSProductCard 
                 key={product.id}
@@ -721,21 +1033,21 @@ export default function POS() {
       </div>
 
       {/* Cart Section */}
-      <div className="w-full lg:w-[350px] xl:w-[380px] 2xl:w-[420px] flex flex-col min-h-0 bg-white relative lg:shadow-[-20px_0_60px_rgba(0,0,0,0.03)] z-40 shrink-0">
+      <div className="hidden w-full lg:flex lg:w-[350px] xl:w-[380px] 2xl:w-[420px] flex-col min-h-0 bg-white relative lg:shadow-[-20px_0_60px_rgba(0,0,0,0.03)] z-40 shrink-0">
         <div className="p-4 sm:p-8 border-b border-slate-50 flex justify-between items-center bg-white/80 backdrop-blur-xl lg:sticky lg:top-0 z-40 shrink-0">
           <div className="flex items-center gap-3 sm:gap-4">
             <div className={`h-8 w-8 sm:h-10 sm:w-10 rounded-lg sm:rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-lg shadow-sky-900/20 transition-transform duration-300 ${cartPulse ? 'scale-110' : 'scale-100'}`}>
               <ShoppingCart className="h-4 w-4 sm:h-5 sm:w-5" />
             </div>
             <div>
-              <h2 className="font-black text-slate-900 font-display tracking-tight text-base sm:text-lg uppercase leading-none">Giỏ hàng</h2>
-              <p className="text-[7px] sm:text-[8px] font-black text-slate-300 uppercase tracking-widest mt-1">{cart.length} sản phẩm</p>
+              <h2 className="font-semibold text-slate-900 tracking-tight text-base sm:text-lg leading-none">Giỏ hàng</h2>
+              <p className="text-xs text-slate-400 mt-1">{cart.length} sản phẩm</p>
             </div>
           </div>
           {cart.length > 0 && (
             <button 
               onClick={() => setCart([])} 
-              className="h-8 sm:h-10 px-3 sm:px-5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 font-black transition-all text-[8px] sm:text-[9px] uppercase tracking-widest ring-1 ring-slate-100"
+              className="h-8 sm:h-10 px-3 sm:px-5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 font-medium transition-all text-xs ring-1 ring-slate-100"
             >
               Xóa
             </button>
@@ -749,7 +1061,7 @@ export default function POS() {
                 <ShoppingCart className="h-10 w-10 sm:h-14 sm:w-14 opacity-5" />
               </div>
               <div className="space-y-1">
-                <p className="font-black text-slate-400 uppercase tracking-[0.2em] text-[8px] sm:text-[10px]">Giỏ đang trống</p>
+                <p className="font-medium text-slate-400 text-xs">Giỏ đang trống</p>
               </div>
             </div>
           ) : (
@@ -818,8 +1130,8 @@ export default function POS() {
           </div>
           <div className="flex justify-between items-end mb-4 sm:mb-6">
             <div className="space-y-1">
-              <p className="text-[7px] sm:text-[8px] font-black text-slate-400 uppercase tracking-[0.3em] pl-1 opacity-60">Phải thu</p>
-              <div className="text-xl sm:text-3xl font-black text-slate-900 font-display tabular-nums tracking-tighter leading-none">{formatCurrency(finalAmount)}</div>
+              <p className="text-xs font-medium text-slate-500 pl-1">Phải thu</p>
+              <div className="text-xl sm:text-3xl font-semibold text-slate-900 tabular-nums leading-none">{formatCurrency(finalAmount)}</div>
               {orderDiscountAmount > 0 && (
                 <p className="text-xs text-emerald-700">Đã giảm: {formatCurrency(orderDiscountAmount)}</p>
               )}
@@ -827,7 +1139,7 @@ export default function POS() {
             <Button variant="outline" className="h-10 text-sm" disabled={cart.length === 0} onClick={saveDraft}>Lưu đơn</Button>
           </div>
           <Button 
-            className="w-full h-12 sm:h-16 text-base sm:text-xl font-black rounded-lg sm:rounded-lg shadow-xl shadow-sky-900/20 bg-sky-600 hover:bg-sky-700 active:scale-[0.98] transition-all text-white uppercase tracking-widest group relative overflow-hidden" 
+            className="w-full h-12 sm:h-16 text-base sm:text-lg font-semibold rounded-lg sm:rounded-lg shadow-xl shadow-sky-900/20 bg-sky-600 hover:bg-sky-700 active:scale-[0.98] transition-all text-white group relative overflow-hidden" 
             disabled={cart.length === 0}
             onClick={() => setStep('payment')}
           >
@@ -837,6 +1149,98 @@ export default function POS() {
           </Button>
         </div>
       </div>
+
+      <div className="fixed inset-x-0 bottom-[calc(60px+env(safe-area-inset-bottom))] z-30 p-3 lg:hidden">
+        <button
+          onClick={() => setMobileCartOpen(true)}
+          className="flex w-full items-center justify-between rounded-lg border border-sky-500/20 bg-sky-600 px-4 py-3 text-white shadow-lg shadow-sky-900/25"
+        >
+          <div className="flex items-center gap-2">
+            <ShoppingCart className="h-4 w-4" />
+            <span className="text-sm font-semibold">Giỏ hàng ({cart.length})</span>
+          </div>
+          <span className="text-sm font-semibold tabular-nums">{formatCurrency(finalAmount)}</span>
+        </button>
+      </div>
+
+      {mobileCartOpen && (
+        <div className="fixed inset-0 z-[120] lg:hidden">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setMobileCartOpen(false)} />
+          <div className="absolute inset-x-0 bottom-0 max-h-[88vh] rounded-t-2xl bg-white shadow-2xl">
+            <div className="mx-auto mt-2 h-1.5 w-12 rounded-full bg-slate-300" />
+            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">Giỏ hàng</h3>
+                <p className="text-xs text-slate-500">{cart.length} sản phẩm</p>
+              </div>
+              <button onClick={() => setMobileCartOpen(false)} className="rounded-md p-1 text-slate-500 hover:bg-slate-100">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="max-h-[52vh] overflow-y-auto p-3 space-y-2">
+              {cart.length === 0 ? (
+                <p className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">Giỏ đang trống.</p>
+              ) : (
+                cart.map((item) => (
+                  <POSCartItem
+                    key={item.productId}
+                    item={item}
+                    onUpdateQuantity={updateQuantity}
+                    onRemove={removeFromCart}
+                    onUpdateDiscount={updateLineDiscount}
+                  />
+                ))
+              )}
+            </div>
+
+            <div className="border-t border-slate-100 p-3 space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <select
+                  value={orderDiscountType}
+                  onChange={(e) => setOrderDiscountType(e.target.value as 'percent' | 'amount')}
+                  className="h-10 rounded-lg border border-slate-200 bg-white px-2 text-sm"
+                >
+                  <option value="amount">Giảm tổng (đ)</option>
+                  <option value="percent">Giảm tổng (%)</option>
+                </select>
+                <Input
+                  type="number"
+                  value={orderDiscountValue || ''}
+                  onChange={(e) => setOrderDiscountValue(Number(e.target.value))}
+                  placeholder="Giảm giá đơn"
+                  className="h-10 text-sm"
+                />
+                <Input
+                  value={orderNote}
+                  onChange={(e) => setOrderNote(e.target.value)}
+                  placeholder="Ghi chú đơn"
+                  className="col-span-2 h-10 text-sm"
+                />
+              </div>
+              <div className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2">
+                <span className="text-sm text-slate-600">Phải thu</span>
+                <span className="text-lg font-semibold text-slate-900 tabular-nums">{formatCurrency(finalAmount)}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="outline" className="h-11" disabled={cart.length === 0} onClick={saveDraft}>
+                  Lưu đơn
+                </Button>
+                <Button
+                  className="h-11"
+                  disabled={cart.length === 0}
+                  onClick={() => {
+                    setMobileCartOpen(false);
+                    setStep('payment');
+                  }}
+                >
+                  Thanh toán
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
         @media print {

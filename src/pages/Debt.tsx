@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { Search, Wallet, ArrowDownCircle, ArrowUpCircle, AlertCircle, CheckCircle, ChevronRight, TrendingUp, X } from 'lucide-react';
+import { Search, Wallet, ArrowDownCircle, ArrowUpCircle, AlertCircle, CheckCircle, ChevronRight, TrendingUp, X, MessageCircleMore, Copy, ExternalLink, Tags } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { formatCurrency } from '../lib/utils';
-import { debtLedgerApi } from '../lib/api';
-import { DebtLedger } from '../types';
+import { customerCareApi, debtLedgerApi, customersApi } from '../lib/api';
+import { CustomerCareLog, DebtLedger } from '../types';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 export default function Debt() {
-  const { customers, refreshCustomers, activeTenant } = useApp();
+  const { customers, refreshCustomers, activeTenant, invoices } = useApp();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [searchTerm, setSearchTerm] = useState('');
@@ -18,6 +18,17 @@ export default function Debt() {
   const [ledgers, setLedgers] = useState<DebtLedger[]>([]);
   const [loadingLedgers, setLoadingLedgers] = useState(false);
   const [formError, setFormError] = useState('');
+  const [showZaloReminderModal, setShowZaloReminderModal] = useState(false);
+  const [zaloMessage, setZaloMessage] = useState('');
+  const [zaloDueDate, setZaloDueDate] = useState('');
+  const [zaloTargetCustomerId, setZaloTargetCustomerId] = useState('');
+  const [zaloTemplateType, setZaloTemplateType] = useState<'pre_due' | 'due_today' | 'overdue' | 'thanks_after_payment' | 'repurchase_invite' | 'new_arrival'>('due_today');
+  const [careLogs, setCareLogs] = useState<CustomerCareLog[]>([]);
+  const [loadingCareLogs, setLoadingCareLogs] = useState(false);
+  const [careFilter, setCareFilter] = useState<'all' | 'debt' | 'due_soon' | 'inactive_7' | 'inactive_30'>('all');
+  const [tagEditorCustomerId, setTagEditorCustomerId] = useState('');
+  const [tagInput, setTagInput] = useState('');
+  const [savingTags, setSavingTags] = useState(false);
   const [debtForm, setDebtForm] = useState({
     customerId: '',
     amount: 0,
@@ -63,10 +74,184 @@ export default function Debt() {
     }, 0);
   }, [activeTenant?.settings?.debtPolicy?.maxDebtDays, debtCustomers, ledgers]);
 
-  const filteredDebtCustomers = debtCustomers.filter(c => 
-    c.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    c.phone.includes(searchTerm)
+  const selectedZaloCustomer = useMemo(
+    () => customers.find((customer) => customer.id === zaloTargetCustomerId) || null,
+    [customers, zaloTargetCustomerId]
   );
+
+  const messageTemplates = useMemo(() => ({
+    pre_due: 'Dạ em chào anh/chị {ten_khach}. Em gửi nhắc nhẹ công nợ hiện tại của mình là {so_tien}, hạn thanh toán {ngay_han}. Khi tiện anh/chị hỗ trợ giúp em nhé. Em cảm ơn ạ.',
+    due_today: 'Dạ em chào anh/chị {ten_khach}. Hôm nay là hạn thanh toán công nợ {so_tien}. Anh/chị sắp xếp hỗ trợ giúp em trong hôm nay nhé. Em cảm ơn ạ.',
+    overdue: 'Dạ em chào anh/chị {ten_khach}. Công nợ {so_tien} đã quá hạn từ {ngay_han}. Anh/chị hỗ trợ thanh toán sớm giúp em để em đối soát ạ. Em cảm ơn.',
+    thanks_after_payment: 'Em cảm ơn anh/chị {ten_khach} đã thanh toán công nợ. Cửa hàng rất trân trọng sự đồng hành của anh/chị ạ.',
+    repurchase_invite: 'Dạ chào anh/chị {ten_khach}. Cửa hàng có chương trình ưu đãi cho khách thân thiết, em mời anh/chị ghé lại mua hàng nhé.',
+    new_arrival: 'Dạ chào anh/chị {ten_khach}. Bên em vừa có hàng mới phù hợp nhu cầu của anh/chị, em gửi thông tin để anh/chị tham khảo ạ.',
+  }), []);
+
+  const lastPurchaseByCustomer = useMemo(() => {
+    const map = new Map<string, string>();
+    invoices.forEach((invoice) => {
+      if (!invoice.customerId) return;
+      const existing = map.get(invoice.customerId);
+      if (!existing || new Date(invoice.createdAt).getTime() > new Date(existing).getTime()) {
+        map.set(invoice.customerId, invoice.createdAt);
+      }
+    });
+    return map;
+  }, [invoices]);
+
+  const withDerivedFields = useMemo(() => {
+    return customers.map((customer) => {
+      const dueDate = estimateDueDateForCustomer(customer.id);
+      const lastPurchase = lastPurchaseByCustomer.get(customer.id) || null;
+      const latestCare = careLogs.find((log) => log.customerId === customer.id) || null;
+      return { customer, dueDate, lastPurchase, latestCare };
+    });
+  }, [customers, careLogs, lastPurchaseByCustomer]);
+
+  const filteredDebtCustomers = withDerivedFields
+    .filter(({ customer, dueDate, lastPurchase }) => {
+      const matchesSearch =
+        customer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        customer.phone.includes(searchTerm);
+      if (!matchesSearch) return false;
+      if (careFilter === 'all') return customer.totalDebt > 0;
+      if (careFilter === 'debt') return customer.totalDebt > 0;
+      if (careFilter === 'due_soon') {
+        const due = new Date(dueDate).getTime();
+        const now = Date.now();
+        const in7Days = now + 7 * 24 * 60 * 60 * 1000;
+        return customer.totalDebt > 0 && due >= now && due <= in7Days;
+      }
+      if (careFilter === 'inactive_7') {
+        if (!lastPurchase) return true;
+        return Date.now() - new Date(lastPurchase).getTime() >= 7 * 24 * 60 * 60 * 1000;
+      }
+      if (careFilter === 'inactive_30') {
+        if (!lastPurchase) return true;
+        return Date.now() - new Date(lastPurchase).getTime() >= 30 * 24 * 60 * 60 * 1000;
+      }
+      return true;
+    })
+    .sort((a, b) => b.customer.totalDebt - a.customer.totalDebt);
+
+  function estimateDueDateForCustomer(customerId: string) {
+    const maxDebtDays = activeTenant?.settings?.debtPolicy?.maxDebtDays || 30;
+    const latestIncrease = ledgers
+      .filter((entry) => entry.customerId === customerId && entry.type === 'increase')
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+    const base = latestIncrease ? new Date(latestIncrease.createdAt) : new Date();
+    const due = new Date(base.getTime() + maxDebtDays * 24 * 60 * 60 * 1000);
+    return due.toISOString().slice(0, 10);
+  }
+
+  const buildZaloReminderMessage = (
+    customerName: string,
+    debtAmount: number,
+    dueDateIso: string,
+    templateType: 'pre_due' | 'due_today' | 'overdue' | 'thanks_after_payment' | 'repurchase_invite' | 'new_arrival'
+  ) => {
+    const dueDate = new Date(dueDateIso).toLocaleDateString('vi-VN');
+    const template = messageTemplates[templateType];
+    return template
+      .replaceAll('{ten_khach}', customerName)
+      .replaceAll('{so_tien}', formatCurrency(debtAmount))
+      .replaceAll('{ngay_han}', dueDate);
+  };
+
+  const openZaloReminder = (customerId: string) => {
+    const customer = customers.find((c) => c.id === customerId);
+    if (!customer) return;
+    const dueDate = estimateDueDateForCustomer(customerId);
+    setZaloTargetCustomerId(customerId);
+    setZaloDueDate(dueDate);
+    setZaloTemplateType('due_today');
+    setZaloMessage(buildZaloReminderMessage(customer.name, customer.totalDebt, dueDate, 'due_today'));
+    setShowZaloReminderModal(true);
+  };
+
+  const normalizePhoneForZalo = (rawPhone: string) => {
+    const digits = String(rawPhone || '').replace(/\D/g, '');
+    if (!digits) return '';
+    if (digits.startsWith('84')) return digits;
+    if (digits.startsWith('0')) return `84${digits.slice(1)}`;
+    return digits;
+  };
+
+  const handleCopyZaloMessage = async () => {
+    try {
+      await navigator.clipboard.writeText(zaloMessage);
+      setFormError('');
+    } catch {
+      setFormError('Không thể copy nội dung. Vui lòng copy thủ công.');
+    }
+  };
+
+  const createCareLog = async (status: CustomerCareLog['status']) => {
+    if (!selectedZaloCustomer) return;
+    try {
+      const created = await customerCareApi.create({
+        customerId: selectedZaloCustomer.id,
+        channel: 'zalo',
+        templateType: zaloTemplateType,
+        message: zaloMessage,
+        dueDate: zaloDueDate || null,
+        status,
+        responded: false,
+        note: '',
+      });
+      setCareLogs((prev) => [created, ...prev]);
+    } catch (err) {
+      console.error('Failed to create care log', err);
+    }
+  };
+
+  const handleOpenZalo = () => {
+    if (!selectedZaloCustomer) return;
+    const phone = normalizePhoneForZalo(selectedZaloCustomer.phone);
+    if (!phone) {
+      setFormError('Số điện thoại khách hàng không hợp lệ để mở Zalo.');
+      return;
+    }
+    const deepLink = `zalo://conversation?phone=${phone}`;
+    const webFallback = `https://zalo.me/${phone}`;
+    void createCareLog('sent');
+    window.location.href = deepLink;
+    window.setTimeout(() => {
+      window.open(webFallback, '_blank', 'noopener,noreferrer');
+    }, 500);
+  };
+
+  const updateCareStatus = async (logId: string, status: CustomerCareLog['status']) => {
+    try {
+      const updated = await customerCareApi.update(logId, {
+        status,
+        responded: status === 'promised' || status === 'paid',
+      });
+      setCareLogs((prev) => prev.map((log) => (log.id === logId ? updated : log)));
+    } catch (err) {
+      console.error('Failed to update care status', err);
+    }
+  };
+
+  const saveCustomerTags = async (customerId: string) => {
+    if (!tagInput.trim()) return;
+    const customer = customers.find((c) => c.id === customerId);
+    if (!customer) return;
+    const existingTags = customer.tags || [];
+    const nextTags = Array.from(new Set([...existingTags, ...tagInput.split(',').map((t) => t.trim()).filter(Boolean)]));
+    setSavingTags(true);
+    try {
+      await customersApi.update(customerId, { tags: nextTags });
+      await refreshCustomers();
+      setTagInput('');
+      setTagEditorCustomerId('');
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Không lưu được tags.');
+    } finally {
+      setSavingTags(false);
+    }
+  };
 
   const openDebtModal = (type: 'increase' | 'decrease', customerId?: string) => {
     setDebtForm({
@@ -109,6 +294,10 @@ export default function Debt() {
 
   useEffect(() => {
     const targetCustomer = searchParams.get('customerId');
+    const queryFilter = searchParams.get('careFilter');
+    if (queryFilter && ['all', 'debt', 'due_soon', 'inactive_7', 'inactive_30'].includes(queryFilter)) {
+      setCareFilter(queryFilter as typeof careFilter);
+    }
     if (targetCustomer) {
       openDebtModal('decrease', targetCustomer);
     }
@@ -127,6 +316,21 @@ export default function Debt() {
       }
     };
     loadLedgers();
+  }, []);
+
+  useEffect(() => {
+    const loadCareLogs = async () => {
+      setLoadingCareLogs(true);
+      try {
+        const data = await customerCareApi.list();
+        setCareLogs(data);
+      } catch (err) {
+        console.error('Failed to load customer care logs:', err);
+      } finally {
+        setLoadingCareLogs(false);
+      }
+    };
+    loadCareLogs();
   }, []);
 
   return (
@@ -222,6 +426,98 @@ export default function Debt() {
         </div>
       )}
 
+      {showZaloReminderModal && selectedZaloCustomer && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-lg border border-white bg-white p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-section-title">Nhắc nợ qua Zalo</h3>
+              <button
+                onClick={() => setShowZaloReminderModal(false)}
+                aria-label="Đóng popup"
+                className="h-8 w-8 rounded-lg bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700 flex items-center justify-center transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2 text-sm">
+              <p><span className="text-slate-500">Khách hàng:</span> <span className="font-semibold text-slate-900">{selectedZaloCustomer.name}</span></p>
+              <p><span className="text-slate-500">Số điện thoại:</span> <span className="font-semibold text-slate-900">{selectedZaloCustomer.phone}</span></p>
+              <p><span className="text-slate-500">Công nợ:</span> <span className="font-semibold text-orange-600">{formatCurrency(selectedZaloCustomer.totalDebt)}</span></p>
+              <div className="space-y-1">
+                <label className="text-xs text-slate-600">Hạn thanh toán</label>
+                <Input
+                  type="date"
+                  value={zaloDueDate}
+                  onChange={(e) => {
+                    const dueDate = e.target.value;
+                    setZaloDueDate(dueDate);
+                    setZaloMessage(buildZaloReminderMessage(selectedZaloCustomer.name, selectedZaloCustomer.totalDebt, dueDate, zaloTemplateType));
+                  }}
+                  className="h-10 rounded-lg bg-white border border-slate-200"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm text-slate-700">Mẫu tin nhắn</label>
+              <select
+                value={zaloTemplateType}
+                onChange={(e) => {
+                  const nextType = e.target.value as typeof zaloTemplateType;
+                  setZaloTemplateType(nextType);
+                  setZaloMessage(buildZaloReminderMessage(selectedZaloCustomer.name, selectedZaloCustomer.totalDebt, zaloDueDate, nextType));
+                }}
+                className="w-full h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm"
+              >
+                <option value="pre_due">Nhắc trước hạn</option>
+                <option value="due_today">Nhắc đến hạn</option>
+                <option value="overdue">Nhắc quá hạn</option>
+                <option value="thanks_after_payment">Cảm ơn sau thanh toán</option>
+                <option value="repurchase_invite">Mời mua lại</option>
+                <option value="new_arrival">Báo hàng mới</option>
+              </select>
+              <label className="text-sm text-slate-700">Nội dung nhắc nợ</label>
+              <textarea
+                value={zaloMessage}
+                onChange={(e) => setZaloMessage(e.target.value)}
+                className="w-full min-h-32 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+              />
+              <p className="text-xs text-slate-500">Khuyến nghị: bấm Copy trước, sau đó mở Zalo để dán và gửi.</p>
+            </div>
+
+            {formError && <p className="text-sm text-rose-600">{formError}</p>}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <Button variant="outline" className="h-11 rounded-lg text-sm font-semibold" onClick={handleCopyZaloMessage}>
+                <Copy className="h-4 w-4 mr-2" /> Copy nội dung
+              </Button>
+              <Button className="h-11 rounded-lg text-sm font-semibold bg-emerald-600 hover:bg-emerald-700" onClick={handleOpenZalo}>
+                <ExternalLink className="h-4 w-4 mr-2" /> Mở Zalo
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tagEditorCustomerId && (
+        <div className="fixed inset-0 z-[109] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-lg border border-white bg-white p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-section-title">Tag khách hàng</h3>
+              <button onClick={() => setTagEditorCustomerId('')} className="h-8 w-8 rounded-lg bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-500">Nhập tag, ngăn cách bằng dấu phẩy. Ví dụ: VIP, Nợ quá hạn, Lâu chưa mua</p>
+            <Input value={tagInput} onChange={(e) => setTagInput(e.target.value)} className="h-11 rounded-lg bg-slate-50 border-none font-semibold" />
+            <Button onClick={() => saveCustomerTags(tagEditorCustomerId)} disabled={savingTags} className="w-full h-11 rounded-lg">
+              {savingTags ? 'Đang lưu...' : 'Lưu tag'}
+            </Button>
+          </div>
+        </div>
+      )}
+
       <div className="p-4 lg:p-8 bg-white border-b sticky top-0 z-40 flex flex-col lg:flex-row gap-3 lg:gap-6 items-start lg:items-center justify-between shadow-sm shrink-0">
         <div className="hidden lg:flex items-center gap-5">
           <div className="h-9 w-9 sm:h-12 sm:w-12 rounded-lg bg-orange-600 text-white flex items-center justify-center shadow-lg shadow-orange-900/20 transform -rotate-3 shrink-0">
@@ -250,6 +546,16 @@ export default function Debt() {
             <ArrowDownCircle className="h-4 w-4 sm:h-5 sm:w-5" />
             <span>Thu nợ</span>
           </Button>
+          <select
+            value={careFilter}
+            onChange={(e) => setCareFilter(e.target.value as typeof careFilter)}
+            className="h-10 lg:h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
+          >
+            <option value="all">Còn nợ</option>
+            <option value="due_soon">Sắp đến hạn</option>
+            <option value="inactive_7">7 ngày chưa mua</option>
+            <option value="inactive_30">30 ngày chưa mua</option>
+          </select>
         </div>
       </div>
 
@@ -314,7 +620,7 @@ export default function Debt() {
             </div>
 
             <div className="divide-y divide-slate-50">
-                {filteredDebtCustomers.map(customer => (
+                {filteredDebtCustomers.map(({ customer, dueDate, lastPurchase, latestCare }) => (
                     <div key={customer.id} className="p-4 sm:p-6 hover:bg-orange-50/20 transition-all group flex flex-col md:flex-row md:items-center justify-between gap-4 sm:gap-6 cursor-pointer" onClick={() => navigate(`/app/customers/${customer.id}`)}>
                         <div className="flex items-center gap-4 sm:gap-6">
                              <div className="h-12 w-12 sm:h-14 sm:w-14 rounded-lg bg-slate-50 flex items-center justify-center text-slate-300 group-hover:bg-orange-600 group-hover:text-white transition-all duration-500">
@@ -327,7 +633,17 @@ export default function Debt() {
                                 </div>
                                 <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-6 text-slate-400 font-bold text-[10px]">
                                     <span className="font-mono">{customer.phone}</span>
+                                    <span>Hạn: {new Date(dueDate).toLocaleDateString('vi-VN')}</span>
+                                    <span>Mua gần nhất: {lastPurchase ? new Date(lastPurchase).toLocaleDateString('vi-VN') : 'Chưa có'}</span>
+                                    <span>CSKH: {latestCare?.status === 'paid' ? 'Đã trả' : latestCare?.status === 'promised' ? 'Hứa trả' : latestCare?.status === 'sent' ? 'Đã nhắc' : 'Chưa nhắc'}</span>
                                 </div>
+                                {!!customer.tags?.length && (
+                                  <div className="flex flex-wrap gap-1.5 pt-1">
+                                    {customer.tags.slice(0, 4).map((tag) => (
+                                      <span key={tag} className="text-[10px] px-2 py-0.5 rounded-md bg-slate-100 text-slate-600">{tag}</span>
+                                    ))}
+                                  </div>
+                                )}
                              </div>
                         </div>
 
@@ -336,15 +652,38 @@ export default function Debt() {
                                 <p className="text-xs text-slate-500 mb-1">Dư nợ hiện tại</p>
                                 <div className="text-kpi-lg text-orange-600">{formatCurrency(customer.totalDebt)}</div>
                              </div>
-                             <Button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  openDebtModal('decrease', customer.id);
-                                }}
-                                className="h-10 rounded-lg px-4 text-sm font-semibold bg-sky-600 hover:bg-sky-700"
-                              >
-                                Thu nợ
-                              </Button>
+                             <div className="flex items-center gap-2">
+                               <Button
+                                 onClick={(e) => {
+                                   e.stopPropagation();
+                                   openZaloReminder(customer.id);
+                                 }}
+                                 variant="outline"
+                                 className="h-10 rounded-lg px-3 text-sm font-semibold border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                               >
+                                 <MessageCircleMore className="h-4 w-4 mr-1.5" /> Nhắc Zalo
+                                </Button>
+                               <Button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setTagEditorCustomerId(customer.id);
+                                    setTagInput((customer.tags || []).join(', '));
+                                  }}
+                                  variant="outline"
+                                  className="h-10 rounded-lg px-3 text-sm font-semibold border-slate-200 text-slate-700 hover:bg-slate-50"
+                                >
+                                  <Tags className="h-4 w-4 mr-1.5" /> Tag
+                                </Button>
+                               <Button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openDebtModal('decrease', customer.id);
+                                  }}
+                                  className="h-10 rounded-lg px-4 text-sm font-semibold bg-sky-600 hover:bg-sky-700"
+                                >
+                                  Thu nợ
+                                </Button>
+                             </div>
                              <div className="h-9 w-9 sm:h-10 sm:w-10 rounded-lg bg-slate-50 text-slate-300 flex items-center justify-center group-hover:bg-orange-600 group-hover:text-white transition-all transform group-hover:translate-x-1">
                                 <ChevronRight className="h-4 w-4" />
                              </div>
@@ -392,6 +731,52 @@ export default function Debt() {
             })}
             {!loadingLedgers && ledgers.length === 0 && (
               <div className="p-6 text-sm text-slate-500">Chưa có giao dịch công nợ.</div>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-xl shadow-slate-900/10 border border-white overflow-hidden">
+          <div className="p-5 sm:p-6 border-b border-slate-50">
+            <h3 className="text-section-title">Lịch sử chăm sóc khách (Zalo)</h3>
+          </div>
+          <div className="divide-y divide-slate-50">
+            {loadingCareLogs && <div className="p-6 text-sm text-slate-500">Đang tải lịch sử chăm sóc...</div>}
+            {!loadingCareLogs && careLogs.slice(0, 20).map((log) => {
+              const customer = customers.find((c) => c.id === log.customerId);
+              return (
+                <div key={log.id} className="p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                  <div className="space-y-1 min-w-0">
+                    <p className="text-sm font-semibold text-slate-900">{customer?.name || log.customerId}</p>
+                    <p className="text-xs text-slate-500 truncate">
+                      {new Date(log.createdAt).toLocaleString('vi-VN')} · {log.createdByName || log.createdBy} · {log.templateType}
+                    </p>
+                    <p className="text-xs text-slate-600 line-clamp-2">{log.message}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={log.status}
+                      onChange={(e) => updateCareStatus(log.id, e.target.value as CustomerCareLog['status'])}
+                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs"
+                    >
+                      <option value="not_sent">Chưa nhắc</option>
+                      <option value="sent">Đã nhắc</option>
+                      <option value="promised">Hứa trả</option>
+                      <option value="paid">Đã trả</option>
+                    </select>
+                    <span className={`text-xs px-2 py-1 rounded-md ${
+                      log.status === 'paid' ? 'bg-emerald-50 text-emerald-700' :
+                      log.status === 'promised' ? 'bg-sky-50 text-sky-700' :
+                      log.status === 'sent' ? 'bg-amber-50 text-amber-700' :
+                      'bg-slate-100 text-slate-600'
+                    }`}>
+                      {log.responded ? 'Đã phản hồi' : 'Chưa phản hồi'}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+            {!loadingCareLogs && careLogs.length === 0 && (
+              <div className="p-6 text-sm text-slate-500">Chưa có lịch sử nhắc nợ/Zalo.</div>
             )}
           </div>
         </div>

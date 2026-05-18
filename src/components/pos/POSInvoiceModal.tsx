@@ -25,70 +25,106 @@ const InvoiceContent = forwardRef(({
   currentInvoiceItems, 
   currentInvoice 
 }: Omit<POSInvoiceModalProps, 'isOpen' | 'onClose' | 'onExportImage' | 'onPrint'>, ref: ForwardedRef<HTMLDivElement>) => (
-  <div ref={ref} className="bg-white p-8 rounded-lg border border-slate-100 shadow-sm print:border-none print:shadow-none min-h-fit">
+  <div ref={ref} className={`bg-white rounded-lg border border-slate-100 shadow-sm print:border-none print:shadow-none min-h-fit ${activeTenant?.settings?.invoice?.printSize === 'receipt_80mm' ? 'mx-auto w-[302px] p-4' : 'p-8'}`}>
+    {(() => {
+      const invoiceSettings = activeTenant?.settings?.invoice;
+      const storeTitle = invoiceSettings?.storeDisplayName || activeTenant?.name || 'Cửa hàng';
+      const showAddress = invoiceSettings?.showAddress ?? true;
+      const showPhone = invoiceSettings?.showPhone ?? true;
+      const showCustomerPhone = invoiceSettings?.showCustomerPhone ?? true;
+      const showOperator = invoiceSettings?.showOperator ?? true;
+      const showOrderNote = invoiceSettings?.showOrderNote ?? true;
+      const footerNote = invoiceSettings?.footerNote || 'Cảm ơn quý khách và hẹn gặp lại.';
+      return (
+        <>
     <div className="text-center mb-10">
-      <h4 className="text-3xl font-black text-sky-700 font-display uppercase tracking-tighter leading-none mb-2">{activeTenant?.name}</h4>
-      <p className="text-[10px] text-slate-400 font-black uppercase tracking-[0.2em]">{activeTenant?.address}</p>
-      <p className="text-[10px] text-slate-400 font-black tracking-widest">Hotline: {activeTenant?.phone}</p>
-      <div className="h-px bg-slate-100 w-full my-8"></div>
-      <h5 className="text-xl font-black text-slate-900 uppercase tracking-tight">Hóa đơn bán hàng</h5>
-      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">{new Date().toLocaleString('vi-VN')}</p>
+      <h4 className="text-2xl font-black text-slate-900 font-display tracking-tight leading-none mb-2">{storeTitle}</h4>
+      {showAddress && <p className="text-[11px] text-slate-500">{activeTenant?.address}</p>}
+      {showPhone && <p className="text-[11px] text-slate-500">Hotline: {activeTenant?.phone}</p>}
+      {invoiceSettings?.headerLine1 && <p className="text-[11px] text-slate-500">{invoiceSettings.headerLine1}</p>}
+      {invoiceSettings?.headerLine2 && <p className="text-[11px] text-slate-500">{invoiceSettings.headerLine2}</p>}
+      <div className="h-px bg-slate-200 w-full my-4"></div>
+      <h5 className="text-base font-bold text-slate-900 uppercase tracking-wide">HÓA ĐƠN BÁN HÀNG</h5>
+      <p className="text-[11px] text-slate-500 mt-1">{new Date().toLocaleString('vi-VN')}</p>
+      <p className="text-[11px] text-slate-500 mt-1">Mã hóa đơn: {lastInvoiceId}</p>
     </div>
 
-    <div className="space-y-3 mb-10 bg-slate-50 p-6 rounded-lg">
+    <div className="space-y-2 mb-6 bg-slate-50 p-3 rounded-lg border border-slate-200">
       <div className="flex justify-between items-center">
-        <span className="text-slate-400 font-black uppercase tracking-widest text-[10px]">Khách hàng:</span>
-        <span className="text-slate-900 font-black text-sm">{selectedCustomer?.name || 'Khách lẻ'}</span>
+        <span className="text-slate-500 text-xs">Khách hàng:</span>
+        <span className="text-slate-900 font-semibold text-sm">{selectedCustomer?.name || 'Khách lẻ'}</span>
       </div>
-      {selectedCustomer?.phone && (
+      {showCustomerPhone && selectedCustomer?.phone && (
         <div className="flex justify-between items-center">
-          <span className="text-slate-400 font-black uppercase tracking-widest text-[10px]">Số điện thoại:</span>
-          <span className="text-slate-900 font-black text-sm">{selectedCustomer.phone}</span>
+          <span className="text-slate-500 text-xs">Số điện thoại:</span>
+          <span className="text-slate-900 font-semibold text-sm">{selectedCustomer.phone}</span>
+        </div>
+      )}
+      {showOperator && (
+        <div className="flex justify-between items-center">
+          <span className="text-slate-500 text-xs">Thu ngân:</span>
+          <span className="text-slate-900 font-semibold text-sm">{currentInvoice?.createdByName || currentInvoice?.createdBy || 'N/A'}</span>
         </div>
       )}
       <div className="flex justify-between items-center">
-        <span className="text-slate-400 font-black uppercase tracking-widest text-[10px]">Hình thức:</span>
-        <span className="text-sky-700 font-black text-[10px] uppercase tracking-widest bg-sky-100 px-2 py-0.5 rounded-lg">
+        <span className="text-slate-500 text-xs">Thanh toán:</span>
+        <span className="text-slate-900 font-semibold text-sm">
           {paymentMethod === 'cash' ? 'Tiền mặt' : paymentMethod === 'transfer' ? 'Chuyển khoản' : 'Ghi nợ'}
         </span>
       </div>
     </div>
 
-    <div className="space-y-4 mb-10">
-      <div className="grid grid-cols-5 text-[10px] font-black text-slate-400 uppercase tracking-widest pb-3 border-b border-slate-100">
-        <div className="col-span-3">Tên sản phẩm</div>
-        <div className="text-center">SL</div>
-        <div className="text-right">T.Tiền</div>
+    <div className="space-y-2 mb-6">
+      <div className="grid grid-cols-12 text-[11px] font-semibold text-slate-600 pb-2 border-b border-slate-200">
+        <div className="col-span-6">Sản phẩm</div>
+        <div className="col-span-2 text-center">SL</div>
+        <div className="col-span-2 text-right">Đơn giá</div>
+        <div className="col-span-2 text-right">Thành tiền</div>
       </div>
       {currentInvoiceItems.map(item => (
-        <div key={item.id} className="grid grid-cols-5 text-sm items-center py-1">
-          <div className="col-span-3">
-            <div className="font-bold text-slate-900 leading-tight">{item.productName}</div>
-            <div className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">{formatCurrency(item.price)}</div>
+        <div key={item.id} className="grid grid-cols-12 text-[12px] items-start py-1.5 border-b border-dashed border-slate-100">
+          <div className="col-span-6 pr-2">
+            <div className="font-semibold text-slate-900 leading-tight break-words">{item.productName}</div>
           </div>
-          <div className="text-center font-black text-slate-900">x{item.quantity}</div>
-          <div className="text-right font-black text-slate-900">{formatCurrency(item.total)}</div>
+          <div className="col-span-2 text-center font-semibold text-slate-900">{item.quantity}</div>
+          <div className="col-span-2 text-right text-slate-700">{formatCurrency(item.price)}</div>
+          <div className="col-span-2 text-right font-semibold text-slate-900">{formatCurrency(item.total)}</div>
         </div>
       ))}
     </div>
 
-    <div className="space-y-3 pt-8 border-t-2 border-dashed border-slate-100">
-      <div className="flex justify-between items-end">
-        <span className="text-xs font-black text-slate-400 uppercase tracking-widest">Thành tiền</span>
-        <span className="text-3xl font-black text-sky-700 font-display tabular-nums tracking-tighter leading-none">{formatCurrency(currentInvoice?.finalAmount || 0)}</span>
+    <div className="space-y-2 pt-4 border-t border-slate-200">
+      <div className="flex justify-between items-center text-sm">
+        <span className="text-slate-600">Tạm tính</span>
+        <span className="font-semibold text-slate-900">{formatCurrency(currentInvoice?.totalAmount || 0)}</span>
+      </div>
+      <div className="flex justify-between items-center text-sm">
+        <span className="text-slate-600">Giảm giá</span>
+        <span className="font-semibold text-slate-900">-{formatCurrency(currentInvoice?.discount || 0)}</span>
+      </div>
+      <div className="flex justify-between items-end border-t border-slate-200 pt-2">
+        <span className="text-sm font-semibold text-slate-900">Tổng thanh toán</span>
+        <span className="text-2xl font-black text-slate-900 font-display tabular-nums leading-none">{formatCurrency(currentInvoice?.finalAmount || 0)}</span>
       </div>
       {currentInvoice?.debtAmount && currentInvoice.debtAmount > 0 ? (
         <div className="flex justify-between items-center pt-2">
-          <span className="text-[10px] font-black text-orange-600 uppercase tracking-widest">Chưa thanh toán (Nợ)</span>
-          <span className="text-sm font-black text-orange-600 tabular-nums">{formatCurrency(currentInvoice.debtAmount)}</span>
+          <span className="text-xs font-semibold text-orange-600">Còn nợ</span>
+          <span className="text-sm font-semibold text-orange-600 tabular-nums">{formatCurrency(currentInvoice.debtAmount)}</span>
         </div>
       ) : null}
+      {showOrderNote && currentInvoice?.note && (
+        <div className="pt-2 border-t border-dashed border-slate-200">
+          <p className="text-xs text-slate-500">Ghi chú: <span className="text-slate-700">{currentInvoice.note}</span></p>
+        </div>
+      )}
     </div>
 
-    <div className="mt-16 text-center border-t border-slate-50 pt-8">
-      <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] mb-1">Cảm ơn quý khách!</p>
-      <p className="text-[8px] text-slate-300 font-bold">Vui lòng kiểm tra kỹ hàng hóa trước khi rời khỏi quầy.</p>
+    <div className="mt-6 text-center border-t border-slate-200 pt-4">
+      <p className="text-[11px] font-medium text-slate-700">{footerNote}</p>
     </div>
+        </>
+      );
+    })()}
   </div>
 ));
 

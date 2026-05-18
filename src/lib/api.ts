@@ -125,6 +125,13 @@ export const debtLedgerApi = {
   create: (data: any) => request<any>('/debt-ledger', { method: 'POST', body: data }),
 };
 
+export const customerCareApi = {
+  list: (customerId?: string) =>
+    request<any[]>('/customer-care-logs', { params: { customerId: customerId || '' } }),
+  create: (data: any) => request<any>('/customer-care-logs', { method: 'POST', body: data }),
+  update: (id: string, data: any) => request<any>(`/customer-care-logs/${id}`, { method: 'PATCH', body: data }),
+};
+
 // ─── Dashboard ─────────────────────────────────────────────
 export const dashboardApi = {
   stats: (tenantId: string) => request<any>('/dashboard/stats', { params: { tenantId } }),

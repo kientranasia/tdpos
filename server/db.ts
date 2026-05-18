@@ -42,6 +42,7 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'customers'").get()) {
   addColumnIfMissing('customers', 'created_by', 'created_by TEXT');
+  addColumnIfMissing('customers', 'tags', "tags TEXT NOT NULL DEFAULT '[]'");
 }
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenants'").get()) {
@@ -122,6 +123,21 @@ sqlite.exec(`
     after_stock REAL NOT NULL,
     note TEXT NOT NULL DEFAULT '',
     reference_id TEXT,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS customer_care_logs (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    customer_id TEXT NOT NULL REFERENCES customers(id),
+    channel TEXT NOT NULL DEFAULT 'zalo',
+    template_type TEXT NOT NULL DEFAULT 'due_today',
+    message TEXT NOT NULL DEFAULT '',
+    due_date TEXT,
+    status TEXT NOT NULL DEFAULT 'sent',
+    responded INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     created_by TEXT NOT NULL
   );

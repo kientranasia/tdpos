@@ -4,7 +4,7 @@ import cors from 'cors';
 import morgan from 'morgan';
 import { db } from './db';
 import * as schema from './schema';
-import { eq, desc, and, like, sql } from 'drizzle-orm';
+import { eq, desc, and, like, sql, inArray } from 'drizzle-orm';
 import { v4 as uuid } from 'uuid';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -725,6 +725,7 @@ app.get('/api/customers', (req, res) => {
     res.json(
       allCustomers.map((customer) => ({
         ...customer,
+        tags: customer.tags ? JSON.parse(customer.tags) : [],
         createdByName: customer.createdBy ? userNameById.get(customer.createdBy) || null : null,
       }))
     );
@@ -744,6 +745,7 @@ app.get('/api/customers/:id', (req, res) => {
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
     res.json({
       ...customer,
+      tags: customer.tags ? JSON.parse(customer.tags) : [],
       createdByName: customer.createdBy ? userNameById.get(customer.createdBy) || null : null,
     });
   } catch (err) {
@@ -755,10 +757,17 @@ app.get('/api/customers/:id', (req, res) => {
 app.post('/api/customers', (req, res) => {
   try {
     if (!ensureRole(req, res, ['owner', 'manager'])) return;
-    const customer = { id: uuid(), totalDebt: 0, ...req.body, tenantId: req.user.tenantId, createdBy: req.user.id };
+    const customer = {
+      id: uuid(),
+      totalDebt: 0,
+      ...req.body,
+      tags: JSON.stringify(Array.isArray(req.body?.tags) ? req.body.tags : []),
+      tenantId: req.user.tenantId,
+      createdBy: req.user.id
+    };
     db.insert(schema.customers).values(customer).run();
     const creator = db.select().from(schema.users).where(eq(schema.users.id, req.user.id)).get();
-    res.status(201).json({ ...customer, createdByName: creator?.name || null });
+    res.status(201).json({ ...customer, tags: customer.tags ? JSON.parse(customer.tags) : [], createdByName: creator?.name || null });
   } catch (err) {
     console.error('POST /api/customers error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -771,13 +780,94 @@ app.patch('/api/customers/:id', (req, res) => {
     const customer = db.select().from(schema.customers)
       .where(and(eq(schema.customers.id, req.params.id), eq(schema.customers.tenantId, req.user.tenantId))).get();
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
-    const { tenantId: _tenantId, ...updates } = req.body;
-    db.update(schema.customers).set(updates).where(eq(schema.customers.id, req.params.id)).run();
+    const { tenantId: _tenantId, tags, ...updates } = req.body;
+    const patchData: any = { ...updates };
+    if (tags !== undefined) {
+      patchData.tags = JSON.stringify(Array.isArray(tags) ? tags : []);
+    }
+    db.update(schema.customers).set(patchData).where(eq(schema.customers.id, req.params.id)).run();
     const updated = db.select().from(schema.customers).where(eq(schema.customers.id, req.params.id)).get();
     if (!updated) return res.status(404).json({ error: 'Customer not found' });
-    res.json(updated);
+    res.json({ ...updated, tags: updated.tags ? JSON.parse(updated.tags) : [] });
   } catch (err) {
     console.error('PATCH /api/customers/:id error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// CUSTOMER CARE LOGS (CRM-Lite)
+// ═══════════════════════════════════════════════════════════
+app.get('/api/customer-care-logs', (req, res) => {
+  try {
+    const { customerId } = req.query;
+    const tenantUsers = db.select().from(schema.users)
+      .where(eq(schema.users.tenantId, req.user.tenantId)).all();
+    const userNameById = new Map(tenantUsers.map((u) => [u.id, u.name]));
+
+    let rows = db.select().from(schema.customerCareLogs)
+      .where(eq(schema.customerCareLogs.tenantId, req.user.tenantId))
+      .orderBy(desc(schema.customerCareLogs.createdAt)).all();
+    if (customerId) rows = rows.filter((r) => r.customerId === customerId);
+
+    res.json(rows.map((row) => ({
+      ...row,
+      createdByName: userNameById.get(row.createdBy) || null,
+    })));
+  } catch (err) {
+    console.error('GET /api/customer-care-logs error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/customer-care-logs', (req, res) => {
+  try {
+    if (!ensureRole(req, res, ['owner', 'manager', 'cashier'])) return;
+    const payload = req.body || {};
+    const customer = db.select().from(schema.customers)
+      .where(and(eq(schema.customers.id, payload.customerId), eq(schema.customers.tenantId, req.user.tenantId))).get();
+    if (!customer) return res.status(404).json({ error: 'Customer not found' });
+
+    const entry = {
+      id: uuid(),
+      tenantId: req.user.tenantId,
+      customerId: payload.customerId,
+      channel: payload.channel || 'zalo',
+      templateType: payload.templateType || 'due_today',
+      message: payload.message || '',
+      dueDate: payload.dueDate || null,
+      status: payload.status || 'sent',
+      responded: !!payload.responded,
+      note: payload.note || '',
+      createdAt: new Date().toISOString(),
+      createdBy: req.user.id,
+    };
+    db.insert(schema.customerCareLogs).values(entry).run();
+    const creator = db.select().from(schema.users).where(eq(schema.users.id, req.user.id)).get();
+    res.status(201).json({ ...entry, createdByName: creator?.name || null });
+  } catch (err) {
+    console.error('POST /api/customer-care-logs error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.patch('/api/customer-care-logs/:id', (req, res) => {
+  try {
+    if (!ensureRole(req, res, ['owner', 'manager', 'cashier'])) return;
+    const log = db.select().from(schema.customerCareLogs)
+      .where(and(eq(schema.customerCareLogs.id, req.params.id), eq(schema.customerCareLogs.tenantId, req.user.tenantId))).get();
+    if (!log) return res.status(404).json({ error: 'Care log not found' });
+    const updates: any = {};
+    if (req.body?.status) updates.status = req.body.status;
+    if (typeof req.body?.responded === 'boolean') updates.responded = req.body.responded;
+    if (typeof req.body?.note === 'string') updates.note = req.body.note;
+    db.update(schema.customerCareLogs).set(updates).where(eq(schema.customerCareLogs.id, req.params.id)).run();
+    const updated = db.select().from(schema.customerCareLogs).where(eq(schema.customerCareLogs.id, req.params.id)).get();
+    if (!updated) return res.status(404).json({ error: 'Care log not found' });
+    const creator = db.select().from(schema.users).where(eq(schema.users.id, updated.createdBy)).get();
+    res.json({ ...updated, createdByName: creator?.name || null });
+  } catch (err) {
+    console.error('PATCH /api/customer-care-logs/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -1021,7 +1111,43 @@ app.get('/api/stock-movements', (req, res) => {
       .orderBy(desc(schema.stockMovements.createdAt))
       .all();
     if (productId) rows = rows.filter((r) => r.productId === productId);
-    res.json(rows);
+
+    const relatedProductIds = Array.from(new Set(rows.map((r) => r.productId)));
+    const relatedUserIds = Array.from(new Set(rows.map((r) => r.createdBy)));
+    const relatedProducts = relatedProductIds.length
+      ? db.select().from(schema.products)
+          .where(and(
+            eq(schema.products.tenantId, req.user.tenantId),
+            inArray(schema.products.id, relatedProductIds)
+          ))
+          .all()
+      : [];
+    const relatedUsers = relatedUserIds.length
+      ? db.select().from(schema.users)
+          .where(and(
+            eq(schema.users.tenantId, req.user.tenantId),
+            inArray(schema.users.id, relatedUserIds)
+          ))
+          .all()
+      : [];
+
+    const productMap = new Map(relatedProducts.map((p) => [p.id, p]));
+    const userMap = new Map(relatedUsers.map((u) => [u.id, u]));
+
+    const enriched = rows.map((row) => {
+      const product = productMap.get(row.productId);
+      const actor = userMap.get(row.createdBy);
+      return {
+        ...row,
+        productName: product?.name || 'Sản phẩm đã xóa',
+        productSku: product?.sku || '',
+        productUnit: product?.unit || '',
+        actorName: actor?.name || 'N/A',
+        actorRole: actor?.role || '',
+      };
+    });
+
+    res.json(enriched);
   } catch (err) {
     console.error('GET /api/stock-movements error:', err);
     res.status(500).json({ error: 'Internal server error' });

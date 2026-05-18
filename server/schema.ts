@@ -80,6 +80,7 @@ export const customers = sqliteTable('customers', {
   address: text('address').notNull(),
   totalDebt: real('total_debt').notNull().default(0),
   type: text('type', { enum: ['retail', 'loyal'] }).notNull().default('retail'),
+  tags: text('tags').notNull().default('[]'),
 });
 
 // ─── Invoices ──────────────────────────────────────────────
@@ -195,4 +196,19 @@ export const auditLogs = sqliteTable('audit_logs', {
   tenantId: text('tenant_id'),
   meta: text('meta'),
   createdAt: text('created_at').notNull(),
+});
+
+export const customerCareLogs = sqliteTable('customer_care_logs', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  customerId: text('customer_id').notNull().references(() => customers.id),
+  channel: text('channel', { enum: ['zalo', 'call', 'sms', 'other'] }).notNull().default('zalo'),
+  templateType: text('template_type', { enum: ['pre_due', 'due_today', 'overdue', 'thanks_after_payment', 'repurchase_invite', 'new_arrival'] }).notNull().default('due_today'),
+  message: text('message').notNull().default(''),
+  dueDate: text('due_date'),
+  status: text('status', { enum: ['not_sent', 'sent', 'promised', 'paid'] }).notNull().default('sent'),
+  responded: integer('responded', { mode: 'boolean' }).notNull().default(false),
+  note: text('note').notNull().default(''),
+  createdAt: text('created_at').notNull(),
+  createdBy: text('created_by').notNull(),
 });
