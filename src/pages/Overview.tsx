@@ -228,7 +228,7 @@ export default function Overview() {
                             <TrendingUp className="h-8 w-8" />
                         </div>
                         <div className="space-y-2">
-                             <h4 className="text-3xl font-black font-display tracking-tight leading-none uppercase italic">TDPOS Insights AI</h4>
+                             <h4 className="text-3xl font-black font-display tracking-tight leading-none uppercase italic">Phân tích vận hành</h4>
                              <p className="text-sky-100/60 font-medium text-sm leading-relaxed">Dựa trên dữ liệu 7 ngày qua, bạn nên đẩy mạnh nhập **NPK 20-20-15** vì nhu cầu khu vực đang tăng cao.</p>
                         </div>
                         <Button className="w-full h-14 rounded-lg bg-white text-sky-700 font-black text-[10px] uppercase tracking-widest shadow-xl shadow-sky-900/40">Xem phân tích sâu</Button>

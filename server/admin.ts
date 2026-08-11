@@ -71,7 +71,7 @@ router.post('/login', async (req, res) => {
       if (admin.password !== password) {
         const isLocalRecovery =
           process.env.NODE_ENV !== 'production' &&
-          email === 'admin@tdpos.vn' &&
+          email === 'admin@hkdplus.local' &&
           password === 'admin123';
 
         if (!isLocalRecovery) {
@@ -371,10 +371,10 @@ router.post('/tenants', (req, res) => {
       timezone: tenantData.timezone || 'Asia/Ho_Chi_Minh',
       currency: tenantData.currency || 'VND',
       invoicePrefix: tenantData.invoicePrefix || 'INV',
-      status: tenantData.status || 'trial',
-      trialStartAt: now,
-      trialEndAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
-      subscriptionStatus: 'trial' as const,
+      status: tenantData.status || 'active',
+      trialStartAt: null,
+      trialEndAt: null,
+      subscriptionStatus: 'active' as const,
       subscriptionPlan: 'yearly' as const,
       subscriptionPriceMonthly: MONTHLY_SUBSCRIPTION_PRICE,
       packageCode: defaultPackage?.code || 'starter_1',
@@ -393,7 +393,7 @@ router.post('/tenants', (req, res) => {
       plan: 'yearly',
       priceMonthly: MONTHLY_SUBSCRIPTION_PRICE,
       status: 'pending_review',
-      note: 'Auto-created for trial review flow',
+      note: 'Legacy record retained for data compatibility; HKDPlus local does not use subscription flow.',
       createdAt: now,
     }).run();
 
@@ -550,7 +550,7 @@ router.get('/users', (req, res) => {
 
 router.post('/users', (req, res) => {
   try {
-    const allowedRoles = ['owner', 'manager', 'cashier'] as const;
+    const allowedRoles = ['owner', 'manager', 'cashier', 'warehouse'] as const;
     if (!allowedRoles.includes(req.body.role)) {
       return res.status(400).json({ error: 'Invalid role. Allowed: owner, manager, cashier' });
     }
@@ -558,14 +558,6 @@ router.post('/users', (req, res) => {
     if (!tenant) {
       return res.status(404).json({ error: 'Tenant not found' });
     }
-    const userCount = db.select({ count: sql<number>`count(*)` })
-      .from(schema.users)
-      .where(eq(schema.users.tenantId, req.body.tenantId))
-      .get();
-    if ((userCount?.count || 0) >= (tenant.maxUsers || 1)) {
-      return res.status(400).json({ error: `User limit reached (${tenant.maxUsers || 1}). Upgrade package to add more users.` });
-    }
-
     const user = {
       id: uuid(),
       status: 'active' as const,

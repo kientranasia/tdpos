@@ -1,7 +1,12 @@
-node_modules
-dist
-.git
+node_modules/
+dist/
+.git/
+.agents/
+.codex/
+tdi-website/
 .gitignore
 .DS_Store
 npm-debug.log*
-data
+data/
+**/*.db
+**/backups/

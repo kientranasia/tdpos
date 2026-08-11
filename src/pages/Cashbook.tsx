@@ -84,7 +84,7 @@ export default function Cashbook() {
 
   return (
     <div className="flex h-full flex-col bg-slate-50 overflow-hidden">
-      <div className="p-4 lg:p-8 bg-white border-b sticky top-0 z-40 flex items-center justify-between gap-4 shadow-sm shrink-0">
+      <div className="p-3 lg:p-8 bg-white border-b sticky top-0 z-40 flex items-center justify-between gap-2 lg:gap-4 shadow-sm shrink-0">
         <div className="hidden lg:flex items-center gap-5">
           <div className="h-12 w-12 rounded-lg bg-emerald-600 text-white flex items-center justify-center shadow-lg">
             <BookText className="h-6 w-6" />
@@ -94,11 +94,11 @@ export default function Cashbook() {
             <p className="text-page-subtitle">Thu - Chi và số dư quỹ hiện tại</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" className="h-10 lg:h-11" onClick={exportCsv}>
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2">
+          <Button variant="outline" className="h-10 lg:h-11 px-3" onClick={exportCsv}>
             <Download className="h-4 w-4 mr-1" /> CSV
           </Button>
-          <Button className="h-10 lg:h-11" onClick={() => setShowModal(true)}>
+          <Button className="h-10 lg:h-11 px-3" onClick={() => setShowModal(true)}>
           <Plus className="h-4 w-4 mr-1" /> Tạo giao dịch
           </Button>
         </div>

@@ -5,6 +5,7 @@ import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { CheckCircle, Store, Settings, Users, ShieldCheck, ArrowRight, ArrowLeft, Upload, Clock, CreditCard, Package, BarChart3, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import BrandMark from '../components/BrandMark';
 
 const STEPS = [
   { id: 'verify', title: 'Xác minh', icon: ShieldCheck },
@@ -47,7 +48,7 @@ export default function TenantSetup() {
       // Finalize setup
       updateTenant({
         ...formData,
-        status: 'trial',
+        status: 'active',
         settings: {
           lowStockThresholdDefault: formData.lowStockThreshold,
           enabledPaymentMethods: ['cash', 'transfer', 'debt'],
@@ -111,10 +112,7 @@ export default function TenantSetup() {
       {/* Header */}
       <div className="bg-white border-b px-8 py-6 flex items-center justify-between sticky top-0 z-50">
         <div className="flex items-center gap-3">
-          <div className="h-10 w-10 bg-sky-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-sky-900/20">
-            <Store className="h-6 w-6" />
-          </div>
-          <span className="font-black text-xl text-slate-900 tracking-tighter uppercase italic">TDPOS</span>
+          <BrandMark />
         </div>
         <div className="flex items-center gap-2">
             <span className="hidden sm:block text-[10px] font-black text-slate-400 uppercase tracking-widest mr-4">Tiến trình onboarding</span>
@@ -464,7 +462,7 @@ export default function TenantSetup() {
                   </div>
                   <div className="space-y-4">
                     <h2 className="text-5xl font-black text-slate-900 font-display tracking-tighter uppercase italic leading-none">CỬA HÀNG ĐÃ SẴN SÀNG!</h2>
-                    <p className="text-slate-500 font-medium text-lg max-w-md mx-auto">Mọi thiết lập đã hoàn tất. Workspace TDPOS đã sẵn sàng để đón nhận đơn hàng đầu tiên.</p>
+                    <p className="text-slate-500 font-medium text-lg max-w-md mx-auto">Mọi thiết lập đã hoàn tất. HKDCare đã sẵn sàng cho hộ kinh doanh.</p>
                   </div>
 
                   <div className="bg-sky-50 p-10 rounded-lg w-full max-w-md space-y-6">

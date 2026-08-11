@@ -20,7 +20,7 @@ export default function Customers() {
   const [sortKey, setSortKey] = useState<CustomerSortKey>('vip');
   const [page, setPage] = useState(1);
   const [isOpenCreateModal, setIsOpenCreateModal] = useState(false);
-  const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
+  const [viewMode, setViewMode] = useState<'cards' | 'table'>('table');
   const [submitError, setSubmitError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createForm, setCreateForm] = useState({
@@ -122,7 +122,7 @@ export default function Customers() {
 
   return (
     <div className="flex h-full flex-col bg-slate-50 animate-in fade-in duration-500 overflow-hidden">
-      <div className="p-4 lg:p-8 bg-white border-b sticky top-0 z-40 flex flex-col lg:flex-row gap-3 lg:gap-6 items-start lg:items-center justify-between shadow-sm shrink-0">
+      <div className="p-3 lg:p-8 bg-white border-b sticky top-0 z-40 flex flex-col lg:flex-row gap-2 lg:gap-6 items-start lg:items-center justify-between shadow-sm shrink-0">
         <div className="hidden lg:flex items-center gap-5">
           <div className="h-9 w-9 sm:h-12 sm:w-12 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-lg shadow-sky-900/20 transform -rotate-3 shrink-0">
             <Users className="h-5 w-5 sm:h-6 sm:w-6" />
@@ -133,29 +133,31 @@ export default function Customers() {
           </div>
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto">
-          <div className="relative group flex-1 lg:w-80">
+        <div className="grid w-full grid-cols-1 gap-2 sm:flex sm:w-auto sm:flex-row sm:gap-3 lg:w-auto">
+          <div className="relative group w-full lg:w-80">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-sky-600 transition-colors" />
             <Input
-              className="h-10 lg:h-11 rounded-lg border-none bg-slate-100/70 shadow-inner focus:ring-2 focus:ring-sky-500/20 transition-all font-semibold text-sm placeholder:text-slate-400 pl-11"
+              className="h-10 rounded-lg border-none bg-slate-100/70 shadow-inner focus:ring-2 focus:ring-sky-500/20 transition-all font-semibold text-sm placeholder:text-slate-400 pl-11 lg:h-11"
               placeholder="Tìm theo tên, số điện thoại, địa chỉ"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
-          <select
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value as CustomerTypeFilter)}
-            className="h-10 lg:h-11 rounded-lg border-none bg-slate-100/70 shadow-inner px-3 text-sm text-slate-700"
-          >
-            <option value="all">Tất cả</option>
-            <option value="retail">Khách lẻ</option>
-            <option value="loyal">Khách thân thiết</option>
-          </select>
-          <Button className="h-10 lg:h-11 px-4 rounded-lg gap-2 font-semibold bg-sky-600 hover:bg-sky-700 shadow-lg shadow-sky-900/20 transition-all text-white shrink-0 text-sm" onClick={() => setIsOpenCreateModal(true)}>
-            <Plus className="h-4 w-4" />
-            <span>Thêm khách hàng</span>
-          </Button>
+          <div className="grid w-full grid-cols-[1fr_auto] gap-2 sm:flex sm:w-auto sm:items-center sm:gap-3">
+            <select
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value as CustomerTypeFilter)}
+              className="h-10 w-full rounded-lg border-none bg-slate-100/70 shadow-inner px-3 text-sm text-slate-700 lg:h-11"
+            >
+              <option value="all">Tất cả</option>
+              <option value="retail">Khách lẻ</option>
+              <option value="loyal">Khách thân thiết</option>
+            </select>
+            <Button className="h-10 px-3 rounded-lg gap-2 font-semibold bg-sky-600 hover:bg-sky-700 shadow-lg shadow-sky-900/20 transition-all text-white text-sm lg:h-11 lg:px-4" onClick={() => setIsOpenCreateModal(true)}>
+              <Plus className="h-4 w-4" />
+              <span className="hidden sm:inline">Thêm khách</span>
+            </Button>
+          </div>
         </div>
       </div>
 

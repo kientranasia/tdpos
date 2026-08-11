@@ -1,115 +1,57 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# HKDPlus
 
-# Run and deploy your AI Studio app
+HKDPlus là phần mềm quản lý bán hàng, hàng hóa, kho, đối tác, công nợ và thu/chi dành cho hộ kinh doanh Việt Nam. Mỗi khách hàng chạy một instance riêng trên máy chủ nội bộ; các máy trạm truy cập qua mạng LAN.
 
-This contains everything you need to run your app locally.
+## Chạy tại máy phát triển
 
-View your app in AI Studio: https://ai.studio/apps/98283500-e7a7-44de-a219-f16314534997
+Yêu cầu Node.js:
 
-## Run Locally
+```bash
+npm install
+npm run seed
+npm run server
+npm run dev
+```
 
-**Prerequisites:**  Node.js
+Mặc định:
 
+- Web: `http://localhost:3001`
+- API: `http://localhost:3101`
+- Tài khoản demo: `owner@hkdplus.local` / `123456`
+- Tài khoản quản trị kỹ thuật: `admin@hkdplus.local` / `admin123`
 
-1. Install dependencies:
-   `npm install`
-2. Copy `.env.example` to `.env` and set `JWT_SECRET`, `API_PORT` (default `3101`), `VITE_API_URL` (default `http://localhost:3101`), and bootstrap admin variables:
-   - `ADMIN_BOOTSTRAP_EMAIL`
-   - `ADMIN_BOOTSTRAP_PASSWORD`
-   - `ADMIN_BOOTSTRAP_NAME`
-   - `ADMIN_BOOTSTRAP_ROLE`
-3. Initialize the local SQLite database:
-   `npm run seed`
-4. Run the backend API:
-   `npm run server`
-5. Run the frontend:
-   `npm run dev`
+Các biến môi trường quan trọng: `JWT_SECRET`, `API_PORT`, `HKDPLUS_INSTANCE_SECRET`, `HKDPLUS_LICENSE_PUBLIC_KEY`, `HKDPLUS_LICENSE_SERVER_URL` (tùy chọn, dùng khi có license server online).
 
-Default local accounts after seeding (or first server start when no admin exists):
+## Cài đặt Docker trong mạng LAN
 
-- Store owner: `owner@tdpos.vn` / `123456`
-- Admin: from `ADMIN_BOOTSTRAP_EMAIL` / `ADMIN_BOOTSTRAP_PASSWORD` (defaults above if unchanged)
+```bash
+docker compose up -d --build
+```
 
-## Docker Deploy
+Web mặc định mở ở cổng `80`, vì vậy máy trạm có thể vào thẳng `http://hkd.care` không cần thêm `:8077`. Nếu cổng 80 đang được dùng, chạy `WEB_PUBLIC_PORT=8077 docker compose up -d --build` và truy cập `http://hkd.care:8077`. API không public ra ngoài, chỉ được nginx trong mạng Docker chuyển tiếp. Dữ liệu SQLite nằm trong volume `tdpos_data`.
 
-1. Create `.env` (or export env vars) with at least:
-   - `JWT_SECRET`
-   - `ADMIN_BOOTSTRAP_EMAIL`
-   - `ADMIN_BOOTSTRAP_PASSWORD`
-   - Optional port overrides when local ports are busy:
-     - `API_PUBLIC_PORT` (default `3101`)
-     - `WEB_PUBLIC_PORT` (default `3001`)
-2. Build and run:
-   - `docker compose up -d --build`
-3. Open:
-   - App: `http://localhost:${WEB_PUBLIC_PORT:-8077}`
+Tài khoản demo Docker mặc định: `owner@hkdplus.local` / `123456`. Tài khoản quản trị kỹ thuật: `admin@hkdplus.local` / `123456` (nên đổi qua biến môi trường trước khi cài thật).
 
-Notes:
-- SQLite data is persisted in Docker volume `tdpos_data`.
-- Backend API is internal-only in Docker network (not published to host).
-- Frontend is built with `VITE_API_URL=/api` and nginx proxies `/api/*` to `api:3101`.
+Để các thiết bị cùng Wi‑Fi tự phân giải tên mà không sửa `hosts` từng máy, cần cấu hình một lần trên router/access point:
 
-## Docker UAT & Production
+1. Gán IP cố định cho máy chủ, ví dụ `192.168.1.5` (DHCP reservation).
+2. Trong mục Local DNS/DNS Hostname/Static DNS, thêm `hkd.care` trỏ tới `192.168.1.5`.
+3. Đảm bảo DHCP của router cấp chính router làm DNS cho các thiết bị; ngắt/kết nối lại Wi‑Fi để nhận cấu hình mới.
 
-Use separate env files + compose override files:
+Một số router không cho dùng vùng `.local` vì đây là vùng mDNS. Khi đó nên tạo thêm tên `hkdplus.home.arpa` hoặc `hkdplus.lan` trỏ cùng IP; đây là cách ổn định hơn trên Windows/Android/iOS.
 
-- `.env.uat` + `docker-compose.uat.yml`
-- `.env.prod` + `docker-compose.prod.yml`
-- Sample templates:
-  - `.env.uat.example`
-  - `.env.prod.example`
+Phương án tạm thời nếu router không có Local DNS là thêm vào file hosts:
 
-Run UAT:
+```text
+<IP_MAY_CHU>    hkd.care
+```
 
-`docker compose --env-file .env.uat -f docker-compose.yml -f docker-compose.uat.yml up -d --build`
+Sau đó mở `http://hkd.care`. Màn hình Cài đặt → Thông tin hệ thống hiển thị IP, URL LAN, trạng thái SQLite, license và các bản sao lưu gần nhất.
 
-Run Production:
+## Dữ liệu và an toàn vận hành
 
-`docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build`
-
-Stop UAT:
-
-`docker compose --env-file .env.uat -f docker-compose.yml -f docker-compose.uat.yml down`
-
-Stop Production:
-
-`docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml down`
-
-Open URLs:
-
-- UAT: `http://localhost:18077`
-- Production: `http://localhost:8077`
-
-## Product Backlog (Next Phases)
-
-### Phase A - Subscription & Billing Hardening
-- Add full subscription request timeline (multiple requests, approve/reject history, actor + timestamp).
-- Add tenant-facing billing center with invoice history and payment proof upload.
-- Add package effective date model (scheduled change next cycle vs immediate).
-- Add admin-side bulk actions for expiring trials and pending reviews.
-
-### Phase B - RBAC & User Governance
-- Granular permission matrix by screen/action (view/create/update/delete/export/approve).
-- Per-package enforcement for feature flags, seat limits, and add-on modules.
-- User invitation flow (email invite token, first-login password setup).
-- Session security controls: force logout all sessions, password policy, optional 2FA.
-
-### Phase C - POS UX & Operational Excellence
-- Dense POS layout mode for low-resolution devices and high-volume cashier workflows.
-- Cart and checkout keyboard shortcuts + scanner-first flow.
-- Inventory intelligence: reorder suggestions, stock movement audit, variance alerts.
-- Debt collection workflow with due-date buckets and customer payment plans.
-
-### Phase D - Data, Audit, and Reliability
-- Structured audit viewer (filter by entity/action/user/date range) with export.
-- Soft-delete + restore for customers/products/users with retention policy.
-- Background jobs for daily snapshots and anomaly detection.
-- Backup/restore tooling and migration playbook for production operations.
-
-### Phase E - Analytics & Merchant Insights
-- Merchant health score (sales velocity, debt risk, stock-out risk).
-- Cohort analytics (new vs returning customers, retention trend).
-- Package recommendation engine based on seat usage and feature usage.
-- Executive dashboard for TRANDAO with MRR, churn risk, and support SLA metrics.
+- Tồn kho, công nợ và số dư tiền được ghi qua ledger/transaction có liên kết chứng từ.
+- Có thể tạo bản sao lưu SQLite từ Cài đặt → Sao lưu & khôi phục.
+- License instance xác minh bằng public key và machine fingerprint; hết hạn không xóa dữ liệu.
+- Các trường MST, thuế suất, tiền thuế và dữ liệu chứng từ được lưu để xuất báo cáo kế toán/thuế về sau.
+- Tích hợp hóa đơn điện tử chưa bật trong MVP; adapter sẽ được triển khai riêng.

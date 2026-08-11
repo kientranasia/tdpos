@@ -1,10 +1,11 @@
 import { NavLink, Outlet, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, ShoppingCart, Package, Users, Wallet, LogOut, Store, Receipt, Settings, PanelLeftClose, PanelLeftOpen, Bell, UserRound, BookText } from 'lucide-react';
+import { Home, ShoppingCart, Package, Users, Wallet, LogOut, Receipt, Settings, PanelLeftClose, PanelLeftOpen, Bell, UserRound, BookText, Menu, ClipboardList, BarChart3 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { useState } from 'react';
 import { authApi } from '../../lib/api';
 import { Button } from '../ui/Button';
 import { firstAllowedPath, isMenuAllowed, canAccessPath } from '../../lib/permissions';
+import BrandMark from '../BrandMark';
 
 export default function MobileLayout() {
   const { activeTenant, currentUser, loading, setActiveTenant, setCurrentUser, products } = useApp();
@@ -29,8 +30,6 @@ export default function MobileLayout() {
     return <Navigate to={firstAllowedPath(currentUser.role)} replace />;
   }
 
-  const accessBlocked = activeTenant.accessBlocked || activeTenant.status === 'suspended';
-  const isBillingRoute = location.pathname.startsWith('/app/subscription') || location.pathname.startsWith('/app/settings');
 
   // Multi-tenant Onboarding Check
   if (activeTenant.status === 'pending_setup' && location.pathname !== '/onboarding') {
@@ -49,17 +48,26 @@ export default function MobileLayout() {
     { icon: ShoppingCart, label: 'Bán hàng', shortLabel: 'Bán hàng', path: '/app/pos' },
     { icon: Receipt, label: 'Lịch sử đơn', shortLabel: 'Đơn', path: '/app/invoices' },
     { icon: Package, label: 'Mặt hàng', shortLabel: 'Hàng', path: '/app/inventory' },
-    { icon: Users, label: 'Khách hàng', shortLabel: 'Khách', path: '/app/customers' },
+    { icon: ClipboardList, label: 'Nhập hàng', shortLabel: 'Nhập', path: '/app/purchases' },
+    { icon: Users, label: 'Đối tác', shortLabel: 'Đối tác', path: '/app/customers' },
     { icon: Wallet, label: 'Công nợ', shortLabel: 'Nợ', path: '/app/debt' },
     { icon: BookText, label: 'Sổ quỹ', shortLabel: 'Quỹ', path: '/app/cashbook' },
+    { icon: BarChart3, label: 'Báo cáo', shortLabel: 'BC', path: '/app/reports' },
     { icon: Settings, label: 'Cài đặt', shortLabel: 'Tôi', path: '/app/settings' },
   ];
   const visibleMenuItems = menuItems.filter((item) => isMenuAllowed(currentUser.role, item.path));
-  const footerMenuItems = visibleMenuItems.filter((item) => item.path !== '/app/settings');
+  const footerMenuItems = [
+    { icon: Home, label: 'Tổng quan', shortLabel: 'Tổng quan', path: '/app/dashboard' },
+    { icon: Package, label: 'Hàng hóa', shortLabel: 'Hàng hóa', path: '/app/inventory' },
+    { icon: ShoppingCart, label: 'Bán hàng', shortLabel: 'Bán hàng', path: '/app/pos' },
+    { icon: Wallet, label: 'Công nợ', shortLabel: 'Công nợ', path: '/app/debt' },
+    { icon: Menu, label: 'Nhiều hơn', shortLabel: 'Nhiều hơn', path: '/app/more' },
+  ].filter((item) => item.path === '/app/more' || isMenuAllowed(currentUser.role, item.path));
 
   const getHeaderTitle = () => {
+    if (location.pathname.startsWith('/app/more')) return 'Nhiều hơn';
     const item = visibleMenuItems.find(item => item.path === location.pathname);
-    return item ? item.label : 'TDPOS';
+    return item ? item.label : 'HKDCare';
   };
 
   const lowStockCount = activeTenant?.accessBlocked
@@ -67,46 +75,11 @@ export default function MobileLayout() {
     : products.filter((p) => p.trackStock && p.stock <= p.lowStockThreshold).length;
 
   return (
-    <div className={`flex h-screen flex-col bg-slate-50 ${isCollapsed ? 'lg:pl-20' : 'lg:pl-64'} transition-all duration-300 font-sans`}>
-      {accessBlocked && !isBillingRoute && (
-        <div className="fixed inset-0 z-[200] bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-2xl border border-white space-y-4 text-center">
-            <h2 className="text-lg font-black text-slate-900 uppercase tracking-tight">Gói dùng thử đã hết hạn</h2>
-            <p className="text-sm font-bold text-slate-500 leading-relaxed">
-              Tài khoản vẫn đăng nhập được nhưng đã bị khóa thao tác. Vui lòng đăng ký gói năm để tiếp tục sử dụng hệ thống.
-            </p>
-            <div className="rounded-lg bg-sky-50 p-4">
-              <p className="text-[10px] font-black text-sky-700 uppercase tracking-widest">Phí dịch vụ</p>
-              <p className="text-xl font-black text-sky-700">150.000 đ / tháng</p>
-              <p className="text-[10px] font-bold text-slate-500">Thanh toán theo gói năm</p>
-            </div>
-            <Button
-              onClick={() => navigate('/app/subscription')}
-              className="w-full h-11 rounded-lg bg-sky-600 hover:bg-sky-700 font-black uppercase tracking-widest"
-            >
-              Yêu cầu đăng ký
-            </Button>
-            <Button
-              onClick={handleLogout}
-              variant="outline"
-              className="w-full h-11 rounded-lg font-black uppercase tracking-widest"
-            >
-              Đăng xuất
-            </Button>
-          </div>
-        </div>
-      )}
-
+    <div className={`erp-compact flex h-screen flex-col bg-slate-50 ${isCollapsed ? 'lg:pl-20' : 'lg:pl-64'} transition-all duration-300 font-sans`}>
       {/* Header cho Mobile + Tablet */}
       <header className="sticky top-0 z-[110] h-14 md:h-16 items-center justify-between brand-topbar px-4 md:px-5 lg:hidden flex">
-        <button onClick={() => navigate('/app/dashboard')} className="flex items-center gap-3 min-w-0">
-          <div className="flex h-9 w-9 md:h-10 md:w-10 items-center justify-center rounded-lg bg-sky-600 text-white shadow-lg shadow-sky-900/20">
-            <Store className="h-5 w-5" />
-          </div>
-          <div className="min-w-0">
-            <p className="font-semibold text-slate-900 tracking-tight text-[15px] md:text-base leading-none">TDPOS</p>
-            <p className="text-[11px] text-slate-500 truncate">{getHeaderTitle()}</p>
-          </div>
+        <button onClick={() => navigate('/')} className="flex min-w-0 items-center" title="Trung tâm điều khiển">
+          <BrandMark />
         </button>
 
         <div className="flex items-center gap-2 relative">
@@ -166,21 +139,18 @@ export default function MobileLayout() {
       {/* Sidebar cho Desktop */}
       <aside className={`fixed inset-y-0 left-0 hidden ${isCollapsed ? 'w-20' : 'w-64'} flex-col bg-white lg:flex border-r border-slate-200/60 shadow-[4px_0_24px_rgba(0,0,0,0.02)] z-50 transition-all duration-300`}>
         <div className={`flex h-20 items-center border-b border-slate-50 ${isCollapsed ? 'justify-center px-2' : 'justify-between px-6'}`}>
-          <div className="flex items-center gap-3 overflow-hidden">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-sky-600 text-white shadow-lg shadow-sky-900/20 shrink-0">
-              <Store className="h-6 w-6" />
-            </div>
-            {!isCollapsed && (
-              <div className="animate-in fade-in slide-in-from-left-2 duration-300">
-                <div className="font-black text-slate-900 font-display tracking-tighter text-lg italic uppercase leading-none">TDPOS</div>
-                <div className="text-[9px] uppercase tracking-[0.2em] font-bold text-sky-600/80 mt-1 truncate max-w-[120px]">{activeTenant.name}</div>
-              </div>
+          <button type="button" onClick={() => navigate('/')} className="flex items-center overflow-hidden" title="Trung tâm điều khiển">
+            {isCollapsed ? (
+              <BrandMark compact />
+            ) : (
+              <BrandMark />
             )}
-          </div>
+          </button>
           {!isCollapsed && (
-            <button 
+            <button
               onClick={() => setIsCollapsed(!isCollapsed)}
-              className="h-8 w-8 rounded-lg text-slate-300 hover:text-sky-600 hover:bg-sky-50 transition-all flex items-center justify-center"
+              className="h-8 w-8 rounded-lg text-slate-300 hover:bg-sky-50 hover:text-sky-600 transition-all flex items-center justify-center"
+              title="Thu gọn menu"
             >
               <PanelLeftClose className="h-4 w-4" />
             </button>
@@ -196,6 +166,15 @@ export default function MobileLayout() {
         </div>
 
         <nav className="flex-1 space-y-1 p-4 mt-4 overflow-y-auto">
+          <button
+            type="button"
+            onClick={() => navigate('/')}
+            title={isCollapsed ? 'Trung tâm' : ''}
+            className={`flex w-full items-center ${isCollapsed ? 'justify-center' : 'gap-3'} rounded-lg px-4 py-3 text-xs font-bold uppercase tracking-wider text-sky-700 transition-all hover:bg-sky-50`}
+          >
+            <Home className="h-4 w-4 shrink-0" />
+            {!isCollapsed && <span className="truncate">Trung tâm</span>}
+          </button>
           {!isCollapsed && <p className="text-[8px] font-black text-slate-300 uppercase tracking-[0.4em] mb-4 pl-2 font-display">Menu chính</p>}
           {visibleMenuItems.map((item) => (
             <NavLink
@@ -228,7 +207,7 @@ export default function MobileLayout() {
           {!isCollapsed && (
             <div className="mt-6 text-center animate-in fade-in duration-700">
               <p className="text-[7px] font-bold text-slate-300 uppercase tracking-[0.2em] leading-relaxed">
-                © TDPOS<br/>All rights reserved.
+                © HKDCare<br/>Quản lý gọn, an tâm kinh doanh
               </p>
             </div>
           )}
@@ -250,12 +229,12 @@ export default function MobileLayout() {
             key={item.path}
             to={item.path}
             className={({ isActive }) =>
-              `flex min-w-0 flex-col items-center justify-center gap-1 py-2.5 transition-all duration-200 ${
+              `flex min-w-0 flex-col items-center justify-center gap-1 py-3 transition-all duration-200 ${
                 isActive ? 'text-sky-600 bg-sky-50/70' : 'text-slate-500'
               }`
             }
           >
-            <item.icon className="h-[19px] w-[19px] transition-transform duration-200" />
+            <item.icon className="h-5 w-5 transition-transform duration-200" />
             <span className="max-w-full truncate px-1 text-[11px] font-semibold leading-none tracking-normal max-[390px]:hidden">{item.shortLabel}</span>
           </NavLink>
         ))}

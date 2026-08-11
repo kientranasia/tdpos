@@ -176,7 +176,7 @@ if (!existingStarterPackage) {
 }
 
 // ─── Create Bootstrap Admin Account ────────────────────────
-const bootstrapAdminEmail = process.env.ADMIN_BOOTSTRAP_EMAIL?.trim() || 'admin@tdpos.vn';
+const bootstrapAdminEmail = process.env.ADMIN_BOOTSTRAP_EMAIL?.trim() || 'admin@hkdplus.local';
 const bootstrapAdminPassword = process.env.ADMIN_BOOTSTRAP_PASSWORD || 'admin123';
 const bootstrapAdminName = process.env.ADMIN_BOOTSTRAP_NAME?.trim() || 'System Admin';
 const bootstrapAdminRole = process.env.ADMIN_BOOTSTRAP_ROLE?.trim() || 'super_admin';
@@ -201,7 +201,6 @@ if (!existingAdmin) {
 const existingTenant = sqlite.prepare('SELECT id FROM tenants WHERE id = ?').get('tenant-demo');
 if (!existingTenant) {
   const now = new Date().toISOString();
-  const trialEnd = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
   const ownerPassword = bcrypt.hashSync('123456', 10);
   const tenantSettings = JSON.stringify({
     lowStockThresholdDefault: 10,
@@ -223,22 +222,22 @@ if (!existingTenant) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     'tenant-demo',
-    'TDPOS Demo Workspace',
-    'TRANDAO Investment',
-    '123 Innovation Street, District 1, Ho Chi Minh City',
+    'HKDPlus Demo',
+    'Hộ kinh doanh demo',
+    'Quận 1, Thành phố Hồ Chí Minh',
     '0901234567',
-    'owner@tdpos.vn',
+    'owner@hkdplus.local',
     'Asia/Ho_Chi_Minh',
     'VND',
-    'TD',
-    'trial',
-    now,
-    trialEnd,
-    'trial',
+    'HKD',
+    'active',
+    null,
+    null,
+    'active',
     'yearly',
     150000,
     'starter_1',
-    'Starter 1',
+    'HKDPlus Local',
     1,
     150000,
     tenantSettings,
@@ -253,7 +252,7 @@ if (!existingTenant) {
   sqlite.prepare(`
     INSERT INTO users (id, name, email, password, phone, role, tenant_id, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run('user-owner-demo', 'Trần Đạo', 'owner@tdpos.vn', ownerPassword, '0901234567', 'owner', 'tenant-demo', 'active');
+  `).run('user-owner-demo', 'Chủ hộ demo', 'owner@hkdplus.local', ownerPassword, '0901234567', 'owner', 'tenant-demo', 'active');
 
   const categories = [
     ['cat-retail', 'Bán lẻ', 'Nhóm hàng bán lẻ phổ biến'],
@@ -291,7 +290,7 @@ if (!existingTenant) {
   }
 
   console.log('🏪 Demo tenant account created:');
-  console.log('   Email:    owner@tdpos.vn');
+  console.log('   Email:    owner@hkdplus.local');
   console.log('   Password: 123456');
 } else {
   console.log('🏪 Demo tenant already exists, skipping.');
@@ -300,9 +299,9 @@ if (!existingTenant) {
 // Keep demo data domain-neutral when reseeding an existing local database.
 sqlite.prepare(`
   UPDATE tenants
-  SET name = ?, legal_name = ?, address = ?
+  SET name = ?, legal_name = ?, address = ?, status = 'active', subscription_status = 'active'
   WHERE id = ?
-`).run('TDPOS Demo Workspace', 'TRANDAO Investment', '123 Innovation Street, District 1, Ho Chi Minh City', 'tenant-demo');
+`).run('HKDPlus Demo', 'Hộ kinh doanh demo', 'Quận 1, Thành phố Hồ Chí Minh', 'tenant-demo');
 
 const neutralCategories = [
   ['Bán lẻ', 'Nhóm hàng bán lẻ phổ biến', 'cat-fertilizer'],

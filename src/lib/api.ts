@@ -7,7 +7,7 @@ const NORMALIZED_API_BASE = API_BASE.replace(/\/+$/, '');
 const API_ROOT = NORMALIZED_API_BASE.endsWith('/api')
   ? NORMALIZED_API_BASE
   : `${NORMALIZED_API_BASE}/api`;
-const USER_TOKEN_KEY = 'tdpos_token';
+const USER_TOKEN_KEY = 'hkdplus_token';
 const ADMIN_TOKEN_KEY = 'tdpos_admin_token';
 
 interface RequestOptions {
@@ -64,6 +64,12 @@ export const usersApi = {
   delete: (id: string) => request<any>(`/users/${id}`, { method: 'DELETE' }),
 };
 
+export const permissionsApi = {
+  list: () => request<any[]>('/permissions'),
+  getForUser: (userId: string) => request<any[]>(`/users/${userId}/permissions`),
+  saveForUser: (userId: string, permissions: Array<{ code: string; allowed: boolean }>) => request<any>(`/users/${userId}/permissions`, { method: 'PUT', body: { permissions } }),
+};
+
 // ─── Categories ────────────────────────────────────────────
 export const categoriesApi = {
   list: (tenantId?: string) => request<any[]>('/categories', { params: { tenantId: tenantId || '' } }),
@@ -91,6 +97,42 @@ export const customersApi = {
   update: (id: string, data: any) => request<any>(`/customers/${id}`, { method: 'PATCH', body: data }),
   adjustDebt: (id: string, amount: number, type: 'increase' | 'decrease') =>
     request<any>(`/customers/${id}/debt`, { method: 'POST', body: { amount, type } }),
+};
+
+export const suppliersApi = {
+  list: (search?: string) => request<any[]>('/suppliers', { params: { search: search || '' } }),
+  create: (data: any) => request<any>('/suppliers', { method: 'POST', body: data }),
+  update: (id: string, data: any) => request<any>(`/suppliers/${id}`, { method: 'PATCH', body: data }),
+};
+
+export const purchasesApi = {
+  list: () => request<any[]>('/purchases'),
+  get: (id: string) => request<any>(`/purchases/${id}`),
+  create: (data: any) => request<any>('/purchases', { method: 'POST', body: data }),
+};
+
+export const payableLedgerApi = {
+  list: (supplierId?: string) => request<any[]>('/payable-ledger', { params: { supplierId: supplierId || '' } }),
+  create: (data: any) => request<any>('/payable-ledger', { method: 'POST', body: data }),
+};
+
+export const systemApi = {
+  status: () => request<any>('/system/status'),
+  taxProfile: () => request<any>('/tax-profile'),
+  updateTaxProfile: (data: any) => request<any>('/tax-profile', { method: 'PATCH', body: data }),
+  documentSequences: () => request<any[]>('/document-sequences'),
+};
+
+export const backupsApi = {
+  list: () => request<any[]>('/backups'),
+  create: () => request<any>('/backups', { method: 'POST', body: {} }),
+  restore: (backupId: string) => request<any>('/backups/restore', { method: 'POST', body: { backupId } }),
+};
+
+export const licenseApi = {
+  status: () => request<any>('/license/status'),
+  activate: (licenseToken: string) => request<any>('/license/activate', { method: 'POST', body: { licenseToken } }),
+  refresh: () => request<any>('/license/refresh', { method: 'POST', body: {} }),
 };
 
 // ─── Invoices ──────────────────────────────────────────────
@@ -135,14 +177,6 @@ export const customerCareApi = {
 // ─── Dashboard ─────────────────────────────────────────────
 export const dashboardApi = {
   stats: (tenantId: string) => request<any>('/dashboard/stats', { params: { tenantId } }),
-};
-
-// ─── Packages & Subscription Upgrade (Tenant App) ─────────
-export const subscriptionApi = {
-  packages: () => request<any[]>('/packages'),
-  me: () => request<any>('/subscriptions/me'),
-  requestUpgrade: (packageCode: string, note?: string) =>
-    request<any>('/subscriptions/request-upgrade', { method: 'POST', body: { packageCode, note } }),
 };
 
 // ─── Auth (Tenant Login/Register) ──────────────────────────

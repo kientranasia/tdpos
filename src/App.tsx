@@ -16,10 +16,13 @@ import CustomerDetail from './pages/CustomerDetail';
 import Debt from './pages/Debt';
 import Invoices from './pages/Invoices';
 import TenantSetup from './pages/TenantSetup';
-import AdminPanel from './pages/AdminPanel';
 import Settings from './pages/Settings';
-import Subscription from './pages/Subscription';
+import MoreMenu from './pages/MoreMenu';
 import Cashbook from './pages/Cashbook';
+import Purchases from './pages/Purchases';
+import Suppliers from './pages/Suppliers';
+import Partners from './pages/Partners';
+import Reports from './pages/Reports';
 
 export default function App() {
   return (
@@ -30,20 +33,23 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Login isRegister />} />
           <Route path="/onboarding" element={<TenantSetup />} />
-          <Route path="/admin" element={<AdminPanel />} />
           
           <Route path="/app" element={<MobileLayout />}>
             <Route index element={<Navigate to="/app/dashboard" replace />} />
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="pos" element={<POS />} />
             <Route path="inventory" element={<Inventory />} />
-            <Route path="customers" element={<Customers />} />
+            <Route path="customers" element={<Partners />} />
             <Route path="customers/:id" element={<CustomerDetail />} />
             <Route path="debt" element={<Debt />} />
             <Route path="cashbook" element={<Cashbook />} />
+            <Route path="reports" element={<Reports />} />
+            <Route path="purchases" element={<Purchases />} />
+            <Route path="suppliers" element={<Partners />} />
             <Route path="invoices" element={<Invoices />} />
             <Route path="settings" element={<Settings />} />
-            <Route path="subscription" element={<Subscription />} />
+            <Route path="subscription" element={<Navigate to="/app/settings" replace />} />
+            <Route path="more" element={<MoreMenu />} />
           </Route>
         </Routes>
       </BrowserRouter>

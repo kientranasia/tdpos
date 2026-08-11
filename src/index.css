@@ -94,6 +94,103 @@
 }
 
 @layer utilities {
+  /* Dense desktop/mobile ERP mode: compact rows, low visual noise, inline management. */
+  .erp-compact {
+    --erp-row-height: 40px;
+    --erp-gap: 8px;
+  }
+
+  .erp-compact main {
+    font-size: 13px;
+  }
+
+  .erp-compact .text-page-title {
+    @apply text-lg md:text-xl leading-6;
+  }
+
+  .erp-compact .text-page-subtitle {
+    @apply text-xs leading-4;
+  }
+
+  .erp-compact .text-section-title {
+    @apply text-sm leading-5;
+  }
+
+  .erp-compact .text-section-subtitle {
+    @apply text-xs leading-4;
+  }
+
+  .erp-compact [class~="p-8"] { padding: 16px !important; }
+  .erp-compact [class~="p-10"] { padding: 16px !important; }
+  .erp-compact [class~="p-6"] { padding: 12px !important; }
+  .erp-compact [class~="p-5"] { padding: 12px !important; }
+  .erp-compact [class~="p-4"] { padding: 10px !important; }
+  .erp-compact [class~="p-3"] { padding: 8px !important; }
+  .erp-compact [class~="px-8"] { padding-left: 16px !important; padding-right: 16px !important; }
+  .erp-compact [class~="px-6"] { padding-left: 12px !important; padding-right: 12px !important; }
+  .erp-compact [class~="px-5"] { padding-left: 12px !important; padding-right: 12px !important; }
+  .erp-compact [class~="py-6"] { padding-top: 12px !important; padding-bottom: 12px !important; }
+  .erp-compact [class~="py-5"] { padding-top: 10px !important; padding-bottom: 10px !important; }
+  .erp-compact [class~="py-4"] { padding-top: 8px !important; padding-bottom: 8px !important; }
+  .erp-compact [class~="gap-10"] { gap: 16px !important; }
+  .erp-compact [class~="gap-8"] { gap: 16px !important; }
+  .erp-compact [class~="gap-6"] { gap: 12px !important; }
+  .erp-compact [class~="gap-5"] { gap: 10px !important; }
+  .erp-compact [class~="gap-4"] { gap: 8px !important; }
+  .erp-compact [class~="space-y-10"] > :not([hidden]) ~ :not([hidden]) { margin-top: 16px !important; }
+  .erp-compact [class~="space-y-8"] > :not([hidden]) ~ :not([hidden]) { margin-top: 16px !important; }
+  .erp-compact [class~="space-y-6"] > :not([hidden]) ~ :not([hidden]) { margin-top: 12px !important; }
+  .erp-compact [class~="space-y-4"] > :not([hidden]) ~ :not([hidden]) { margin-top: 8px !important; }
+
+  .erp-compact [class~="h-14"] { height: 40px !important; }
+  .erp-compact [class~="h-16"] { height: 42px !important; }
+  .erp-compact [class~="h-12"] { height: 38px !important; }
+  .erp-compact [class~="h-11"] { height: 36px !important; }
+  .erp-compact [class~="h-10"] { height: 34px !important; }
+  .erp-compact [class~="h-9"] { height: 32px !important; }
+  .erp-compact [class~="min-h-32"] { min-height: 96px !important; }
+
+  .erp-compact table th,
+  .erp-compact table td {
+    padding: 6px 8px !important;
+    line-height: 18px !important;
+  }
+
+  .erp-compact [class~="rounded-xl"] { border-radius: 6px !important; }
+  .erp-compact [class~="rounded-2xl"] { border-radius: 6px !important; }
+  .erp-compact [class~="shadow-xl"],
+  .erp-compact [class~="shadow-2xl"] { box-shadow: 0 1px 3px rgb(15 23 42 / 0.08) !important; }
+
+  .erp-compact .divide-y > * {
+    min-height: var(--erp-row-height);
+  }
+
+  .erp-compact .divide-y > button,
+  .erp-compact .divide-y > div {
+    transition: background-color 120ms ease;
+  }
+
+  .erp-compact .erp-debt-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: 12px;
+  }
+
+  .erp-compact .erp-debt-row > .mt-3 {
+    margin-top: 0 !important;
+  }
+
+  @media (max-width: 767px) {
+    .erp-compact .erp-debt-row {
+      display: block;
+    }
+
+    .erp-compact .erp-debt-row > .mt-3 {
+      margin-top: 8px !important;
+    }
+  }
+
   .control-md {
     @apply h-10 rounded-lg text-sm;
   }
@@ -184,7 +281,7 @@
   }
 
   .pb-mobile-nav {
-    padding-bottom: calc(72px + env(safe-area-inset-bottom));
+    padding-bottom: calc(80px + env(safe-area-inset-bottom));
   }
   
   .glass {

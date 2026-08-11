@@ -3,6 +3,7 @@ import { Invoice, InvoiceItem, Customer, Tenant } from '../../types';
 import { formatCurrency } from '../../lib/utils';
 import { Button } from '../ui/Button';
 import { X, Download, Printer } from 'lucide-react';
+import BrandMark from '../BrandMark';
 
 interface POSInvoiceModalProps {
   isOpen: boolean;
@@ -38,6 +39,7 @@ const InvoiceContent = forwardRef(({
       return (
         <>
     <div className="text-center mb-10">
+      <BrandMark className="mb-3" />
       <h4 className="text-2xl font-black text-slate-900 font-display tracking-tight leading-none mb-2">{storeTitle}</h4>
       {showAddress && <p className="text-[11px] text-slate-500">{activeTenant?.address}</p>}
       {showPhone && <p className="text-[11px] text-slate-500">Hotline: {activeTenant?.phone}</p>}

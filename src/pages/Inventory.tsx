@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { Search, Plus, AlertTriangle, Package, ArrowUpDown, X, Save, Edit3, Tag, CheckCircle, Camera, Layers, Trash2, Upload, Download, ScanLine, SlidersHorizontal, ListFilter } from 'lucide-react';
+import { Search, Plus, AlertTriangle, Package, ArrowUpDown, X, Save, Edit3, Tag, CheckCircle, Camera, Layers, Trash2, Upload, Download, ScanLine, SlidersHorizontal, ListFilter, Ellipsis } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { formatCurrency } from '../lib/utils';
@@ -25,6 +25,7 @@ export default function Inventory() {
   const [showUnitModal, setShowUnitModal] = useState(false);
   const [showStockModal, setShowStockModal] = useState(false);
   const [showBulkCheckModal, setShowBulkCheckModal] = useState(false);
+  const [showMobileActionSheet, setShowMobileActionSheet] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [stockUpdatingProduct, setStockUpdatingProduct] = useState<Product | null>(null);
   
@@ -65,6 +66,7 @@ export default function Inventory() {
     unit: '',
     purchasePrice: 0,
     sellingPrice: 0,
+    taxRate: 0,
     stock: 0,
     lowStockThreshold: 10,
     imageUrl: ''
@@ -85,6 +87,7 @@ export default function Inventory() {
       unit: unitOptions[0] || 'Cái',
       purchasePrice: 0,
       sellingPrice: 0,
+      taxRate: 0,
       stock: 0,
       lowStockThreshold: 10,
       imageUrl: ''
@@ -110,6 +113,7 @@ export default function Inventory() {
       unit: productForm.unit.trim(),
       purchasePrice: Number(productForm.purchasePrice) || 0,
       sellingPrice: Number(productForm.sellingPrice) || 0,
+      taxRate: Number(productForm.taxRate) || 0,
       stock: Number(productForm.stock) || 0,
       lowStockThreshold: Number(productForm.lowStockThreshold) || 0,
     };
@@ -436,6 +440,7 @@ export default function Inventory() {
           unit: row.payload.unit || 'Cái',
           purchasePrice: row.payload.purchasePrice || 0,
           sellingPrice: row.payload.sellingPrice || 0,
+          taxRate: row.payload.taxRate || 0,
           stock: row.payload.stock || 0,
           trackStock: row.payload.trackStock ?? true,
           lowStockThreshold: row.payload.lowStockThreshold || 10,
@@ -578,13 +583,13 @@ export default function Inventory() {
     const ws = XLSX.utils.json_to_sheet(templateRows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Products');
-    XLSX.writeFile(wb, 'tdpos-product-import-template.xlsx');
+    XLSX.writeFile(wb, 'hkdplus-product-import-template.xlsx');
 
     const csv = XLSX.utils.sheet_to_csv(ws);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = 'tdpos-product-import-template.csv';
+    link.download = 'hkdplus-product-import-template.csv';
     link.click();
     URL.revokeObjectURL(link.href);
   };
@@ -655,7 +660,7 @@ export default function Inventory() {
   }, [products]);
 
   const uniqueCategories = useMemo(
-    () => Array.from(new Set(products.map((p) => p.category).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'vi')),
+    () => Array.from(new Set(products.map((p) => p.category).filter(Boolean) as string[])).sort((a, b) => a.localeCompare(b, 'vi')),
     [products]
   );
 
@@ -770,6 +775,49 @@ export default function Inventory() {
         </div>
       )}
 
+      {showMobileActionSheet && (
+        <div className="fixed inset-0 z-[125] flex items-end bg-slate-900/40 lg:hidden" onClick={() => setShowMobileActionSheet(false)}>
+          <div className="w-full rounded-t-2xl bg-white p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-slate-300" />
+            <div className="space-y-2">
+              <Button
+                variant="outline"
+                className="h-11 w-full justify-start gap-2"
+                onClick={() => {
+                  setShowMobileActionSheet(false);
+                  fileInputRef.current?.click();
+                }}
+              >
+                <Upload className="h-4 w-4" />
+                {importing ? 'Đang import...' : 'Import CSV/Excel'}
+              </Button>
+              <Button
+                variant="outline"
+                className="h-11 w-full justify-start gap-2"
+                onClick={() => {
+                  setShowMobileActionSheet(false);
+                  downloadTemplates();
+                }}
+              >
+                <Download className="h-4 w-4" />
+                Tải mẫu
+              </Button>
+              <Button
+                variant="outline"
+                className="h-11 w-full justify-start gap-2"
+                onClick={() => {
+                  setShowMobileActionSheet(false);
+                  openBulkCheck();
+                }}
+              >
+                <ListFilter className="h-4 w-4" />
+                Kiểm kê
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Product Modal */}
       {showBulkCheckModal && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
@@ -811,39 +859,39 @@ export default function Inventory() {
 
       {showProductModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-lg rounded-lg shadow-2xl border border-white overflow-hidden animate-in zoom-in-95 duration-500">
-            <div className="p-8 border-b border-slate-50 flex items-center justify-between bg-slate-50/50">
+          <div className="bg-white w-full max-w-2xl rounded-lg shadow-2xl border border-white overflow-hidden animate-in zoom-in-95 duration-500">
+            <div className="px-4 py-4 md:px-6 md:py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
                <div className="flex items-center gap-4">
-                  <div className="h-12 w-12 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-lg shadow-sky-900/20">
-                     <Package className="h-6 w-6" />
+                  <div className="h-10 w-10 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-lg shadow-sky-900/20">
+                     <Package className="h-5 w-5" />
                   </div>
                   <div>
-                    <h2 className="text-xl font-black text-slate-900 uppercase italic tracking-tight">{editingProduct ? 'Sửa sản phẩm' : 'Thêm sản phẩm'}</h2>
-                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mt-1">Thông tin hàng hóa cơ bản</p>
+                    <h2 className="text-base md:text-lg font-semibold text-slate-900">{editingProduct ? 'Sửa sản phẩm' : 'Thêm sản phẩm'}</h2>
+                    <p className="text-xs text-slate-500 mt-0.5">Thông tin hàng hóa cơ bản</p>
                   </div>
                </div>
-               <button onClick={() => setShowProductModal(false)} className="h-10 w-10 rounded-lg hover:bg-red-50 text-slate-300 hover:text-red-500 transition-all flex items-center justify-center">
-                  <X className="h-6 w-6" />
+               <button onClick={() => setShowProductModal(false)} className="h-9 w-9 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500 transition-all flex items-center justify-center">
+                  <X className="h-5 w-5" />
                </button>
             </div>
             
-            <div className="p-8 space-y-6 max-h-[70vh] overflow-y-auto custom-scrollbar">
+            <div className="px-4 py-4 md:px-6 md:py-5 space-y-4 md:space-y-5 max-h-[70vh] overflow-y-auto custom-scrollbar">
                {formError && (
                  <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                    {formError}
                  </div>
                )}
-               <div className="grid grid-cols-2 gap-6">
+               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
                   <div className="space-y-4">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Hình ảnh sản phẩm</label>
+                    <label className="text-xs font-semibold text-slate-500 ml-1">Hình ảnh sản phẩm</label>
                     <div className="relative group/img">
-                      <div className="h-40 w-full rounded-lg bg-slate-50 border-2 border-dashed border-slate-200 flex flex-col items-center justify-center overflow-hidden transition-all group-hover/img:border-sky-300">
+                      <div className="h-36 md:h-40 w-full rounded-lg bg-slate-50 border-2 border-dashed border-slate-200 flex flex-col items-center justify-center overflow-hidden transition-all group-hover/img:border-sky-300">
                         {productForm.imageUrl ? (
                           <img src={productForm.imageUrl} className="h-full w-full object-cover" alt="Preview" />
                         ) : (
                           <>
                             <Camera className="h-8 w-8 text-slate-300 group-hover/img:scale-110 transition-transform" />
-                            <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-2">Tải ảnh lên</span>
+                            <span className="text-xs font-medium text-slate-500 mt-2">Tải ảnh lên</span>
                           </>
                         )}
                         <input 
@@ -865,31 +913,31 @@ export default function Inventory() {
                   </div>
                   <div className="space-y-6">
                     <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Mã SKU</label>
+                        <label className="text-xs font-semibold text-slate-500 ml-1">Mã SKU</label>
                         <div className="relative">
                         <Tag className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300" />
                         <Input 
                             value={productForm.sku}
                             onChange={e => setProductForm({...productForm, sku: e.target.value})}
-                            className="h-12 pl-12 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700" 
+                            className="h-11 pl-12 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm"
                             placeholder="Ví dụ: SP001" 
                         />
                         </div>
                     </div>
                     <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Mã vạch</label>
+                        <label className="text-xs font-semibold text-slate-500 ml-1">Mã vạch</label>
                         <div className="relative">
                         <Tag className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300" />
                         <Input 
                             value={productForm.barcode}
                             onChange={e => setProductForm({...productForm, barcode: e.target.value})}
-                            className="h-12 pl-12 pr-28 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700" 
+                            className="h-11 pl-12 pr-28 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm"
                             placeholder="EAN/UPC/Code128 (không bắt buộc)" 
                         />
                         <button
                           type="button"
                           onClick={openBarcodeScanner}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 h-8 px-2.5 rounded-md bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 flex items-center gap-1 text-xs font-semibold"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 h-8 px-2.5 rounded-md bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 flex items-center gap-1 text-xs font-medium"
                         >
                           <Camera className="h-3.5 w-3.5" />
                           <ScanLine className="h-3.5 w-3.5" />
@@ -898,24 +946,24 @@ export default function Inventory() {
                         </div>
                     </div>
                     <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Tên sản phẩm</label>
+                        <label className="text-xs font-semibold text-slate-500 ml-1">Tên sản phẩm</label>
                         <Input 
                         value={productForm.name}
                         onChange={e => setProductForm({...productForm, name: e.target.value})}
-                        className="h-12 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700 uppercase" 
+                        className="h-11 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm"
                         placeholder="Ví dụ: Nước ngọt Coca" 
                         />
                     </div>
                   </div>
                </div>
 
-               <div className="grid grid-cols-2 gap-6">
+               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
                   <div className="space-y-2">
                     <div className="flex items-center justify-between px-1">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Danh mục</label>
+                        <label className="text-xs font-semibold text-slate-500">Danh mục</label>
                         <button 
                           onClick={() => setShowCategoryModal(true)}
-                          className="text-[9px] font-black text-sky-600 hover:text-sky-700 uppercase tracking-widest"
+                          className="text-xs font-semibold text-sky-600 hover:text-sky-700"
                         >
                           + Thêm mới
                         </button>
@@ -923,7 +971,7 @@ export default function Inventory() {
                     <select 
                       value={productForm.category}
                       onChange={e => setProductForm({...productForm, category: e.target.value})}
-                      className="w-full h-12 px-5 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700 appearance-none"
+                      className="w-full h-11 px-4 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm appearance-none"
                     >
                       {categories.map(cat => (
                         <option key={cat.id} value={cat.name}>{cat.name}</option>
@@ -935,10 +983,10 @@ export default function Inventory() {
                   </div>
                   <div className="space-y-2">
                     <div className="flex items-center justify-between px-1">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Đơn vị tính</label>
+                      <label className="text-xs font-semibold text-slate-500">Đơn vị tính</label>
                       <button
                         onClick={() => setShowUnitModal(true)}
-                        className="text-[9px] font-black text-sky-600 hover:text-sky-700 uppercase tracking-widest"
+                        className="text-xs font-semibold text-sky-600 hover:text-sky-700"
                       >
                         + Thêm mới
                       </button>
@@ -946,7 +994,7 @@ export default function Inventory() {
                     <select
                       value={productForm.unit}
                       onChange={e => setProductForm({ ...productForm, unit: e.target.value })}
-                      className="w-full h-12 px-5 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700 appearance-none"
+                      className="w-full h-11 px-4 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm appearance-none"
                     >
                       {unitOptions.map((unit) => (
                         <option key={unit} value={unit}>{unit}</option>
@@ -955,53 +1003,57 @@ export default function Inventory() {
                   </div>
                </div>
 
-               <div className="grid grid-cols-2 gap-6">
+               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
                     <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Giá nhập</label>
+                    <label className="text-xs font-semibold text-slate-500 ml-1">Giá nhập</label>
                     <div className="relative">
                        <Input 
                          type="number"
                          value={productForm.purchasePrice}
                          onChange={e => setProductForm({...productForm, purchasePrice: Number(e.target.value)})}
-                         className="h-12 pr-9 rounded-lg bg-sky-50/30 border-none shadow-inner font-bold text-sky-700 font-mono" 
+                         className="h-11 pr-9 rounded-lg bg-sky-50/30 border-none shadow-inner font-semibold text-sky-700 tabular-nums"
                        />
                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-semibold text-sky-700">đ</span>
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Giá bán</label>
+                    <label className="text-xs font-semibold text-slate-500 ml-1">Giá bán</label>
                     <div className="relative">
                        <Input 
                          type="number"
                          value={productForm.sellingPrice}
                          onChange={e => setProductForm({...productForm, sellingPrice: Number(e.target.value)})}
-                         className="h-12 pr-9 rounded-lg bg-sky-50/30 border-none shadow-inner font-bold text-sky-700 font-mono" 
+                         className="h-11 pr-9 rounded-lg bg-sky-50/30 border-none shadow-inner font-semibold text-sky-700 tabular-nums"
                        />
                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-semibold text-sky-700">đ</span>
                     </div>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-semibold text-slate-500 ml-1">Thuế suất (%)</label>
+                    <Input type="number" min="0" max="100" value={productForm.taxRate} onChange={e => setProductForm({...productForm, taxRate: Number(e.target.value)})} className="h-11 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 tabular-nums" />
                   </div>
                </div>
 
                {!editingProduct && (
                  <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Số lượng tồn kho ban đầu</label>
+                    <label className="text-xs font-semibold text-slate-500 ml-1">Số lượng tồn kho ban đầu</label>
                     <Input 
                        type="number"
                        value={productForm.stock}
                        onChange={e => setProductForm({...productForm, stock: Number(e.target.value)})}
-                       className="h-12 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700" 
+                       className="h-11 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm"
                     />
                  </div>
                )}
             </div>
 
-            <div className="p-8 bg-slate-50/50 border-t border-slate-100">
+            <div className="px-4 py-4 md:px-6 md:py-5 bg-slate-50/70 border-t border-slate-100">
                <Button 
                  onClick={handleSaveProduct}
                  disabled={savingProduct}
-                 className="w-full h-14 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-black uppercase tracking-widest shadow-xl shadow-sky-900/20 gap-3"
+                 className="w-full h-11 md:h-12 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-semibold shadow-xl shadow-sky-900/20 gap-2"
                 >
-                 <Save className="h-5 w-5" />
+                 <Save className="h-4 w-4" />
                  <span>{savingProduct ? 'Đang lưu...' : 'Lưu sản phẩm'}</span>
                </Button>
             </div>
@@ -1168,7 +1220,7 @@ export default function Inventory() {
         </div>
       )}
 
-      <div className="p-4 lg:p-8 bg-white border-b sticky top-0 z-40 flex flex-col lg:flex-row gap-3 lg:gap-6 items-start lg:items-center justify-between shadow-sm shrink-0">
+      <div className="p-3 lg:p-8 bg-white border-b sticky top-0 z-40 flex flex-col lg:flex-row gap-2 lg:gap-6 items-start lg:items-center justify-between shadow-sm shrink-0">
         <div className="hidden lg:flex items-center gap-5">
           <div className="h-9 w-9 sm:h-12 sm:w-12 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-lg shadow-sky-900/20 transform -rotate-3 shrink-0">
             <Package className="h-4 w-4 sm:h-6 sm:w-6" />
@@ -1179,7 +1231,7 @@ export default function Inventory() {
           </div>
         </div>
         
-        <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto">
+        <div className="grid w-full grid-cols-1 gap-2 sm:flex sm:w-auto sm:flex-row sm:gap-2 lg:w-auto">
           <input
             ref={fileInputRef}
             type="file"
@@ -1187,7 +1239,7 @@ export default function Inventory() {
             className="hidden"
             onChange={handleImportFile}
           />
-          <div className="relative group flex-1 lg:w-72">
+          <div className="relative group w-full flex-1 lg:w-72">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-sky-600 transition-colors" />
             <Input 
               className="h-10 lg:h-11 rounded-lg border-none bg-slate-100/70 shadow-inner focus:ring-2 focus:ring-sky-500/20 transition-all font-semibold text-sm placeholder:text-slate-400" 
@@ -1196,21 +1248,31 @@ export default function Inventory() {
               onChange={e => setSearchTerm(e.target.value)}
             />
           </div>
-          <Button 
-            onClick={() => {
-                resetProductForm();
-                setShowProductModal(true);
-            }}
-            className="h-10 lg:h-11 px-4 rounded-lg gap-2 font-semibold bg-sky-600 hover:bg-sky-700 shadow-lg shadow-sky-900/20 transition-all text-white shrink-0 text-sm"
-          >
-            <Plus className="h-4 w-4 sm:h-5 sm:w-5" />
-            <span>Thêm mới</span>
-          </Button>
+          <div className="grid grid-cols-[1fr_auto] gap-2 sm:flex sm:items-center sm:gap-2">
+            <Button
+              onClick={() => {
+                  resetProductForm();
+                  setShowProductModal(true);
+              }}
+              className="h-10 lg:h-11 px-4 rounded-lg gap-2 font-semibold bg-sky-600 hover:bg-sky-700 shadow-lg shadow-sky-900/20 transition-all text-white shrink-0 text-sm"
+            >
+              <Plus className="h-4 w-4 sm:h-5 sm:w-5" />
+              <span>Thêm mới</span>
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setShowMobileActionSheet(true)}
+              className="h-10 px-3 rounded-lg text-sm gap-2 lg:hidden"
+            >
+              <Ellipsis className="h-4 w-4" />
+              <span className="hidden min-[390px]:inline">Tác vụ</span>
+            </Button>
+          </div>
           <Button
             variant="outline"
             onClick={() => fileInputRef.current?.click()}
             disabled={importing}
-            className="h-10 lg:h-11 px-4 rounded-lg text-sm gap-2"
+            className="hidden lg:inline-flex h-10 lg:h-11 px-4 rounded-lg text-sm gap-2"
           >
             <Upload className="h-4 w-4" />
             {importing ? 'Đang import...' : 'Import CSV/Excel'}
@@ -1218,12 +1280,12 @@ export default function Inventory() {
           <Button
             variant="outline"
             onClick={downloadTemplates}
-            className="h-10 lg:h-11 px-4 rounded-lg text-sm gap-2"
+            className="hidden lg:inline-flex h-10 lg:h-11 px-4 rounded-lg text-sm gap-2"
           >
             <Download className="h-4 w-4" />
             Tải mẫu
           </Button>
-          <Button variant="outline" onClick={openBulkCheck} className="h-10 lg:h-11 px-4 rounded-lg text-sm">
+          <Button variant="outline" onClick={openBulkCheck} className="hidden lg:inline-flex h-10 lg:h-11 px-4 rounded-lg text-sm">
             Kiểm kê
           </Button>
         </div>

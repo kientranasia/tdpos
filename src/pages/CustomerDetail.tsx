@@ -233,51 +233,51 @@ export default function CustomerDetail() {
       )}
 
       {/* Header */}
-      <div className="p-6 md:p-8 bg-white/80 backdrop-blur-xl border-b sticky top-0 z-40 flex flex-col md:flex-row gap-6 items-center justify-between shadow-sm">
-        <div className="flex items-center gap-6 w-full md:w-auto">
+      <div className="p-3 md:p-8 bg-white/80 backdrop-blur-xl border-b sticky top-0 z-40 flex flex-col md:flex-row gap-3 md:gap-6 items-center justify-between shadow-sm">
+        <div className="flex items-center gap-3 md:gap-6 w-full md:w-auto">
           <Button 
             variant="ghost" 
             size="sm" 
             onClick={() => navigate('/app/customers')} 
-            className="h-12 w-12 rounded-lg bg-slate-50 text-slate-400 hover:bg-slate-900 hover:text-white transition-all"
+            className="h-10 w-10 md:h-12 md:w-12 rounded-lg bg-slate-50 text-slate-400 hover:bg-slate-900 hover:text-white transition-all"
           >
-            <ArrowLeft className="h-6 w-6" />
+            <ArrowLeft className="h-5 w-5 md:h-6 md:w-6" />
           </Button>
-          <div className="flex items-center gap-5">
+          <div className="flex items-center gap-3 md:gap-5 min-w-0">
             <div className="relative">
-                <div className="h-16 w-16 rounded-lg bg-indigo-600 text-white flex items-center justify-center shadow-lg shadow-indigo-900/20 transform rotate-3 font-black text-2xl uppercase italic">
+                <div className="h-12 w-12 md:h-16 md:w-16 rounded-lg bg-indigo-600 text-white flex items-center justify-center shadow-lg shadow-indigo-900/20 transform rotate-3 font-black text-lg md:text-2xl uppercase italic">
                 {customer.name.charAt(0)}
                 </div>
                 {customer.type === 'loyal' && (
-                    <div className="absolute -bottom-1 -right-1 h-6 w-6 rounded-lg bg-amber-400 text-white flex items-center justify-center shadow-lg border-2 border-white">
+                    <div className="absolute -bottom-1 -right-1 h-5 w-5 md:h-6 md:w-6 rounded-lg bg-amber-400 text-white flex items-center justify-center shadow-lg border-2 border-white">
                         <Star className="h-3 w-3 fill-white" />
                     </div>
                 )}
             </div>
-            <div>
-              <div className="flex items-center gap-3">
-                <h1 className="text-xl md:text-2xl font-semibold text-slate-900 tracking-tight">{customer.name}</h1>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h1 className="text-lg md:text-2xl font-semibold text-slate-900 tracking-tight line-clamp-2">{customer.name}</h1>
                 <span className={`text-[10px] font-medium px-2 py-0.5 rounded-lg ${
                     customer.type === 'loyal' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-400'
                 }`}>
                     {customer.type === 'loyal' ? 'VIP' : 'Khách lẻ'}
                 </span>
               </div>
-              <div className="flex items-center gap-3 mt-1">
+              <div className="flex items-center gap-2 mt-1">
                 <span className="text-xs text-slate-400">ID: #{customer.id.toUpperCase()}</span>
               </div>
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-3 w-full md:w-auto">
+        <div className="grid grid-cols-2 gap-2 md:flex md:items-center md:gap-3 w-full md:w-auto">
           <Button
             onClick={openEditModal}
             variant="outline"
-            className="flex-1 md:flex-none h-11 md:h-12 px-5 rounded-lg font-medium text-sm bg-white border-slate-200 text-slate-600 hover:bg-slate-50 gap-2"
+            className="h-10 md:h-12 px-3 md:px-5 rounded-lg font-medium text-sm bg-white border-slate-200 text-slate-600 hover:bg-slate-50 gap-2"
           >
             <Edit2 className="h-4 w-4" /> Sửa hồ sơ
           </Button>
-          <Button className="flex-1 md:flex-none h-11 md:h-12 px-6 rounded-lg bg-slate-900 hover:bg-slate-800 shadow-lg font-medium text-sm text-white gap-2" onClick={() => navigate('/app/pos')}>
+          <Button className="h-10 md:h-12 px-3 md:px-6 rounded-lg bg-slate-900 hover:bg-slate-800 shadow-lg font-medium text-sm text-white gap-2" onClick={() => navigate('/app/pos')}>
             <Plus className="h-4 w-4" /> Bán hàng
           </Button>
         </div>

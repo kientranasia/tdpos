@@ -9,6 +9,8 @@
     "seed": "tsx server/seed.ts",
     "dev:all": "npm run server & npm run dev",
     "build": "vite build",
+    "test:smoke": "node scripts/hkdplus-smoke.mjs",
+    "test:flow": "node scripts/hkdplus-flow-smoke.mjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"

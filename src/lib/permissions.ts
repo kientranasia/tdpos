@@ -6,12 +6,15 @@ const roleRoutes: Record<string, AppRole[]> = {
   '/app/dashboard': ['owner', 'manager'],
   '/app/pos': ['owner', 'manager', 'cashier'],
   '/app/invoices': ['owner', 'manager', 'cashier'],
-  '/app/inventory': ['owner', 'manager'],
-  '/app/customers': ['owner', 'manager'],
+  '/app/inventory': ['owner', 'manager', 'warehouse'],
+  '/app/customers': ['owner', 'manager', 'cashier', 'warehouse', 'accountant'],
   '/app/debt': ['owner', 'manager'],
   '/app/cashbook': ['owner', 'manager', 'accountant'],
+  '/app/reports': ['owner', 'manager', 'accountant'],
+  '/app/purchases': ['owner', 'manager', 'warehouse', 'accountant'],
+  '/app/suppliers': ['owner', 'manager', 'warehouse', 'accountant'],
   '/app/settings': ['owner'],
-  '/app/subscription': ['owner', 'manager'],
+  '/app/more': ['owner', 'manager', 'cashier', 'warehouse', 'accountant'],
 };
 
 export const canAccessPath = (role: AppRole | undefined, path: string) => {

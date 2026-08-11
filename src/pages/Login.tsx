@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
-import { Boxes } from 'lucide-react';
 import { authApi } from '../lib/api';
+import BrandMark from '../components/BrandMark';
 
 export default function Login({ isRegister = false }: { isRegister?: boolean }) {
   const { setActiveTenant, setCurrentUser } = useApp();
@@ -47,14 +47,11 @@ export default function Login({ isRegister = false }: { isRegister?: boolean }) 
 
       <div className="w-full max-w-lg">
         <div className="text-center mb-10">
-          <div className="inline-flex h-16 w-16 items-center justify-center rounded-lg bg-white shadow-xl shadow-sky-900/10 mb-6 group transition-all duration-500 hover:scale-110">
-            <div className="h-10 w-10 rounded-lg bg-sky-600 flex items-center justify-center text-white">
-              <Boxes className="h-6 w-6" />
-            </div>
+          <div className="mb-6 flex justify-center transition-transform duration-500 hover:scale-[1.02]">
+            <BrandMark className="scale-125" />
           </div>
-          <h1 className="text-3xl font-bold text-slate-900 font-display tracking-tight mb-2 uppercase italic tracking-tighter">TDPOS</h1>
           <p className="text-slate-500 font-medium">
-            {isRegister ? 'Khởi tạo workspace quản trị cho doanh nghiệp của bạn' : 'Nền tảng POS và vận hành SaaS đa lĩnh vực'}
+            {isRegister ? 'Khởi tạo hồ sơ hộ kinh doanh của bạn' : 'Quản lý gọn, an tâm kinh doanh'}
           </p>
         </div>
 
@@ -140,7 +137,7 @@ export default function Login({ isRegister = false }: { isRegister?: boolean }) 
         <div className="mt-12 text-center">
           <div className="inline-flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-full">
             <div className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-pulse"></div>
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Cloud POS Platform</span>
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Phần mềm local cho hộ kinh doanh</span>
           </div>
         </div>
       </div>

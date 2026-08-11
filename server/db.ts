@@ -57,13 +57,153 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
   addColumnIfMissing('tenants', 'package_name', "package_name TEXT NOT NULL DEFAULT 'Starter 1'");
   addColumnIfMissing('tenants', 'max_users', 'max_users INTEGER NOT NULL DEFAULT 1');
   addColumnIfMissing('tenants', 'package_price_monthly', 'package_price_monthly REAL NOT NULL DEFAULT 150000');
+  // Các cột billing cũ chỉ giữ để tương thích migration; instance local không còn trial.
+sqlite.prepare("UPDATE tenants SET status = 'active', subscription_status = 'active' WHERE status = 'trial' OR subscription_status = 'trial'").run();
+sqlite.prepare("UPDATE tenants SET name = 'HKDPlus Demo', legal_name = 'Hộ kinh doanh demo', address = 'Quận 1, Thành phố Hồ Chí Minh' WHERE name LIKE 'TDPOS%'").run();
+sqlite.prepare("UPDATE users SET email = 'owner@hkdplus.local' WHERE email = 'owner@tdpos.vn' AND id = 'user-owner-demo'").run();
 }
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'invoices'").get()) {
   addColumnIfMissing('invoices', 'note', "note TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing('invoices', 'tax_amount', "tax_amount REAL NOT NULL DEFAULT 0");
+  addColumnIfMissing('invoices', 'document_no', "document_no TEXT NOT NULL DEFAULT ''");
+}
+
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'purchases'").get()) {
+  addColumnIfMissing('purchases', 'document_no', "document_no TEXT NOT NULL DEFAULT ''");
+}
+
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'products'").get()) {
+  addColumnIfMissing('products', 'tax_rate', "tax_rate REAL NOT NULL DEFAULT 0");
+}
+
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'invoice_items'").get()) {
+  addColumnIfMissing('invoice_items', 'tax_rate', "tax_rate REAL NOT NULL DEFAULT 0");
 }
 
 sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS permissions (
+    id TEXT PRIMARY KEY,
+    code TEXT NOT NULL UNIQUE,
+    module TEXT NOT NULL,
+    action TEXT NOT NULL,
+    label TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS license_instances (
+    id TEXT PRIMARY KEY,
+    instance_id TEXT NOT NULL UNIQUE,
+    license_code TEXT NOT NULL,
+    customer_name TEXT NOT NULL DEFAULT '',
+    machine_hash TEXT NOT NULL,
+    issued_at TEXT,
+    expires_at TEXT,
+    status TEXT NOT NULL DEFAULT 'unlicensed',
+    payload TEXT,
+    last_validated_at TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS backup_logs (
+    id TEXT PRIMARY KEY,
+    file_path TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS tax_profiles (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    name TEXT NOT NULL DEFAULT 'Mặc định',
+    tax_method TEXT NOT NULL DEFAULT 'Chưa cấu hình',
+    default_tax_rate REAL NOT NULL DEFAULT 0,
+    tax_code TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS document_sequences (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    document_type TEXT NOT NULL,
+    prefix TEXT NOT NULL,
+    next_number INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL,
+    UNIQUE(tenant_id, document_type)
+  );
+
+  CREATE TABLE IF NOT EXISTS role_permissions (
+    id TEXT PRIMARY KEY,
+    role TEXT NOT NULL,
+    permission_code TEXT NOT NULL REFERENCES permissions(code),
+    allowed INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(role, permission_code)
+  );
+
+  CREATE TABLE IF NOT EXISTS user_permissions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    permission_code TEXT NOT NULL REFERENCES permissions(code),
+    allowed INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, permission_code)
+  );
+
+  CREATE TABLE IF NOT EXISTS suppliers (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL DEFAULT '',
+    tax_code TEXT,
+    address TEXT NOT NULL DEFAULT '',
+    current_payable REAL NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1
+  );
+
+  CREATE TABLE IF NOT EXISTS purchases (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    supplier_id TEXT NOT NULL REFERENCES suppliers(id),
+    created_by TEXT NOT NULL,
+    total_amount REAL NOT NULL,
+    tax_amount REAL NOT NULL DEFAULT 0,
+    final_amount REAL NOT NULL,
+    paid_amount REAL NOT NULL DEFAULT 0,
+    payable_amount REAL NOT NULL DEFAULT 0,
+    payment_method TEXT NOT NULL,
+    status TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS purchase_items (
+    id TEXT PRIMARY KEY,
+    purchase_id TEXT NOT NULL REFERENCES purchases(id),
+    product_id TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    price REAL NOT NULL,
+    tax_rate REAL NOT NULL DEFAULT 0,
+    total REAL NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS payable_ledger (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    supplier_id TEXT NOT NULL REFERENCES suppliers(id),
+    purchase_id TEXT,
+    amount REAL NOT NULL,
+    type TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS packages (
     id TEXT PRIMARY KEY,
     code TEXT NOT NULL UNIQUE,
@@ -143,6 +283,53 @@ sqlite.exec(`
   );
 `);
 
+const permissionDefinitions = [
+  ['dashboard.view', 'dashboard', 'view', 'Xem tổng quan'],
+  ['sales.view', 'sales', 'view', 'Xem bán hàng'],
+  ['sales.create', 'sales', 'create', 'Tạo đơn bán'],
+  ['sales.cancel', 'sales', 'delete', 'Hủy chứng từ bán'],
+  ['sales.view_cost', 'sales', 'view_cost', 'Xem giá vốn khi bán'],
+  ['inventory.view', 'inventory', 'view', 'Xem kho'],
+  ['inventory.create', 'inventory', 'create', 'Tạo hàng hóa'],
+  ['inventory.update', 'inventory', 'update', 'Sửa hàng hóa'],
+  ['inventory.delete', 'inventory', 'delete', 'Xóa hàng hóa'],
+  ['inventory.adjust', 'inventory', 'adjust', 'Điều chỉnh tồn kho'],
+  ['inventory.view_cost', 'inventory', 'view_cost', 'Xem giá vốn'],
+  ['purchases.view', 'purchases', 'view', 'Xem nhập hàng'],
+  ['purchases.create', 'purchases', 'create', 'Tạo phiếu nhập'],
+  ['purchases.approve', 'purchases', 'approve', 'Xác nhận phiếu nhập'],
+  ['partners.view', 'partners', 'view', 'Xem đối tác'],
+  ['partners.create', 'partners', 'create', 'Thêm đối tác'],
+  ['partners.update', 'partners', 'update', 'Sửa đối tác'],
+  ['debt.view', 'debt', 'view', 'Xem công nợ'],
+  ['debt.collect', 'debt', 'collect', 'Thu/trả công nợ'],
+  ['cashbook.view', 'cashbook', 'view', 'Xem thu chi'],
+  ['cashbook.create', 'cashbook', 'create', 'Tạo giao dịch thu chi'],
+  ['reports.view', 'reports', 'view', 'Xem báo cáo'],
+  ['reports.export', 'reports', 'export', 'Xuất báo cáo'],
+  ['settings.view', 'settings', 'view', 'Xem cài đặt'],
+  ['settings.manage_users', 'settings', 'manage_users', 'Quản lý nhân viên'],
+  ['settings.manage_permissions', 'settings', 'manage_permissions', 'Quản lý phân quyền'],
+];
+for (const [code, module, action, label] of permissionDefinitions) {
+  sqlite.prepare(`INSERT OR IGNORE INTO permissions (id, code, module, action, label) VALUES (?, ?, ?, ?, ?)`)
+    .run(`perm-${code}`, code, module, action, label);
+}
+
+const roleDefaults: Record<string, string[]> = {
+  owner: permissionDefinitions.map(([code]) => code),
+  manager: permissionDefinitions.filter(([code]) => !['settings.manage_users', 'settings.manage_permissions', 'sales.cancel'].includes(code)).map(([code]) => code),
+  cashier: ['sales.view', 'sales.create', 'partners.view', 'partners.create', 'debt.view'],
+  warehouse: ['inventory.view', 'inventory.adjust', 'inventory.view_cost', 'purchases.view', 'purchases.create', 'purchases.approve', 'partners.view'],
+  accountant: ['dashboard.view', 'purchases.view', 'partners.view', 'debt.view', 'debt.collect', 'cashbook.view', 'cashbook.create', 'reports.view', 'reports.export'],
+};
+for (const [role, codes] of Object.entries(roleDefaults)) {
+  for (const code of codes) {
+    sqlite.prepare(`INSERT OR IGNORE INTO role_permissions (id, role, permission_code, allowed) VALUES (?, ?, ?, 1)`)
+      .run(`role-${role}-${code}`, role, code);
+  }
+}
+
 const defaultPackage = sqlite.prepare(`SELECT id FROM packages WHERE code = ?`).get('starter_1');
 if (!defaultPackage) {
   const now = new Date().toISOString();
@@ -153,4 +340,4 @@ if (!defaultPackage) {
 }
 
 export const db = drizzle(sqlite, { schema });
-export { sqlite };
+export { sqlite, DB_PATH };

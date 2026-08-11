@@ -8,7 +8,7 @@ const isProduction = process.env.NODE_ENV === 'production';
 type AdminRole = 'super_admin' | 'admin' | 'support';
 
 const getBootstrapAdminConfig = () => {
-  const email = process.env.ADMIN_BOOTSTRAP_EMAIL?.trim() || (!isProduction ? 'admin@tdpos.vn' : '');
+  const email = process.env.ADMIN_BOOTSTRAP_EMAIL?.trim() || (!isProduction ? 'admin@hkdplus.local' : '');
   const password = process.env.ADMIN_BOOTSTRAP_PASSWORD || (!isProduction ? 'admin123' : '');
   const name = process.env.ADMIN_BOOTSTRAP_NAME?.trim() || 'System Admin';
   const rawRole = process.env.ADMIN_BOOTSTRAP_ROLE?.trim() || 'super_admin';

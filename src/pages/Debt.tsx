@@ -518,7 +518,7 @@ export default function Debt() {
         </div>
       )}
 
-      <div className="p-4 lg:p-8 bg-white border-b sticky top-0 z-40 flex flex-col lg:flex-row gap-3 lg:gap-6 items-start lg:items-center justify-between shadow-sm shrink-0">
+      <div className="p-3 lg:p-8 bg-white border-b sticky top-0 z-40 flex flex-col lg:flex-row gap-2 lg:gap-6 items-start lg:items-center justify-between shadow-sm shrink-0">
         <div className="hidden lg:flex items-center gap-5">
           <div className="h-9 w-9 sm:h-12 sm:w-12 rounded-lg bg-orange-600 text-white flex items-center justify-center shadow-lg shadow-orange-900/20 transform -rotate-3 shrink-0">
             <Wallet className="h-5 w-5 sm:h-6 sm:w-6" />
@@ -529,8 +529,8 @@ export default function Debt() {
           </div>
         </div>
         
-        <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto">
-          <div className="relative group flex-1 lg:w-72">
+        <div className="grid w-full grid-cols-1 gap-2 sm:flex sm:w-auto sm:flex-row sm:gap-3">
+          <div className="relative group w-full flex-1 lg:w-72">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-orange-600 transition-colors" />
             <Input 
               className="h-10 lg:h-11 rounded-lg border-none bg-slate-100/70 shadow-inner focus:ring-2 focus:ring-orange-500/20 transition-all font-semibold text-sm placeholder:text-slate-400" 
@@ -539,23 +539,25 @@ export default function Debt() {
               onChange={e => setSearchTerm(e.target.value)}
             />
           </div>
-          <Button
-            onClick={() => openDebtModal('decrease')}
-            className="h-10 lg:h-11 px-4 rounded-lg gap-2 font-semibold bg-sky-600 hover:bg-sky-700 shadow-lg shadow-sky-900/20 transition-all text-white shrink-0 text-sm"
-          >
-            <ArrowDownCircle className="h-4 w-4 sm:h-5 sm:w-5" />
-            <span>Thu nợ</span>
-          </Button>
-          <select
-            value={careFilter}
-            onChange={(e) => setCareFilter(e.target.value as typeof careFilter)}
-            className="h-10 lg:h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
-          >
-            <option value="all">Còn nợ</option>
-            <option value="due_soon">Sắp đến hạn</option>
-            <option value="inactive_7">7 ngày chưa mua</option>
-            <option value="inactive_30">30 ngày chưa mua</option>
-          </select>
+          <div className="grid grid-cols-[1fr_auto] gap-2 sm:flex sm:items-center sm:gap-3">
+            <select
+              value={careFilter}
+              onChange={(e) => setCareFilter(e.target.value as typeof careFilter)}
+              className="h-10 lg:h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
+            >
+              <option value="all">Còn nợ</option>
+              <option value="due_soon">Sắp đến hạn</option>
+              <option value="inactive_7">7 ngày chưa mua</option>
+              <option value="inactive_30">30 ngày chưa mua</option>
+            </select>
+            <Button
+              onClick={() => openDebtModal('decrease')}
+              className="h-10 lg:h-11 px-3 lg:px-4 rounded-lg gap-2 font-semibold bg-sky-600 hover:bg-sky-700 shadow-lg shadow-sky-900/20 transition-all text-white shrink-0 text-sm"
+            >
+              <ArrowDownCircle className="h-4 w-4 sm:h-5 sm:w-5" />
+              <span className="hidden sm:inline">Thu nợ</span>
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -621,74 +623,79 @@ export default function Debt() {
 
             <div className="divide-y divide-slate-50">
                 {filteredDebtCustomers.map(({ customer, dueDate, lastPurchase, latestCare }) => (
-                    <div key={customer.id} className="p-4 sm:p-6 hover:bg-orange-50/20 transition-all group flex flex-col md:flex-row md:items-center justify-between gap-4 sm:gap-6 cursor-pointer" onClick={() => navigate(`/app/customers/${customer.id}`)}>
-                        <div className="flex items-center gap-4 sm:gap-6">
-                             <div className="h-12 w-12 sm:h-14 sm:w-14 rounded-lg bg-slate-50 flex items-center justify-center text-slate-300 group-hover:bg-orange-600 group-hover:text-white transition-all duration-500">
-                                 <Wallet className="h-6 w-6 sm:h-7 sm:w-7" />
-                             </div>
-                             <div className="space-y-1">
-                                <div className="flex items-center gap-3">
-                                    <h4 className="text-base sm:text-lg font-semibold text-slate-900">{customer.name}</h4>
-                                    <span className="text-xs font-medium bg-orange-100 text-orange-700 px-2 py-0.5 rounded-lg">Nợ</span>
-                                </div>
-                                <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-6 text-slate-400 font-bold text-[10px]">
-                                    <span className="font-mono">{customer.phone}</span>
-                                    <span>Hạn: {new Date(dueDate).toLocaleDateString('vi-VN')}</span>
-                                    <span>Mua gần nhất: {lastPurchase ? new Date(lastPurchase).toLocaleDateString('vi-VN') : 'Chưa có'}</span>
-                                    <span>CSKH: {latestCare?.status === 'paid' ? 'Đã trả' : latestCare?.status === 'promised' ? 'Hứa trả' : latestCare?.status === 'sent' ? 'Đã nhắc' : 'Chưa nhắc'}</span>
-                                </div>
-                                {!!customer.tags?.length && (
-                                  <div className="flex flex-wrap gap-1.5 pt-1">
-                                    {customer.tags.slice(0, 4).map((tag) => (
-                                      <span key={tag} className="text-[10px] px-2 py-0.5 rounded-md bg-slate-100 text-slate-600">{tag}</span>
-                                    ))}
-                                  </div>
-                                )}
-                             </div>
+                  <div
+                    key={customer.id}
+                    className="erp-debt-row p-3 sm:p-5 hover:bg-orange-50/20 transition-all group cursor-pointer"
+                    onClick={() => navigate(`/app/customers/${customer.id}`)}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex items-start gap-3">
+                        <div className="h-10 w-10 sm:h-12 sm:w-12 rounded-lg bg-slate-50 flex items-center justify-center text-slate-300 group-hover:bg-orange-600 group-hover:text-white transition-all duration-500 shrink-0">
+                          <Wallet className="h-5 w-5 sm:h-6 sm:w-6" />
                         </div>
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <h4 className="text-sm sm:text-base font-semibold text-slate-900 truncate">{customer.name}</h4>
+                            <span className="text-[11px] font-medium bg-orange-100 text-orange-700 px-2 py-0.5 rounded-md">Nợ</span>
+                          </div>
+                          <p className="text-xs text-slate-500 font-medium">{customer.phone}</p>
+                          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500">
+                            <span>Hạn: {new Date(dueDate).toLocaleDateString('vi-VN')}</span>
+                            <span>Mua: {lastPurchase ? new Date(lastPurchase).toLocaleDateString('vi-VN') : 'Chưa có'}</span>
+                            <span>CSKH: {latestCare?.status === 'paid' ? 'Đã trả' : latestCare?.status === 'promised' ? 'Hứa trả' : latestCare?.status === 'sent' ? 'Đã nhắc' : 'Chưa nhắc'}</span>
+                          </div>
+                          {!!customer.tags?.length && (
+                            <div className="flex flex-wrap gap-1 pt-0.5">
+                              {customer.tags.slice(0, 3).map((tag) => (
+                                <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">{tag}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
 
-                        <div className="flex items-center justify-between md:justify-end gap-6 pt-3 md:pt-0 border-t md:border-t-0 border-slate-50">
-                             <div className="text-right space-y-1">
-                                <p className="text-xs text-slate-500 mb-1">Dư nợ hiện tại</p>
-                                <div className="text-kpi-lg text-orange-600">{formatCurrency(customer.totalDebt)}</div>
-                             </div>
-                             <div className="flex items-center gap-2">
-                               <Button
-                                 onClick={(e) => {
-                                   e.stopPropagation();
-                                   openZaloReminder(customer.id);
-                                 }}
-                                 variant="outline"
-                                 className="h-10 rounded-lg px-3 text-sm font-semibold border-emerald-200 text-emerald-700 hover:bg-emerald-50"
-                               >
-                                 <MessageCircleMore className="h-4 w-4 mr-1.5" /> Nhắc Zalo
-                                </Button>
-                               <Button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setTagEditorCustomerId(customer.id);
-                                    setTagInput((customer.tags || []).join(', '));
-                                  }}
-                                  variant="outline"
-                                  className="h-10 rounded-lg px-3 text-sm font-semibold border-slate-200 text-slate-700 hover:bg-slate-50"
-                                >
-                                  <Tags className="h-4 w-4 mr-1.5" /> Tag
-                                </Button>
-                               <Button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openDebtModal('decrease', customer.id);
-                                  }}
-                                  className="h-10 rounded-lg px-4 text-sm font-semibold bg-sky-600 hover:bg-sky-700"
-                                >
-                                  Thu nợ
-                                </Button>
-                             </div>
-                             <div className="h-9 w-9 sm:h-10 sm:w-10 rounded-lg bg-slate-50 text-slate-300 flex items-center justify-center group-hover:bg-orange-600 group-hover:text-white transition-all transform group-hover:translate-x-1">
-                                <ChevronRight className="h-4 w-4" />
-                             </div>
-                        </div>
+                      <div className="shrink-0 text-right">
+                        <p className="text-[11px] text-slate-500">Dư nợ</p>
+                        <div className="text-base sm:text-xl font-semibold text-orange-600 tabular-nums">{formatCurrency(customer.totalDebt)}</div>
+                      </div>
                     </div>
+
+                    <div className="mt-3 flex items-center gap-2">
+                      <Button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openZaloReminder(customer.id);
+                        }}
+                        variant="outline"
+                        className="h-8 rounded-lg px-2.5 text-xs font-medium border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                      >
+                        <MessageCircleMore className="h-3.5 w-3.5 mr-1" /> Nhắc
+                      </Button>
+                      <Button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTagEditorCustomerId(customer.id);
+                          setTagInput((customer.tags || []).join(', '));
+                        }}
+                        variant="outline"
+                        className="h-8 rounded-lg px-2.5 text-xs font-medium border-slate-200 text-slate-700 hover:bg-slate-50"
+                      >
+                        <Tags className="h-3.5 w-3.5 mr-1" /> Tag
+                      </Button>
+                      <Button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openDebtModal('decrease', customer.id);
+                        }}
+                        className="h-8 rounded-lg px-3 text-xs font-medium bg-sky-600 hover:bg-sky-700"
+                      >
+                        Thu nợ
+                      </Button>
+                      <div className="ml-auto h-8 w-8 rounded-lg bg-slate-50 text-slate-300 flex items-center justify-center group-hover:bg-orange-600 group-hover:text-white transition-all">
+                        <ChevronRight className="h-4 w-4" />
+                      </div>
+                    </div>
+                  </div>
                 ))}
 
                 {filteredDebtCustomers.length === 0 && (

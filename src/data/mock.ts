@@ -41,15 +41,15 @@ export const mockTenants: Tenant[] = [
 ];
 
 export const mockUsers: User[] = [
-  { id: 'u1', name: 'Trần Đạo', email: 'owner@trandao.vn', role: 'owner', tenantId: 't1', status: 'active' },
-  { id: 'u2', name: 'Nhân viên TDPOS', email: 'cashier@tdpos.vn', role: 'cashier', tenantId: 't1', status: 'active' },
+  { id: 'u1', name: 'Chủ hộ demo', email: 'owner@hkdplus.local', role: 'owner', tenantId: 't1', status: 'active' },
+  { id: 'u2', name: 'Nhân viên bán hàng', email: 'cashier@hkdplus.local', role: 'cashier', tenantId: 't1', status: 'active' },
 ];
 
 export const mockProducts: Product[] = [
-  { id: 'p1', tenantId: 't1', sku: 'VT001', name: 'Phân bón NPK 20-20-15', category: 'Phân bón', purchasePrice: 800000, sellingPrice: 950000, stock: 50, unit: 'bao', lowStockThreshold: 10, trackStock: true, status: 'active' },
-  { id: 'p2', tenantId: 't1', sku: 'VT002', name: 'Thuốc trừ sâu Sinh Học', category: 'Thuốc BVTV', purchasePrice: 120000, sellingPrice: 150000, stock: 5, unit: 'chai', lowStockThreshold: 10, trackStock: true, status: 'active' },
-  { id: 'p3', tenantId: 't1', sku: 'VT003', name: 'Hạt giống Dưa hấu', category: 'Hạt giống', purchasePrice: 50000, sellingPrice: 75000, stock: 100, unit: 'gói', lowStockThreshold: 20, trackStock: true, status: 'active' },
-  { id: 'p4', tenantId: 't1', sku: 'VT004', name: 'Phân Hữu cơ vi sinh', category: 'Phân bón', purchasePrice: 200000, sellingPrice: 280000, stock: 2, unit: 'bao', lowStockThreshold: 5, trackStock: true, status: 'active' },
+  { id: 'p1', tenantId: 't1', sku: 'VT001', name: 'Phân bón NPK 20-20-15', category: 'Phân bón', purchasePrice: 800000, sellingPrice: 950000, taxRate: 0, stock: 50, unit: 'bao', lowStockThreshold: 10, trackStock: true, status: 'active' },
+  { id: 'p2', tenantId: 't1', sku: 'VT002', name: 'Thuốc trừ sâu Sinh Học', category: 'Thuốc BVTV', purchasePrice: 120000, sellingPrice: 150000, taxRate: 0, stock: 5, unit: 'chai', lowStockThreshold: 10, trackStock: true, status: 'active' },
+  { id: 'p3', tenantId: 't1', sku: 'VT003', name: 'Hạt giống Dưa hấu', category: 'Hạt giống', purchasePrice: 50000, sellingPrice: 75000, taxRate: 0, stock: 100, unit: 'gói', lowStockThreshold: 20, trackStock: true, status: 'active' },
+  { id: 'p4', tenantId: 't1', sku: 'VT004', name: 'Phân Hữu cơ vi sinh', category: 'Phân bón', purchasePrice: 200000, sellingPrice: 280000, taxRate: 0, stock: 2, unit: 'bao', lowStockThreshold: 5, trackStock: true, status: 'active' },
 ];
 
 export const mockCustomers: Customer[] = [
@@ -59,7 +59,7 @@ export const mockCustomers: Customer[] = [
 ];
 
 export const mockInvoices: Invoice[] = [
-  { id: 'inv1', tenantId: 't1', customerId: 'c2', createdBy: 'u1', totalAmount: 4500000, discount: 0, finalAmount: 4500000, paidAmount: 0, debtAmount: 4500000, paymentMethod: 'debt', status: 'unpaid', createdAt: new Date(Date.now() - 86400000 * 2).toISOString() },
-  { id: 'inv2', tenantId: 't1', customerId: 'c3', createdBy: 'u2', totalAmount: 2400000, discount: 0, finalAmount: 2400000, paidAmount: 1200000, debtAmount: 1200000, paymentMethod: 'cash', status: 'partial', createdAt: new Date(Date.now() - 86400000).toISOString() },
-  { id: 'inv3', tenantId: 't1', customerId: 'c1', createdBy: 'u1', totalAmount: 150000, discount: 0, finalAmount: 150000, paidAmount: 150000, debtAmount: 0, paymentMethod: 'cash', status: 'completed', createdAt: new Date().toISOString() },
+  { id: 'inv1', tenantId: 't1', customerId: 'c2', createdBy: 'u1', totalAmount: 4500000, discount: 0, taxAmount: 0, finalAmount: 4500000, paidAmount: 0, debtAmount: 4500000, paymentMethod: 'debt', status: 'unpaid', createdAt: new Date(Date.now() - 86400000 * 2).toISOString() },
+  { id: 'inv2', tenantId: 't1', customerId: 'c3', createdBy: 'u2', totalAmount: 2400000, discount: 0, taxAmount: 0, finalAmount: 2400000, paidAmount: 1200000, debtAmount: 1200000, paymentMethod: 'cash', status: 'partial', createdAt: new Date(Date.now() - 86400000).toISOString() },
+  { id: 'inv3', tenantId: 't1', customerId: 'c1', createdBy: 'u1', totalAmount: 150000, discount: 0, taxAmount: 0, finalAmount: 150000, paidAmount: 150000, debtAmount: 0, paymentMethod: 'cash', status: 'completed', createdAt: new Date().toISOString() },
 ];

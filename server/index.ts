@@ -8,8 +8,13 @@ import { eq, desc, and, like, sql, inArray } from 'drizzle-orm';
 import { v4 as uuid } from 'uuid';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import os from 'os';
+import fs from 'fs';
+import path from 'path';
 import adminRouter from './admin';
 import { bootstrapAdminAccount } from './bootstrapAdmin';
+import { DB_PATH, sqlite } from './db';
 
 const app = express();
 const PORT = process.env.API_PORT || 3001;
@@ -17,18 +22,9 @@ const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-for-dev-only';
 
 const withTenantAccess = (tenant: any) => {
   if (!tenant) return null;
-  const now = Date.now();
-  const trialEnd = tenant.trialEndAt ? new Date(tenant.trialEndAt).getTime() : 0;
-  const subscriptionEnd = tenant.subscriptionEndAt ? new Date(tenant.subscriptionEndAt).getTime() : 0;
-  const hasActiveSubscription = tenant.subscriptionStatus === 'active' && (!subscriptionEnd || subscriptionEnd >= now);
-  // Keep tenant usable while trial window is still valid, even if status moved to pending_review.
-  const inTrialWindow = !!trialEnd && trialEnd >= now;
-  const inTrial = tenant.subscriptionStatus === 'trial' || inTrialWindow;
-  const blocked = !inTrial && !hasActiveSubscription;
-
   return {
     ...tenant,
-    accessBlocked: blocked,
+    accessBlocked: false,
     settings: tenant.settings ? JSON.parse(tenant.settings) : undefined,
   };
 };
@@ -68,6 +64,28 @@ const hasRole = (userRole: string, roles: string[]) => roles.includes(userRole);
 const ensureRole = (req: Request, res: Response, roles: string[]) => {
   if (!req.user || !hasRole(req.user.role, roles)) {
     res.status(403).json({ error: 'Forbidden' });
+    return false;
+  }
+  return true;
+};
+
+const hasPermission = (req: Request, code: string) => {
+  if (req.user?.role === 'owner') return true;
+  const override = db.select().from(schema.userPermissions)
+    .where(and(
+      eq(schema.userPermissions.tenantId, req.user.tenantId),
+      eq(schema.userPermissions.userId, req.user.id),
+      eq(schema.userPermissions.permissionCode, code),
+    )).get();
+  if (override) return override.allowed;
+  const roleGrant = db.select().from(schema.rolePermissions)
+    .where(and(eq(schema.rolePermissions.role, req.user.role), eq(schema.rolePermissions.permissionCode, code))).get();
+  return Boolean(roleGrant?.allowed);
+};
+
+const ensurePermission = (req: Request, res: Response, code: string) => {
+  if (!hasPermission(req, code)) {
+    res.status(403).json({ error: `Bạn không có quyền: ${code}` });
     return false;
   }
   return true;
@@ -146,9 +164,6 @@ app.post('/api/auth/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Create tenant
-    const trialStartAt = now;
-    const trialEndAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
-
     db.insert(schema.tenants).values({
       id: tenantId,
       name: storeName,
@@ -158,13 +173,13 @@ app.post('/api/auth/register', async (req, res) => {
       currency: 'VND',
       invoicePrefix: 'INV',
       status: 'pending_setup',
-      trialStartAt,
-      trialEndAt,
-      subscriptionStatus: 'trial',
+      trialStartAt: null,
+      trialEndAt: null,
+      subscriptionStatus: 'active',
       subscriptionPlan: 'yearly',
       subscriptionPriceMonthly: 150000,
       packageCode: 'starter_1',
-      packageName: 'Starter 1',
+      packageName: 'HKDPlus Local',
       maxUsers: 1,
       packagePriceMonthly: 150000,
       createdAt: now,
@@ -224,6 +239,245 @@ app.get('/api/auth/me', authenticateUser, (req, res) => {
 
 app.use('/api', authenticateUser);
 
+const getMachineHash = () => {
+  const network = Object.values(os.networkInterfaces()).flat().filter(Boolean).map((item) => `${item?.mac}:${item?.address}`).sort().join('|');
+  return crypto.createHash('sha256').update(`${os.hostname()}|${network}|${process.env.HKDPLUS_INSTANCE_SECRET || 'local-instance'}`).digest('hex');
+};
+const getInstanceId = () => process.env.HKDPLUS_INSTANCE_ID?.trim() || crypto.createHash('sha256').update(getMachineHash()).digest('hex').slice(0, 24);
+const persistLicenseToken = (token: string) => {
+  const publicKey = process.env.HKDPLUS_LICENSE_PUBLIC_KEY || '';
+  const [encodedPayload, encodedSignature] = token.split('.');
+  if (!publicKey || !encodedPayload || !encodedSignature) return { error: 'Thiếu license token hoặc public key xác minh' };
+  const verified = crypto.verify('RSA-SHA256', Buffer.from(encodedPayload), publicKey, Buffer.from(encodedSignature, 'base64url'));
+  if (!verified) return { error: 'License không hợp lệ' };
+  const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as { instanceId: string; licenseCode: string; customerName?: string; issuedAt?: string; expiresAt?: string; machineHash?: string };
+  const instanceId = getInstanceId();
+  if (payload.instanceId !== instanceId) return { error: 'License không thuộc instance này' };
+  if (payload.machineHash && payload.machineHash !== getMachineHash()) return { error: 'License không thuộc máy chủ này' };
+  const machineHash = getMachineHash();
+  const now = new Date().toISOString();
+  const existing = db.select().from(schema.licenseInstances).get();
+  const values = { instanceId, licenseCode: payload.licenseCode, customerName: payload.customerName || '', machineHash, issuedAt: payload.issuedAt || now, expiresAt: payload.expiresAt || null, status: 'active' as const, payload: JSON.stringify(payload), lastValidatedAt: now, createdAt: existing?.createdAt || now };
+  if (existing) db.update(schema.licenseInstances).set(values).where(eq(schema.licenseInstances.id, existing.id)).run();
+  else db.insert(schema.licenseInstances).values({ id: uuid(), ...values }).run();
+  return { status: 'active', customerName: values.customerName, expiresAt: values.expiresAt };
+};
+const nextDocumentNo = (tenantId: string, documentType: string, prefix: string) => {
+  const now = new Date().toISOString();
+  const existing = sqlite.prepare('SELECT id, next_number FROM document_sequences WHERE tenant_id = ? AND document_type = ?').get(tenantId, documentType) as { id: string; next_number: number } | undefined;
+  const next = existing?.next_number || 1;
+  if (existing) sqlite.prepare('UPDATE document_sequences SET next_number = ?, updated_at = ? WHERE id = ?').run(next + 1, now, existing.id);
+  else sqlite.prepare('INSERT INTO document_sequences (id, tenant_id, document_type, prefix, next_number, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(uuid(), tenantId, documentType, prefix, next + 1, now);
+  return `${prefix}-${String(next).padStart(6, '0')}`;
+};
+
+app.get('/api/system/status', (req, res) => {
+  try {
+    const interfaces = Object.values(os.networkInterfaces()).flat().filter((item) => item && !item.internal && item.family === 'IPv4').map((item) => item?.address).filter(Boolean);
+    const license = db.select().from(schema.licenseInstances).get();
+    res.json({
+      product: 'HKDCare',
+      hostname: os.hostname(),
+      addresses: interfaces,
+      localUrl: 'http://hkd.care',
+      apiPort: PORT,
+      database: 'SQLite',
+      dataPath: path.dirname(DB_PATH),
+      license: license ? { status: license.status, customerName: license.customerName, expiresAt: license.expiresAt, lastValidatedAt: license.lastValidatedAt } : { status: 'unlicensed' },
+      tenantId: req.user.tenantId,
+    });
+  } catch (err) {
+    console.error('GET /api/system/status error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/tax-profile', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.view')) return;
+    let profile = db.select().from(schema.taxProfiles).where(eq(schema.taxProfiles.tenantId, req.user.tenantId)).get();
+    if (!profile) {
+      const now = new Date().toISOString();
+      const created = { id: uuid(), tenantId: req.user.tenantId, name: 'Mặc định', taxMethod: 'Chưa cấu hình', defaultTaxRate: 0, taxCode: null, active: true, createdAt: now };
+      db.insert(schema.taxProfiles).values(created).run();
+      profile = created;
+    }
+    res.json(profile);
+  } catch (err) { console.error('GET /api/tax-profile error:', err); res.status(500).json({ error: 'Không thể tải cấu hình thuế' }); }
+});
+
+app.patch('/api/tax-profile', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.manage_users')) return;
+    const existing = db.select().from(schema.taxProfiles).where(eq(schema.taxProfiles.tenantId, req.user.tenantId)).get();
+    const data = { name: String(req.body?.name || 'Mặc định'), taxMethod: String(req.body?.taxMethod || 'Chưa cấu hình'), defaultTaxRate: Math.max(0, Number(req.body?.defaultTaxRate) || 0), taxCode: req.body?.taxCode ? String(req.body.taxCode) : null, active: req.body?.active !== false };
+    if (existing) db.update(schema.taxProfiles).set(data).where(eq(schema.taxProfiles.id, existing.id)).run();
+    else db.insert(schema.taxProfiles).values({ id: uuid(), tenantId: req.user.tenantId, ...data, createdAt: new Date().toISOString() }).run();
+    res.json(db.select().from(schema.taxProfiles).where(eq(schema.taxProfiles.tenantId, req.user.tenantId)).get());
+  } catch (err) { console.error('PATCH /api/tax-profile error:', err); res.status(500).json({ error: 'Không thể lưu cấu hình thuế' }); }
+});
+
+app.get('/api/document-sequences', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.view')) return;
+    const rows = db.select().from(schema.documentSequences).where(eq(schema.documentSequences.tenantId, req.user.tenantId)).all();
+    res.json(rows);
+  } catch (err) { console.error('GET /api/document-sequences error:', err); res.status(500).json({ error: 'Không thể tải dãy số chứng từ' }); }
+});
+
+app.get('/api/backups', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.view')) return;
+    res.json(db.select().from(schema.backupLogs).orderBy(desc(schema.backupLogs.createdAt)).limit(20).all());
+  } catch (err) {
+    console.error('GET /api/backups error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/backups', async (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.manage_users')) return;
+    const backupDir = path.join(path.dirname(DB_PATH), 'backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const fileName = `hkdplus-${new Date().toISOString().replace(/[:.]/g, '-')}.db`;
+    const filePath = path.join(backupDir, fileName);
+    await sqlite.backup(filePath);
+    const stat = fs.statSync(filePath);
+    const log = { id: uuid(), filePath: `backups/${fileName}`, sizeBytes: stat.size, createdBy: req.user.id, createdAt: new Date().toISOString() };
+    db.insert(schema.backupLogs).values(log).run();
+    res.status(201).json(log);
+  } catch (err) {
+    console.error('POST /api/backups error:', err);
+    res.status(500).json({ error: 'Không thể tạo bản sao lưu' });
+  }
+});
+
+app.post('/api/backups/restore', async (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.manage_users')) return;
+    const backupId = String(req.body?.backupId || '');
+    const backup = db.select().from(schema.backupLogs).where(eq(schema.backupLogs.id, backupId)).get();
+    if (!backup) return res.status(404).json({ error: 'Không tìm thấy bản sao lưu' });
+    const backupDir = path.resolve(path.dirname(DB_PATH), 'backups');
+    const sourcePath = path.resolve(path.dirname(DB_PATH), backup.filePath);
+    if (!sourcePath.startsWith(`${backupDir}${path.sep}`) || !fs.existsSync(sourcePath)) {
+      return res.status(400).json({ error: 'Đường dẫn bản sao lưu không hợp lệ' });
+    }
+    const safetyPath = path.join(backupDir, `before-restore-${Date.now()}.db`);
+    await sqlite.backup(safetyPath);
+    sqlite.close();
+    fs.copyFileSync(sourcePath, DB_PATH);
+    res.json({ success: true, message: 'Đã khôi phục dữ liệu. Máy chủ sẽ khởi động lại.' });
+    setTimeout(() => process.exit(0), 250);
+  } catch (err) {
+    console.error('POST /api/backups/restore error:', err);
+    res.status(500).json({ error: 'Không thể khôi phục bản sao lưu' });
+  }
+});
+
+app.get('/api/license/status', (_req, res) => {
+  try {
+    const license = db.select().from(schema.licenseInstances).get();
+    if (!license) return res.json({ status: 'unlicensed', machineHash: getMachineHash().slice(0, 12) });
+    const expiresAt = license.expiresAt ? new Date(license.expiresAt).getTime() : 0;
+    const graceUntil = expiresAt ? new Date(expiresAt + 30 * 24 * 60 * 60 * 1000).toISOString() : null;
+    const expired = expiresAt > 0 && expiresAt < Date.now();
+    const inGrace = expired && graceUntil && new Date(graceUntil).getTime() >= Date.now();
+    res.json({ status: expired ? (inGrace ? 'grace' : 'expired') : license.status, customerName: license.customerName, expiresAt: license.expiresAt, graceUntil, lastValidatedAt: license.lastValidatedAt, instanceId: license.instanceId, machineHash: getMachineHash().slice(0, 12) });
+  } catch (err) {
+    console.error('GET /api/license/status error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/license/activate', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.manage_users')) return;
+    const token = String(req.body?.licenseToken || '');
+    const result = persistLicenseToken(token);
+    if ('error' in result) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) {
+    console.error('POST /api/license/activate error:', err);
+    res.status(400).json({ error: 'Không thể kích hoạt license' });
+  }
+});
+
+app.post('/api/license/refresh', async (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.manage_users')) return;
+    const serverUrl = process.env.HKDPLUS_LICENSE_SERVER_URL?.trim();
+    const license = db.select().from(schema.licenseInstances).get();
+    if (!serverUrl || !license) return res.status(503).json({ error: 'Chưa cấu hình license server hoặc instance chưa kích hoạt' });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(`${serverUrl.replace(/\/$/, '')}/api/licenses/validate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instanceId: license.instanceId, licenseCode: license.licenseCode, machineHash: getMachineHash(), payload: license.payload ? JSON.parse(license.payload) : null }), signal: controller.signal });
+    clearTimeout(timeout);
+    if (!response.ok) return res.status(502).json({ error: 'License server từ chối xác minh' });
+    const result = await response.json() as { licenseToken?: string };
+    if (result.licenseToken) {
+      const activated = persistLicenseToken(result.licenseToken);
+      if ('error' in activated) return res.status(502).json(activated);
+      return res.json(activated);
+    }
+    db.update(schema.licenseInstances).set({ lastValidatedAt: new Date().toISOString() }).where(eq(schema.licenseInstances.id, license.id)).run();
+    res.json({ status: 'validated', lastValidatedAt: new Date().toISOString() });
+  } catch (err) { console.error('POST /api/license/refresh error:', err); res.status(502).json({ error: 'Không thể kết nối license server' }); }
+});
+
+app.get('/api/permissions', (req, res) => {
+  try {
+    const grants = db.select().from(schema.permissions).all();
+    const roleGrants = db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, req.user.role)).all();
+    const userGrants = db.select().from(schema.userPermissions).where(and(eq(schema.userPermissions.tenantId, req.user.tenantId), eq(schema.userPermissions.userId, req.user.id))).all();
+    const roleMap = new Map(roleGrants.map((grant) => [grant.permissionCode, grant.allowed]));
+    const userMap = new Map(userGrants.map((grant) => [grant.permissionCode, grant.allowed]));
+    res.json(grants.map((permission) => ({ ...permission, allowed: req.user.role === 'owner' ? true : userMap.has(permission.code) ? userMap.get(permission.code) : Boolean(roleMap.get(permission.code)) })));
+  } catch (err) {
+    console.error('GET /api/permissions error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/users/:id/permissions', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    const user = db.select().from(schema.users).where(and(eq(schema.users.id, req.params.id), eq(schema.users.tenantId, req.user.tenantId))).get();
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const permissions = db.select().from(schema.permissions).all();
+    const roleGrants = db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, user.role)).all();
+    const userGrants = db.select().from(schema.userPermissions).where(and(eq(schema.userPermissions.tenantId, req.user.tenantId), eq(schema.userPermissions.userId, user.id))).all();
+    const roleMap = new Map(roleGrants.map((grant) => [grant.permissionCode, grant.allowed]));
+    const userMap = new Map(userGrants.map((grant) => [grant.permissionCode, grant.allowed]));
+    res.json(permissions.map((permission) => ({ ...permission, allowed: userMap.has(permission.code) ? userMap.get(permission.code) : Boolean(roleMap.get(permission.code)), overridden: userMap.has(permission.code) })));
+  } catch (err) {
+    console.error('GET /api/users/:id/permissions error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/api/users/:id/permissions', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    const user = db.select().from(schema.users).where(and(eq(schema.users.id, req.params.id), eq(schema.users.tenantId, req.user.tenantId))).get();
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const entries = Array.isArray(req.body?.permissions) ? req.body.permissions : [];
+    const now = new Date().toISOString();
+    db.transaction((tx) => {
+      tx.delete(schema.userPermissions).where(and(eq(schema.userPermissions.tenantId, req.user.tenantId), eq(schema.userPermissions.userId, user.id))).run();
+      for (const entry of entries) {
+        if (typeof entry?.code !== 'string' || typeof entry?.allowed !== 'boolean') continue;
+        tx.insert(schema.userPermissions).values({ id: uuid(), tenantId: req.user.tenantId, userId: user.id, permissionCode: entry.code, allowed: entry.allowed, updatedAt: now }).run();
+      }
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('PUT /api/users/:id/permissions error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════
 // TENANTS
 // ═══════════════════════════════════════════════════════════
@@ -261,7 +515,7 @@ app.get('/api/tenants/:id', (req, res) => {
 
 app.patch('/api/tenants/:id', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner'])) return;
+    if (!ensurePermission(req, res, 'settings.manage_users')) return;
     if (req.params.id !== req.user.tenantId) {
       return res.status(403).json({ error: 'Forbidden' });
     }
@@ -286,11 +540,7 @@ app.patch('/api/tenants/:id', (req, res) => {
 
 app.get('/api/packages', (_req, res) => {
   try {
-    const rows = db.select().from(schema.packages).all();
-    const activePackages = rows
-      .filter((pkg) => pkg.status === 'active')
-      .sort((a, b) => Number(a.priceMonthly || 0) - Number(b.priceMonthly || 0));
-    res.json(activePackages);
+    return res.status(410).json({ error: 'HKDPlus local không sử dụng package' });
   } catch (err) {
     console.error('GET /api/packages error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -298,119 +548,11 @@ app.get('/api/packages', (_req, res) => {
 });
 
 app.post('/api/subscriptions/request-upgrade', (req, res) => {
-  try {
-    if (!ensureRole(req, res, ['owner'])) return;
-    const tenantId = req.user.tenantId;
-    const { packageCode, note } = req.body || {};
-
-    if (!packageCode) {
-      return res.status(400).json({ error: 'packageCode is required' });
-    }
-
-    const tenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, tenantId)).get();
-    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
-
-    const selectedPackage = db.select().from(schema.packages)
-      .where(eq(schema.packages.code, packageCode)).get();
-    if (!selectedPackage) return res.status(400).json({ error: 'Invalid packageCode' });
-    if (selectedPackage.status !== 'active') return res.status(400).json({ error: 'Package is inactive' });
-
-    const now = new Date().toISOString();
-    const mergedNote = [note, `requested_package:${selectedPackage.code}`, `requested_by:${req.user.id}`]
-      .filter(Boolean)
-      .join(' | ');
-
-    db.update(schema.tenants).set({
-      subscriptionStatus: 'pending_review',
-      packageCode: selectedPackage.code,
-      packageName: selectedPackage.name,
-      maxUsers: selectedPackage.maxUsers,
-      packagePriceMonthly: selectedPackage.priceMonthly,
-      subscriptionPriceMonthly: selectedPackage.priceMonthly,
-      subscriptionPlan: 'yearly',
-    }).where(eq(schema.tenants.id, tenantId)).run();
-
-    let subscription = db.select().from(schema.subscriptions)
-      .where(eq(schema.subscriptions.tenantId, tenantId)).get();
-
-    if (!subscription) {
-      db.insert(schema.subscriptions).values({
-        id: uuid(),
-        tenantId,
-        plan: 'yearly',
-        priceMonthly: selectedPackage.priceMonthly,
-        status: 'pending_review',
-        note: mergedNote || null,
-        createdAt: now,
-      }).run();
-    } else {
-      db.update(schema.subscriptions).set({
-        plan: 'yearly',
-        priceMonthly: selectedPackage.priceMonthly,
-        status: 'pending_review',
-        note: mergedNote || null,
-      }).where(eq(schema.subscriptions.id, subscription.id)).run();
-    }
-
-    db.insert(schema.auditLogs).values({
-      id: uuid(),
-      actorType: 'tenant_user',
-      actorId: req.user.id,
-      action: 'subscription_upgrade_requested',
-      entityType: 'subscription',
-      entityId: tenantId,
-      tenantId,
-      meta: JSON.stringify({
-        packageCode: selectedPackage.code,
-        packageName: selectedPackage.name,
-        priceMonthly: selectedPackage.priceMonthly,
-        note: note || null,
-      }),
-      createdAt: now,
-    }).run();
-
-    const updatedTenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, tenantId)).get();
-    if (!updatedTenant) return res.status(404).json({ error: 'Tenant not found' });
-    res.json({ tenant: withTenantAccess(updatedTenant), message: 'Upgrade request submitted' });
-  } catch (err) {
-    console.error('POST /api/subscriptions/request-upgrade error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  res.status(410).json({ error: 'Tính năng gói dịch vụ không còn được sử dụng trong HKDPlus local' });
 });
 
 app.get('/api/subscriptions/me', (req, res) => {
-  try {
-    const tenantId = req.user.tenantId;
-    const tenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, tenantId)).get();
-    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
-
-    const subscription = db.select().from(schema.subscriptions)
-      .where(eq(schema.subscriptions.tenantId, tenantId)).get();
-    const packages = db.select().from(schema.packages)
-      .where(eq(schema.packages.status, 'active')).all()
-      .sort((a, b) => Number(a.priceMonthly || 0) - Number(b.priceMonthly || 0));
-    const requestLogs = db.select().from(schema.auditLogs)
-      .where(and(
-        eq(schema.auditLogs.tenantId, tenantId),
-        eq(schema.auditLogs.action, 'subscription_upgrade_requested')
-      ))
-      .orderBy(desc(schema.auditLogs.createdAt))
-      .all()
-      .map((row) => ({
-        ...row,
-        meta: row.meta ? JSON.parse(row.meta) : null,
-      }));
-
-    res.json({
-      tenant: withTenantAccess(tenant),
-      subscription: subscription || null,
-      packages,
-      requestLogs,
-    });
-  } catch (err) {
-    console.error('GET /api/subscriptions/me error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  res.status(410).json({ error: 'HKDPlus local không sử dụng subscription' });
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -419,7 +561,7 @@ app.get('/api/subscriptions/me', (req, res) => {
 
 app.get('/api/users', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager'])) return;
+    if (!ensurePermission(req, res, 'settings.manage_users')) return;
     const users = db.select().from(schema.users)
       .where(eq(schema.users.tenantId, req.user.tenantId)).all();
     res.json(users.map(({ password: _, ...user }) => user));
@@ -431,7 +573,7 @@ app.get('/api/users', (req, res) => {
 
 app.get('/api/users/:id', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager'])) return;
+    if (!ensurePermission(req, res, 'settings.manage_users')) return;
     const user = db.select().from(schema.users)
       .where(and(eq(schema.users.id, req.params.id), eq(schema.users.tenantId, req.user.tenantId))).get();
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -445,25 +587,15 @@ app.get('/api/users/:id', (req, res) => {
 
 app.post('/api/users', async (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner'])) return;
+    if (!ensurePermission(req, res, 'settings.manage_users')) return;
     const { name, email, password, phone, role, status } = req.body || {};
     if (!name || !email || !password || !role) {
       return res.status(400).json({ error: 'name, email, password, role are required' });
     }
 
-    const allowedRoles = ['manager', 'cashier'];
+    const allowedRoles = ['manager', 'cashier', 'warehouse'];
     if (!allowedRoles.includes(role)) {
-      return res.status(400).json({ error: 'Invalid role. Allowed: manager, cashier' });
-    }
-
-    const tenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, req.user.tenantId)).get();
-    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
-
-    const userCount = db.select({ count: sql<number>`count(*)` }).from(schema.users)
-      .where(eq(schema.users.tenantId, req.user.tenantId))
-      .get();
-    if ((userCount?.count || 0) >= (tenant.maxUsers || 1)) {
-      return res.status(400).json({ error: `User limit reached (${tenant.maxUsers || 1}). Please upgrade package.` });
+      return res.status(400).json({ error: 'Vai trò không hợp lệ. Chọn quản lý, bán hàng hoặc kho.' });
     }
 
     const existing = db.select().from(schema.users).where(eq(schema.users.email, email)).get();
@@ -492,14 +624,14 @@ app.post('/api/users', async (req, res) => {
 
 app.patch('/api/users/:id', async (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner'])) return;
+    if (!ensurePermission(req, res, 'settings.manage_users')) return;
     const existing = db.select().from(schema.users)
       .where(and(eq(schema.users.id, req.params.id), eq(schema.users.tenantId, req.user.tenantId)))
       .get();
     if (!existing) return res.status(404).json({ error: 'User not found' });
 
     const updates: any = {};
-    const allowedRoles = ['manager', 'cashier', 'owner'];
+    const allowedRoles = ['manager', 'cashier', 'warehouse', 'owner'];
 
     if (req.body.name !== undefined) updates.name = req.body.name;
     if (req.body.phone !== undefined) updates.phone = req.body.phone;
@@ -530,7 +662,7 @@ app.patch('/api/users/:id', async (req, res) => {
 
 app.delete('/api/users/:id', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner'])) return;
+    if (!ensurePermission(req, res, 'settings.manage_users')) return;
     const existing = db.select().from(schema.users)
       .where(and(eq(schema.users.id, req.params.id), eq(schema.users.tenantId, req.user.tenantId)))
       .get();
@@ -562,7 +694,7 @@ app.get('/api/categories', (req, res) => {
 
 app.post('/api/categories', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager'])) return;
+    if (!ensurePermission(req, res, 'inventory.create')) return;
     const category = { id: uuid(), ...req.body, tenantId: req.user.tenantId };
     db.insert(schema.categories).values(category).run();
     res.status(201).json(category);
@@ -615,7 +747,7 @@ app.get('/api/products/:id', (req, res) => {
 
 app.post('/api/products', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager'])) return;
+    if (!ensurePermission(req, res, 'inventory.create')) return;
     const product = { id: uuid(), ...req.body, tenantId: req.user.tenantId };
     db.insert(schema.products).values(product).run();
     res.status(201).json(product);
@@ -627,11 +759,11 @@ app.post('/api/products', (req, res) => {
 
 app.patch('/api/products/:id', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager'])) return;
+    if (!ensurePermission(req, res, 'inventory.update')) return;
     const product = db.select().from(schema.products)
       .where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
     if (!product) return res.status(404).json({ error: 'Product not found' });
-    const { tenantId: _tenantId, ...updates } = req.body;
+    const { tenantId: _tenantId, stock: _stock, ...updates } = req.body;
     db.update(schema.products).set(updates).where(eq(schema.products.id, req.params.id)).run();
     const updated = db.select().from(schema.products).where(eq(schema.products.id, req.params.id)).get();
     if (!updated) return res.status(404).json({ error: 'Product not found' });
@@ -644,7 +776,7 @@ app.patch('/api/products/:id', (req, res) => {
 
 app.delete('/api/products/:id', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager'])) return;
+    if (!ensurePermission(req, res, 'inventory.delete')) return;
     const product = db.select().from(schema.products)
       .where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
     if (!product) return res.status(404).json({ error: 'Product not found' });
@@ -659,7 +791,7 @@ app.delete('/api/products/:id', (req, res) => {
 // Stock adjustment endpoint
 app.post('/api/products/:id/stock', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager'])) return;
+    if (!ensurePermission(req, res, 'inventory.adjust')) return;
     const { quantity, type, note } = req.body; // type: 'decrease' | 'increase'
     const product = db.select().from(schema.products)
       .where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
@@ -697,6 +829,152 @@ app.post('/api/products/:id/stock', (req, res) => {
     res.json(updated);
   } catch (err) {
     console.error('POST /api/products/:id/stock error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// SUPPLIERS / PURCHASES
+// ═══════════════════════════════════════════════════════════
+app.get('/api/suppliers', (req, res) => {
+  try {
+    let rows = db.select().from(schema.suppliers)
+      .where(eq(schema.suppliers.tenantId, req.user.tenantId)).all();
+    const search = String(req.query.search || '').trim().toLowerCase();
+    if (search) rows = rows.filter((row) => `${row.code} ${row.name} ${row.phone}`.toLowerCase().includes(search));
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/suppliers error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/suppliers', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'partners.create')) return;
+    const { code, name, phone = '', taxCode = null, address = '', note = '' } = req.body || {};
+    if (!name) return res.status(400).json({ error: 'Supplier name is required' });
+    const supplier = { id: uuid(), tenantId: req.user.tenantId, code: code || `NCC-${Date.now()}`, name, phone, taxCode, address, note, currentPayable: 0, active: true };
+    db.insert(schema.suppliers).values(supplier).run();
+    res.status(201).json(supplier);
+  } catch (err) {
+    console.error('POST /api/suppliers error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.patch('/api/suppliers/:id', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'partners.update')) return;
+    const supplier = db.select().from(schema.suppliers).where(and(eq(schema.suppliers.id, req.params.id), eq(schema.suppliers.tenantId, req.user.tenantId))).get();
+    if (!supplier) return res.status(404).json({ error: 'Supplier not found' });
+    const { tenantId: _tenantId, currentPayable: _payable, ...updates } = req.body || {};
+    db.update(schema.suppliers).set(updates).where(eq(schema.suppliers.id, supplier.id)).run();
+    res.json(db.select().from(schema.suppliers).where(eq(schema.suppliers.id, supplier.id)).get());
+  } catch (err) {
+    console.error('PATCH /api/suppliers/:id error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/purchases', (req, res) => {
+  try {
+    const rows = db.select().from(schema.purchases).where(eq(schema.purchases.tenantId, req.user.tenantId)).orderBy(desc(schema.purchases.createdAt)).all();
+    res.json(rows.map((purchase) => ({ ...purchase, supplier: db.select().from(schema.suppliers).where(eq(schema.suppliers.id, purchase.supplierId)).get() || null })));
+  } catch (err) {
+    console.error('GET /api/purchases error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/purchases/:id', (req, res) => {
+  try {
+    const purchase = db.select().from(schema.purchases).where(and(eq(schema.purchases.id, req.params.id), eq(schema.purchases.tenantId, req.user.tenantId))).get();
+    if (!purchase) return res.status(404).json({ error: 'Purchase not found' });
+    const items = db.select().from(schema.purchaseItems).where(eq(schema.purchaseItems.purchaseId, purchase.id)).all();
+    res.json({ ...purchase, items, supplier: db.select().from(schema.suppliers).where(eq(schema.suppliers.id, purchase.supplierId)).get() || null });
+  } catch (err) {
+    console.error('GET /api/purchases/:id error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/purchases', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'purchases.create')) return;
+    const { supplierId, items = [], paidAmount = 0, paymentMethod = 'payable', taxAmount = 0, note = '', createdAt } = req.body || {};
+    const supplier = db.select().from(schema.suppliers).where(and(eq(schema.suppliers.id, supplierId), eq(schema.suppliers.tenantId, req.user.tenantId))).get();
+    if (!supplier) return res.status(400).json({ error: 'Supplier not found' });
+    if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'At least one purchase item is required' });
+    const normalizedItems = items.map((item: any) => {
+      const quantity = Number(item.quantity) || 0;
+      const price = Number(item.price) || 0;
+      if (!item.productId || quantity <= 0 || price < 0) throw new Error('Invalid purchase item');
+      return { ...item, quantity, price, taxRate: Number(item.taxRate) || 0, total: quantity * price };
+    });
+    const totalAmount = normalizedItems.reduce((sum: number, item: any) => sum + item.total, 0);
+    const finalAmount = totalAmount + (Number(taxAmount) || 0);
+    const paid = Math.min(finalAmount, Math.max(0, Number(paidAmount) || 0));
+    const payable = finalAmount - paid;
+    const purchaseId = uuid();
+    const documentNo = String(req.body?.documentNo || nextDocumentNo(req.user.tenantId, 'purchase', 'PN'));
+    const timestamp = createdAt || new Date().toISOString();
+    const status = payable <= 0 ? 'confirmed' : paid > 0 ? 'partial' : 'unpaid';
+
+    db.transaction((tx) => {
+      tx.insert(schema.purchases).values({ id: purchaseId, documentNo, tenantId: req.user.tenantId, supplierId, createdBy: req.user.id, totalAmount, taxAmount: Number(taxAmount) || 0, finalAmount, paidAmount: paid, payableAmount: payable, paymentMethod, status, note, createdAt: timestamp }).run();
+      for (const item of normalizedItems) {
+        const product = tx.select().from(schema.products).where(and(eq(schema.products.id, item.productId), eq(schema.products.tenantId, req.user.tenantId))).get();
+        if (!product) throw new Error(`Product not found: ${item.productId}`);
+        const beforeStock = product.stock;
+        const afterStock = product.trackStock ? beforeStock + item.quantity : beforeStock;
+        if (product.trackStock) {
+          tx.update(schema.products).set({ stock: afterStock, purchasePrice: item.price }).where(eq(schema.products.id, product.id)).run();
+          tx.insert(schema.stockMovements).values({ id: uuid(), tenantId: req.user.tenantId, productId: product.id, type: 'in', quantity: item.quantity, beforeStock, afterStock, note: `Nhập hàng ${purchaseId}`, referenceId: purchaseId, createdAt: timestamp, createdBy: req.user.id }).run();
+        }
+        tx.insert(schema.purchaseItems).values({ id: uuid(), purchaseId, productId: product.id, productName: product.name, unit: product.unit, quantity: item.quantity, price: item.price, taxRate: item.taxRate, total: item.total }).run();
+      }
+      if (payable > 0) {
+        tx.update(schema.suppliers).set({ currentPayable: supplier.currentPayable + payable }).where(eq(schema.suppliers.id, supplier.id)).run();
+        tx.insert(schema.payableLedger).values({ id: uuid(), tenantId: req.user.tenantId, supplierId: supplier.id, purchaseId, amount: payable, type: 'increase', note: 'Nhập hàng chưa thanh toán đủ', createdAt: timestamp, createdBy: req.user.id }).run();
+      }
+      if (paid > 0) tx.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'expense', amount: paid, category: 'Nhập hàng', note: `Thanh toán nhập hàng ${purchaseId}`, referenceId: purchaseId, createdAt: timestamp, createdBy: req.user.id }).run();
+    });
+    res.status(201).json(db.select().from(schema.purchases).where(eq(schema.purchases.id, purchaseId)).get());
+  } catch (err) {
+    console.error('POST /api/purchases error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Could not create purchase' });
+  }
+});
+
+app.get('/api/payable-ledger', (req, res) => {
+  try {
+    let rows = db.select().from(schema.payableLedger).where(eq(schema.payableLedger.tenantId, req.user.tenantId)).orderBy(desc(schema.payableLedger.createdAt)).all();
+    if (req.query.supplierId) rows = rows.filter((row) => row.supplierId === req.query.supplierId);
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/payable-ledger error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/payable-ledger', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'debt.collect')) return;
+    const { supplierId, amount, note = '' } = req.body || {};
+    const supplier = db.select().from(schema.suppliers).where(and(eq(schema.suppliers.id, supplierId), eq(schema.suppliers.tenantId, req.user.tenantId))).get();
+    const payment = Number(amount) || 0;
+    if (!supplier || payment <= 0) return res.status(400).json({ error: 'Supplier and positive amount are required' });
+    const timestamp = new Date().toISOString();
+    const entry = { id: uuid(), tenantId: req.user.tenantId, supplierId, purchaseId: null, amount: Math.min(payment, supplier.currentPayable), type: 'decrease' as const, note: note || 'Thanh toán nhà cung cấp', createdAt: timestamp, createdBy: req.user.id };
+    db.transaction((tx) => {
+      tx.insert(schema.payableLedger).values(entry).run();
+      tx.update(schema.suppliers).set({ currentPayable: Math.max(0, supplier.currentPayable - entry.amount) }).where(eq(schema.suppliers.id, supplierId)).run();
+      tx.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'expense', amount: entry.amount, category: 'Thanh toán NCC', note: entry.note, referenceId: entry.id, createdAt: timestamp, createdBy: req.user.id }).run();
+    });
+    res.status(201).json(entry);
+  } catch (err) {
+    console.error('POST /api/payable-ledger error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -756,7 +1034,7 @@ app.get('/api/customers/:id', (req, res) => {
 
 app.post('/api/customers', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager'])) return;
+    if (!ensurePermission(req, res, 'partners.create')) return;
     const customer = {
       id: uuid(),
       totalDebt: 0,
@@ -776,7 +1054,7 @@ app.post('/api/customers', (req, res) => {
 
 app.patch('/api/customers/:id', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager'])) return;
+    if (!ensurePermission(req, res, 'partners.update')) return;
     const customer = db.select().from(schema.customers)
       .where(and(eq(schema.customers.id, req.params.id), eq(schema.customers.tenantId, req.user.tenantId))).get();
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
@@ -800,6 +1078,7 @@ app.patch('/api/customers/:id', (req, res) => {
 // ═══════════════════════════════════════════════════════════
 app.get('/api/customer-care-logs', (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'partners.view')) return;
     const { customerId } = req.query;
     const tenantUsers = db.select().from(schema.users)
       .where(eq(schema.users.tenantId, req.user.tenantId)).all();
@@ -822,7 +1101,7 @@ app.get('/api/customer-care-logs', (req, res) => {
 
 app.post('/api/customer-care-logs', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager', 'cashier'])) return;
+    if (!ensurePermission(req, res, 'partners.update')) return;
     const payload = req.body || {};
     const customer = db.select().from(schema.customers)
       .where(and(eq(schema.customers.id, payload.customerId), eq(schema.customers.tenantId, req.user.tenantId))).get();
@@ -853,7 +1132,7 @@ app.post('/api/customer-care-logs', (req, res) => {
 
 app.patch('/api/customer-care-logs/:id', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager', 'cashier'])) return;
+    if (!ensurePermission(req, res, 'partners.update')) return;
     const log = db.select().from(schema.customerCareLogs)
       .where(and(eq(schema.customerCareLogs.id, req.params.id), eq(schema.customerCareLogs.tenantId, req.user.tenantId))).get();
     if (!log) return res.status(404).json({ error: 'Care log not found' });
@@ -875,7 +1154,7 @@ app.patch('/api/customer-care-logs/:id', (req, res) => {
 // Customer debt adjustment
 app.post('/api/customers/:id/debt', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager'])) return;
+    if (!ensurePermission(req, res, 'debt.collect')) return;
     const { amount, type } = req.body; // type: 'increase' | 'decrease'
     const customer = db.select().from(schema.customers)
       .where(and(eq(schema.customers.id, req.params.id), eq(schema.customers.tenantId, req.user.tenantId))).get();
@@ -952,11 +1231,14 @@ app.get('/api/invoices/:id', (req, res) => {
 
 app.post('/api/invoices', (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'sales.create')) return;
     const { items, ...invoiceData } = req.body;
     const invoiceId = invoiceData.id || uuid();
+    const documentNo = String(invoiceData.documentNo || nextDocumentNo(req.user.tenantId, 'sale', 'HD'));
     const invoice = {
       ...invoiceData,
       id: invoiceId,
+      documentNo,
       tenantId: req.user.tenantId,
       createdBy: req.user.id,
       createdAt: invoiceData.createdAt || new Date().toISOString()
@@ -1075,7 +1357,7 @@ app.get('/api/cashbook', (req, res) => {
 
 app.post('/api/cashbook', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager', 'accountant'])) return;
+    if (!ensurePermission(req, res, 'cashbook.create')) return;
     const { type, amount, category, note, referenceId } = req.body || {};
     if (!type || !['income', 'expense'].includes(type)) return res.status(400).json({ error: 'Invalid type' });
     const amt = Number(amount) || 0;
@@ -1156,7 +1438,7 @@ app.get('/api/stock-movements', (req, res) => {
 
 app.post('/api/stock-check', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager', 'warehouse'])) return;
+    if (!ensurePermission(req, res, 'inventory.adjust')) return;
     const { productId, actualStock, note } = req.body || {};
     const product = db.select().from(schema.products)
       .where(and(eq(schema.products.id, productId), eq(schema.products.tenantId, req.user.tenantId))).get();
@@ -1213,7 +1495,7 @@ app.get('/api/invoice-items', (req, res) => {
 
 app.get('/api/debt-ledger', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager'])) return;
+    if (!ensurePermission(req, res, 'debt.view')) return;
     const { customerId } = req.query;
     let allEntries = db.select().from(schema.debtLedger)
       .where(eq(schema.debtLedger.tenantId, req.user.tenantId))
@@ -1232,7 +1514,7 @@ app.get('/api/debt-ledger', (req, res) => {
 
 app.post('/api/debt-ledger', (req, res) => {
   try {
-    if (!ensureRole(req, res, ['owner', 'manager'])) return;
+    if (!ensurePermission(req, res, 'debt.collect')) return;
     const customer = db.select().from(schema.customers)
       .where(and(eq(schema.customers.id, req.body.customerId), eq(schema.customers.tenantId, req.user.tenantId))).get();
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
@@ -1336,7 +1618,7 @@ const startServer = async () => {
   await bootstrapAdminAccount();
 
   app.listen(PORT, () => {
-    console.log(`\n🚀 TDPOS API Server running on http://localhost:${PORT}`);
+    console.log(`\n🚀 HKDCare API đang chạy tại http://localhost:${PORT}`);
     console.log(`   Health: http://localhost:${PORT}/api/health`);
     console.log(`   Docs:   All endpoints prefixed with /api/\n`);
   });

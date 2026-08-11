@@ -84,6 +84,7 @@ export interface Product {
   unit: string;
   purchasePrice: number;
   sellingPrice: number;
+  taxRate: number;
   stock: number;
   trackStock: boolean;
   lowStockThreshold: number;
@@ -112,16 +113,61 @@ export interface Customer {
   tags?: string[];
 }
 
+export interface Supplier {
+  id: string;
+  tenantId: string;
+  code: string;
+  name: string;
+  phone: string;
+  taxCode?: string | null;
+  address: string;
+  currentPayable: number;
+  note?: string;
+  active: boolean;
+}
+
+export interface PurchaseItem {
+  id: string;
+  purchaseId: string;
+  productId: string;
+  productName: string;
+  unit: string;
+  quantity: number;
+  price: number;
+  taxRate: number;
+  total: number;
+}
+
+export interface Purchase {
+  id: string;
+  documentNo?: string;
+  tenantId: string;
+  supplierId: string;
+  totalAmount: number;
+  taxAmount: number;
+  finalAmount: number;
+  paidAmount: number;
+  payableAmount: number;
+  paymentMethod: 'cash' | 'transfer' | 'payable';
+  status: 'confirmed' | 'partial' | 'unpaid';
+  note: string;
+  createdAt: string;
+  supplier?: Supplier | null;
+  items?: PurchaseItem[];
+}
+
 export type PaymentMethod = 'cash' | 'transfer' | 'debt';
 
 export interface Invoice {
   id: string;
+  documentNo?: string;
   tenantId: string;
   customerId: string | null;
   createdBy: string; // User ID
   createdByName?: string | null;
   totalAmount: number;
   discount: number;
+  taxAmount: number;
   finalAmount: number;
   paidAmount: number;
   debtAmount: number;
@@ -138,6 +184,7 @@ export interface InvoiceItem {
   productName: string;
   quantity: number;
   price: number;
+  taxRate: number;
   total: number;
 }
 

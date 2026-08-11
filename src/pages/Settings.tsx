@@ -1,9 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
-import { usersApi } from '../lib/api';
+import { backupsApi, licenseApi, permissionsApi, systemApi, usersApi } from '../lib/api';
 import { User } from '../types';
 import { Save, Settings2, ShieldCheck, Store, Users } from 'lucide-react';
 
@@ -20,6 +20,7 @@ export default function Settings() {
   const [formData, setFormData] = useState({
     name: activeTenant?.name || '',
     legalName: activeTenant?.legalName || '',
+    taxInfo: activeTenant?.taxInfo || '',
     address: activeTenant?.address || '',
     phone: activeTenant?.phone || '',
     invoicePrefix: activeTenant?.invoicePrefix || 'INV',
@@ -59,17 +60,22 @@ export default function Settings() {
     status: 'active',
     password: '',
   });
+  const [systemStatus, setSystemStatus] = useState<any>(null);
+  const [taxProfile, setTaxProfile] = useState({ name: 'Mặc định', taxMethod: 'Chưa cấu hình', defaultTaxRate: 0, taxCode: '' });
+  const [backups, setBackups] = useState<any[]>([]);
+  const [licenseToken, setLicenseToken] = useState('');
+  const [operationMessage, setOperationMessage] = useState('');
+  const [permissionUser, setPermissionUser] = useState<User | null>(null);
+  const [permissionRows, setPermissionRows] = useState<any[]>([]);
 
   const isOwner = currentUser?.role === 'owner';
-  const maxUsers = activeTenant?.maxUsers || 1;
-  const usedUsers = tenantUsers.length;
-  const seatsLeft = Math.max(0, maxUsers - usedUsers);
-  const canCreateMoreUsers = usedUsers < maxUsers;
+  const canCreateMoreUsers = true;
 
   useEffect(() => {
     setFormData({
       name: activeTenant?.name || '',
       legalName: activeTenant?.legalName || '',
+      taxInfo: activeTenant?.taxInfo || '',
       address: activeTenant?.address || '',
       phone: activeTenant?.phone || '',
       invoicePrefix: activeTenant?.invoicePrefix || 'INV',
@@ -110,11 +116,58 @@ export default function Settings() {
     loadTenantUsers();
   }, [isOwner, activeTenant?.id]);
 
-  const packageInfo = useMemo(() => ({
-    code: activeTenant?.packageCode || 'starter_1',
-    name: activeTenant?.packageName || 'Starter 1',
-    price: activeTenant?.packagePriceMonthly || 150000,
-  }), [activeTenant]);
+  useEffect(() => {
+    if (activeTab !== 'system') return;
+    Promise.all([systemApi.status(), backupsApi.list(), systemApi.taxProfile()]).then(([status, backupRows, profile]) => {
+      setSystemStatus(status);
+      setBackups(backupRows);
+      setTaxProfile({ name: profile.name || 'Mặc định', taxMethod: profile.taxMethod || 'Chưa cấu hình', defaultTaxRate: Number(profile.defaultTaxRate) || 0, taxCode: profile.taxCode || '' });
+    }).catch((err) => setOperationMessage(err instanceof Error ? err.message : 'Không thể tải trạng thái hệ thống.'));
+  }, [activeTab]);
+
+  const createBackup = async () => {
+    try {
+      const backup = await backupsApi.create();
+      setBackups((prev) => [backup, ...prev]);
+      setOperationMessage('Đã tạo bản sao lưu dữ liệu.');
+    } catch (err) { setOperationMessage(err instanceof Error ? err.message : 'Không thể tạo bản sao lưu.'); }
+  };
+
+  const saveTaxProfile = async () => {
+    try { await systemApi.updateTaxProfile(taxProfile); setOperationMessage('Đã lưu cấu hình dữ liệu thuế.'); }
+    catch (err) { setOperationMessage(err instanceof Error ? err.message : 'Không thể lưu cấu hình thuế.'); }
+  };
+
+  const restoreBackup = async (backupId: string) => {
+    if (!window.confirm('Khôi phục sẽ thay thế dữ liệu hiện tại và khởi động lại máy chủ. Tiếp tục?')) return;
+    try {
+      await backupsApi.restore(backupId);
+      setOperationMessage('Đã yêu cầu khôi phục. Máy chủ đang khởi động lại...');
+    } catch (err) { setOperationMessage(err instanceof Error ? err.message : 'Không thể khôi phục bản sao lưu.'); }
+  };
+
+  const activateLicense = async () => {
+    try {
+      const license = await licenseApi.activate(licenseToken.trim());
+      setSystemStatus((prev: any) => ({ ...prev, license }));
+      setLicenseToken('');
+      setOperationMessage('Đã kích hoạt license HKDCare.');
+    } catch (err) { setOperationMessage(err instanceof Error ? err.message : 'Không thể kích hoạt license.'); }
+  };
+
+  const openPermissions = async (user: User) => {
+    setPermissionUser(user);
+    try { setPermissionRows(await permissionsApi.getForUser(user.id)); }
+    catch (err) { setUserError(err instanceof Error ? err.message : 'Không thể tải phân quyền.'); }
+  };
+
+  const savePermissions = async () => {
+    if (!permissionUser) return;
+    try {
+      await permissionsApi.saveForUser(permissionUser.id, permissionRows.map((permission) => ({ code: permission.code, allowed: Boolean(permission.allowed) })));
+      setUserError('Đã lưu phân quyền.');
+    } catch (err) { setUserError(err instanceof Error ? err.message : 'Không thể lưu phân quyền.'); }
+  };
 
   const handleSave = async () => {
     setError('');
@@ -225,7 +278,7 @@ export default function Settings() {
             </div>
             <div>
               <h1 className="text-page-title">Cài đặt hệ thống</h1>
-              <p className="text-page-subtitle">Quản trị tenant, user và chính sách vận hành.</p>
+      <p className="text-page-subtitle">Quản trị hộ kinh doanh, nhân viên và chính sách vận hành.</p>
             </div>
           </div>
 
@@ -249,13 +302,10 @@ export default function Settings() {
               Hệ thống
             </button>
             <button onClick={() => setActiveTab('users')} className={`h-10 px-4 rounded-lg text-sm ${activeTab === 'users' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-700'}`}>
-              Users & Gói
+              Nhân viên & quyền
             </button>
             <button onClick={() => setActiveTab('invoice')} className={`h-10 px-4 rounded-lg text-sm ${activeTab === 'invoice' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-700'}`}>
               Hóa đơn
-            </button>
-            <button onClick={() => navigate('/app/subscription')} className="h-10 px-4 rounded-lg text-sm bg-white border border-slate-200 text-slate-700 hover:border-sky-300 hover:text-sky-700">
-              Subscription
             </button>
           </div>
 
@@ -268,6 +318,7 @@ export default function Settings() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Input value={formData.name} onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))} placeholder="Tên cửa hàng" />
             <Input value={formData.legalName} onChange={(e) => setFormData((prev) => ({ ...prev, legalName: e.target.value }))} placeholder="Tên pháp lý" />
+            <Input value={formData.taxInfo} onChange={(e) => setFormData((prev) => ({ ...prev, taxInfo: e.target.value }))} placeholder="Mã số thuế" />
             <Input value={formData.phone} onChange={(e) => setFormData((prev) => ({ ...prev, phone: e.target.value }))} placeholder="Số điện thoại" />
             <Input value={formData.invoicePrefix} onChange={(e) => setFormData((prev) => ({ ...prev, invoicePrefix: e.target.value }))} placeholder="Tiền tố hóa đơn" />
           </div>
@@ -302,62 +353,59 @@ export default function Settings() {
               </select>
             </div>
           </div>
+          <div className="grid grid-cols-1 gap-3 border-t border-slate-100 pt-4 md:grid-cols-2">
+            <div className="rounded-lg border border-slate-200 p-3 text-sm">
+              <p className="font-medium text-slate-900">Máy chủ mạng nội bộ</p>
+              <p className="mt-1 text-xs text-slate-500">{systemStatus?.hostname || 'Đang tải...'} · {systemStatus?.addresses?.join(', ') || 'Chưa nhận diện IP'}</p>
+              <p className="mt-1 text-xs text-sky-700">http://hkd.care</p>
+            </div>
+            <div className="rounded-lg border border-slate-200 p-3 text-sm">
+              <p className="font-medium text-slate-900">License</p>
+              <p className="mt-1 text-xs text-slate-500">Trạng thái: {systemStatus?.license?.status || 'unlicensed'}</p>
+              <div className="mt-2 flex gap-2"><Input value={licenseToken} onChange={(e) => setLicenseToken(e.target.value)} placeholder="Dán license token" className="h-8 text-xs"/><Button size="sm" onClick={activateLicense} disabled={!licenseToken.trim()}>Kích hoạt</Button></div>
+            </div>
+          </div>
+          <div className="rounded-lg border border-slate-200 p-3">
+            <div className="mb-2 flex items-center justify-between"><div><p className="font-medium text-slate-900">Dữ liệu thuế</p><p className="text-xs text-slate-500">Chỉ lưu cấu hình để xuất dữ liệu; HKDCare không tự kết luận nghĩa vụ thuế.</p></div><Button size="sm" variant="outline" onClick={saveTaxProfile}>Lưu</Button></div>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-3"><Input value={taxProfile.taxCode} onChange={(e) => setTaxProfile((prev) => ({ ...prev, taxCode: e.target.value }))} placeholder="Mã số thuế" /><Input value={taxProfile.taxMethod} onChange={(e) => setTaxProfile((prev) => ({ ...prev, taxMethod: e.target.value }))} placeholder="Phương pháp quản lý thuế" /><Input type="number" min="0" max="100" value={taxProfile.defaultTaxRate} onChange={(e) => setTaxProfile((prev) => ({ ...prev, defaultTaxRate: Number(e.target.value) || 0 }))} placeholder="Thuế suất mặc định (%)" /></div>
+          </div>
+          <div className="rounded-lg border border-slate-200 p-3">
+            <div className="flex items-center justify-between"><div><p className="font-medium text-slate-900">Sao lưu dữ liệu</p><p className="text-xs text-slate-500">Tạo bản sao SQLite trên máy chủ local.</p></div><Button size="sm" variant="outline" onClick={createBackup}>Tạo bản sao lưu</Button></div>
+            {backups.slice(0, 5).map((backup) => <div key={backup.id} className="mt-2 flex items-center justify-between gap-2 text-xs text-slate-500"><span>{new Date(backup.createdAt).toLocaleString('vi-VN')} · {Math.round(backup.sizeBytes / 1024)} KB</span><Button size="sm" variant="outline" onClick={() => restoreBackup(backup.id)}>Khôi phục</Button></div>)}
+          </div>
+          {operationMessage && <p className="text-xs text-sky-700">{operationMessage}</p>}
         </div>
+          )}
+
+          {activeTab === 'invoice' && (
+            <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 space-y-4">
+              <div className="flex items-center gap-2 text-slate-900"><Store className="h-4 w-4" /><h2 className="text-base font-semibold">Cấu hình in hóa đơn</h2></div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <Input value={formData.invoiceStoreDisplayName} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceStoreDisplayName: e.target.value }))} placeholder="Tên hiển thị trên hóa đơn" />
+                <select className="h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm" value={formData.invoicePrintSize} onChange={(e) => setFormData((prev) => ({ ...prev, invoicePrintSize: e.target.value }))}><option value="receipt_80mm">Khổ K80</option><option value="a5">Khổ A5</option></select>
+                <Input value={formData.invoiceHeaderLine1} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceHeaderLine1: e.target.value }))} placeholder="Dòng đầu hóa đơn" />
+                <Input value={formData.invoiceHeaderLine2} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceHeaderLine2: e.target.value }))} placeholder="Dòng phụ hóa đơn" />
+              </div>
+              <Input value={formData.invoiceFooterNote} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceFooterNote: e.target.value }))} placeholder="Lời cảm ơn / chính sách đổi trả" />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm text-slate-700">
+                <label><input type="checkbox" checked={formData.invoiceShowAddress} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceShowAddress: e.target.checked }))} /> Hiện địa chỉ</label>
+                <label><input type="checkbox" checked={formData.invoiceShowPhone} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceShowPhone: e.target.checked }))} /> Hiện số điện thoại</label>
+                <label><input type="checkbox" checked={formData.invoiceShowCustomerPhone} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceShowCustomerPhone: e.target.checked }))} /> Hiện SĐT khách hàng</label>
+                <label><input type="checkbox" checked={formData.invoiceShowOperator} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceShowOperator: e.target.checked }))} /> Hiện nhân viên</label>
+              </div>
+            </div>
           )}
 
           {activeTab === 'users' && (
             <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 space-y-4">
           <div className="flex items-center gap-2 text-slate-900">
             <Users className="h-4 w-4" />
-            <h2 className="text-base font-semibold">Users theo gói</h2>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-            <div className="rounded-lg border border-slate-200 p-3">
-              <p className="text-slate-500">Gói hiện tại</p>
-              <p className="font-semibold text-slate-900">{packageInfo.name}</p>
-              <p className="text-slate-500">{packageInfo.code}</p>
-            </div>
-            <div className="rounded-lg border border-slate-200 p-3">
-              <p className="text-slate-500">Số user</p>
-              <p className="font-semibold text-slate-900">{usedUsers}/{maxUsers}</p>
-              <p className="text-slate-500">Còn lại {seatsLeft} user</p>
-            </div>
-            <div className="rounded-lg border border-slate-200 p-3">
-              <p className="text-slate-500">Phí tháng</p>
-              <p className="font-semibold text-slate-900">{Number(packageInfo.price || 0).toLocaleString('vi-VN')}đ</p>
-            </div>
+            <h2 className="text-base font-semibold">Nhân viên & phân quyền</h2>
           </div>
 
           {!isOwner && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
-              Chỉ Owner mới có quyền quản lý user theo gói.
-            </div>
-          )}
-
-          {activeTab === 'invoice' && (
-            <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 space-y-4">
-              <div className="flex items-center gap-2 text-slate-900">
-                <Store className="h-4 w-4" />
-                <h2 className="text-base font-semibold">Cấu hình in hóa đơn</h2>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <Input value={formData.invoiceStoreDisplayName} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceStoreDisplayName: e.target.value }))} placeholder="Tên hiển thị trên hóa đơn (nếu khác tên cửa hàng)" />
-                <select className="h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm" value={formData.invoicePrintSize} onChange={(e) => setFormData((prev) => ({ ...prev, invoicePrintSize: e.target.value }))}>
-                  <option value="receipt_80mm">Khổ K80 (máy in bill)</option>
-                  <option value="a5">Khổ A5</option>
-                </select>
-                <Input value={formData.invoiceHeaderLine1} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceHeaderLine1: e.target.value }))} placeholder="Dòng header 1 (VD: MST / slogan)" />
-                <Input value={formData.invoiceHeaderLine2} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceHeaderLine2: e.target.value }))} placeholder="Dòng header 2 (VD: Website / Facebook)" />
-              </div>
-              <Input value={formData.invoiceFooterNote} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceFooterNote: e.target.value }))} placeholder="Lời cảm ơn / chính sách đổi trả ở cuối bill" />
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={formData.invoiceShowAddress} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceShowAddress: e.target.checked }))} />Hiện địa chỉ cửa hàng</label>
-                <label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={formData.invoiceShowPhone} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceShowPhone: e.target.checked }))} />Hiện số điện thoại cửa hàng</label>
-                <label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={formData.invoiceShowCustomerPhone} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceShowCustomerPhone: e.target.checked }))} />Hiện SĐT khách hàng</label>
-                <label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={formData.invoiceShowOperator} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceShowOperator: e.target.checked }))} />Hiện nhân viên thao tác</label>
-                <label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={formData.invoiceShowOrderNote} onChange={(e) => setFormData((prev) => ({ ...prev, invoiceShowOrderNote: e.target.checked }))} />Hiện ghi chú đơn</label>
-              </div>
+              Chỉ quản trị mới có quyền quản lý nhân viên và phân quyền.
             </div>
           )}
 
@@ -376,9 +424,10 @@ export default function Settings() {
                 <select className="h-10 rounded-md border border-gray-300 px-3 text-sm" value={userForm.role} onChange={(e) => setUserForm((prev) => ({ ...prev, role: e.target.value }))}>
                   <option value="cashier">Nhân viên bán hàng</option>
                   <option value="manager">Quản lý</option>
+                  <option value="warehouse">Nhân viên kho</option>
                 </select>
                 <Button onClick={handleCreateUser} disabled={!canCreateMoreUsers} className="h-10 text-sm font-medium">
-                  {canCreateMoreUsers ? 'Thêm user' : 'Đã đạt giới hạn gói'}
+                  Thêm nhân viên
                 </Button>
               </div>
             </div>
@@ -410,6 +459,7 @@ export default function Settings() {
                       <td className="px-3 py-2">
                         {isOwner && user.role !== 'owner' ? (
                           <div className="flex justify-end gap-2">
+                            <Button size="sm" variant="outline" onClick={() => openPermissions(user)}>Quyền</Button>
                             <Button size="sm" variant="outline" onClick={() => openEditUser(user)}>Sửa</Button>
                             <Button size="sm" variant="destructive" onClick={() => handleDeleteUser(user)}>Xoá</Button>
                           </div>
@@ -433,6 +483,7 @@ export default function Settings() {
                 <select className="h-10 rounded-md border border-gray-300 px-3 text-sm" value={editingForm.role} onChange={(e) => setEditingForm((prev) => ({ ...prev, role: e.target.value }))}>
                   <option value="cashier">Nhân viên bán hàng</option>
                   <option value="manager">Quản lý</option>
+                  <option value="warehouse">Nhân viên kho</option>
                 </select>
                 <select className="h-10 rounded-md border border-gray-300 px-3 text-sm" value={editingForm.status} onChange={(e) => setEditingForm((prev) => ({ ...prev, status: e.target.value }))}>
                   <option value="active">active</option>
@@ -443,6 +494,14 @@ export default function Settings() {
                   <Button onClick={handleUpdateUser}>Lưu user</Button>
                   <Button variant="outline" onClick={() => setEditingUserId('')}>Huỷ</Button>
                 </div>
+              </div>
+            </div>
+          )}
+          {permissionUser && (
+            <div className="rounded-lg border border-slate-200 p-3 space-y-3">
+              <div className="flex items-center justify-between"><div><p className="text-sm font-medium text-slate-900">Phân quyền: {permissionUser.name}</p><p className="text-xs text-slate-500">Bật/tắt quyền theo module và thao tác.</p></div><Button size="sm" onClick={savePermissions}>Lưu quyền</Button></div>
+              <div className="grid grid-cols-1 gap-1 md:grid-cols-2">
+                {permissionRows.map((permission) => <label key={permission.code} className="flex items-center gap-2 rounded border border-slate-100 px-2 py-1.5 text-xs text-slate-700"><input type="checkbox" checked={Boolean(permission.allowed)} onChange={(e) => setPermissionRows((prev) => prev.map((row) => row.code === permission.code ? { ...row, allowed: e.target.checked } : row))}/><span>{permission.label}</span><span className="ml-auto font-mono text-[10px] text-slate-400">{permission.code}</span></label>)}
               </div>
             </div>
           )}
