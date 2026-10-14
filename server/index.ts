@@ -196,6 +196,7 @@ app.post('/api/auth/register', async (req, res) => {
       status: 'active' as const,
     };
     db.insert(schema.users).values(userValues).run();
+    ensureDefaultCashAccounts(tenantId);
 
     const tenant = db.select().from(schema.tenants)
       .where(eq(schema.tenants.id, tenantId)).get();
@@ -708,6 +709,175 @@ app.post('/api/categories', (req, res) => {
 // PRODUCTS
 // ═══════════════════════════════════════════════════════════
 
+const ensureDefaultPriceList = (tenantId: string) => {
+  let defaultList = db.select().from(schema.priceLists)
+    .where(and(eq(schema.priceLists.tenantId, tenantId), eq(schema.priceLists.isDefault, true))).get();
+  if (!defaultList) {
+    const now = new Date().toISOString();
+    const id = uuid();
+    db.insert(schema.priceLists).values({ id, tenantId, name: 'Bảng giá chung', customerType: 'all', isDefault: true, active: true, createdAt: now }).run();
+    defaultList = db.select().from(schema.priceLists).where(eq(schema.priceLists.id, id)).get();
+  }
+  if (defaultList) {
+    const products = db.select().from(schema.products).where(and(eq(schema.products.tenantId, tenantId), eq(schema.products.productType, 'standard'))).all();
+    for (const product of products) {
+      const exists = db.select().from(schema.priceListItems).where(and(eq(schema.priceListItems.priceListId, defaultList.id), eq(schema.priceListItems.productId, product.id), eq(schema.priceListItems.unitName, product.unit))).get();
+      if (!exists) db.insert(schema.priceListItems).values({ id: uuid(), tenantId, priceListId: defaultList.id, productId: product.id, unitName: product.unit, unitFactor: 1, price: product.sellingPrice, createdAt: new Date().toISOString() }).run();
+    }
+  }
+  return defaultList;
+};
+
+const productUnitsFor = (tenantId: string, product: any) => {
+  const extraUnits = db.select().from(schema.productUnits)
+    .where(and(eq(schema.productUnits.tenantId, tenantId), eq(schema.productUnits.productId, product.id), eq(schema.productUnits.active, true))).all();
+  const base = { id: `base-${product.id}`, tenantId, productId: product.id, name: product.unit, factor: 1, barcode: product.barcode || null, active: true };
+  return [base, ...extraUnits.filter((unit) => unit.name !== product.unit || Number(unit.factor) !== 1)];
+};
+
+const productComponentsFor = (tenantId: string, productId: string) => db.select().from(schema.productComponents)
+  .where(and(eq(schema.productComponents.tenantId, tenantId), eq(schema.productComponents.comboProductId, productId))).all();
+
+const reservedBaseStock = (tenantId: string, productId: string) => Number(db.select({ quantity: sql<number>`coalesce(sum(${schema.stockReservations.quantity}), 0)` })
+  .from(schema.stockReservations)
+  .where(and(eq(schema.stockReservations.productId, productId), eq(schema.stockReservations.tenantId, tenantId), eq(schema.stockReservations.status, 'reserved')))
+  .get()?.quantity || 0);
+
+const availableForProduct = (tenantId: string, productId: string, seen = new Set<string>()): number => {
+  if (seen.has(productId)) return 0;
+  const product = db.select().from(schema.products).where(and(eq(schema.products.id, productId), eq(schema.products.tenantId, tenantId))).get();
+  if (!product) return 0;
+  if (product.productType !== 'combo') return Math.max(0, Number(product.stock) - reservedBaseStock(tenantId, productId));
+  const components = productComponentsFor(tenantId, productId);
+  if (!components.length) return 0;
+  return Math.min(...components.map((component) => {
+    const available = availableForProduct(tenantId, component.componentProductId, new Set([...seen, productId]));
+    return component.quantity > 0 ? Math.floor(available / Number(component.quantity)) : 0;
+  }));
+};
+
+const withStockAvailability = (tenantId: string, product: any) => {
+  const reservedStock = reservedBaseStock(tenantId, product.id);
+  return { ...product, units: productUnitsFor(tenantId, product), components: productComponentsFor(tenantId, product.id), reservedStock, availableStock: availableForProduct(tenantId, product.id) };
+};
+
+app.get('/api/price-lists', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.view')) return;
+    const defaultList = ensureDefaultPriceList(req.user.tenantId);
+    const includeItems = String(req.query.includeItems ?? 'true') !== 'false';
+    const lists = db.select().from(schema.priceLists)
+      .where(eq(schema.priceLists.tenantId, req.user.tenantId)).all();
+    res.json(lists.map((list) => ({
+      ...list,
+      items: includeItems ? db.select().from(schema.priceListItems).where(eq(schema.priceListItems.priceListId, list.id)).all() : undefined,
+      isDefault: Boolean(list.isDefault),
+      active: Boolean(list.active),
+      ensuredDefault: list.id === defaultList?.id,
+    })));
+  } catch (err) {
+    console.error('GET /api/price-lists error:', err);
+    res.status(500).json({ error: 'Không thể tải bảng giá' });
+  }
+});
+
+app.get('/api/price-lists/:id', (req, res) => {
+  try {
+    const list = db.select().from(schema.priceLists).where(and(eq(schema.priceLists.id, req.params.id), eq(schema.priceLists.tenantId, req.user.tenantId))).get();
+    if (!list) return res.status(404).json({ error: 'Không tìm thấy bảng giá' });
+    res.json({ ...list, items: db.select().from(schema.priceListItems).where(eq(schema.priceListItems.priceListId, list.id)).all() });
+  } catch (err) {
+    console.error('GET /api/price-lists/:id error:', err);
+    res.status(500).json({ error: 'Không thể tải bảng giá' });
+  }
+});
+
+app.post('/api/price-lists', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.manage_pricing')) return;
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Tên bảng giá là bắt buộc' });
+    const now = new Date().toISOString();
+    const list = { id: uuid(), tenantId: req.user.tenantId, name, customerType: req.body?.customerType || 'all', isDefault: Boolean(req.body?.isDefault), active: req.body?.active !== false, createdAt: now };
+    if (list.isDefault) db.update(schema.priceLists).set({ isDefault: false }).where(eq(schema.priceLists.tenantId, req.user.tenantId)).run();
+    db.insert(schema.priceLists).values(list).run();
+    res.status(201).json({ ...list, items: [] });
+  } catch (err) {
+    console.error('POST /api/price-lists error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể tạo bảng giá' });
+  }
+});
+
+app.patch('/api/price-lists/:id', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.manage_pricing')) return;
+    const list = db.select().from(schema.priceLists).where(and(eq(schema.priceLists.id, req.params.id), eq(schema.priceLists.tenantId, req.user.tenantId))).get();
+    if (!list) return res.status(404).json({ error: 'Không tìm thấy bảng giá' });
+    const { id: _id, tenantId: _tenantId, isDefault, ...updates } = req.body || {};
+    if (isDefault) db.update(schema.priceLists).set({ isDefault: false }).where(eq(schema.priceLists.tenantId, req.user.tenantId)).run();
+    db.update(schema.priceLists).set({ ...updates, ...(isDefault !== undefined ? { isDefault: Boolean(isDefault) } : {}) }).where(eq(schema.priceLists.id, list.id)).run();
+    res.json(db.select().from(schema.priceLists).where(eq(schema.priceLists.id, list.id)).get());
+  } catch (err) {
+    console.error('PATCH /api/price-lists/:id error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể cập nhật bảng giá' });
+  }
+});
+
+app.delete('/api/price-lists/:id', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.manage_pricing')) return;
+    const list = db.select().from(schema.priceLists).where(and(eq(schema.priceLists.id, req.params.id), eq(schema.priceLists.tenantId, req.user.tenantId))).get();
+    if (!list) return res.status(404).json({ error: 'Không tìm thấy bảng giá' });
+    if (list.isDefault) return res.status(409).json({ error: 'Không thể xóa bảng giá mặc định' });
+    db.delete(schema.priceListItems).where(eq(schema.priceListItems.priceListId, list.id)).run();
+    db.delete(schema.priceLists).where(eq(schema.priceLists.id, list.id)).run();
+    res.json({ success: true });
+  } catch (err) {
+    console.error('DELETE /api/price-lists/:id error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể xóa bảng giá' });
+  }
+});
+
+app.put('/api/price-lists/:id/items', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.manage_pricing')) return;
+    const list = db.select().from(schema.priceLists).where(and(eq(schema.priceLists.id, req.params.id), eq(schema.priceLists.tenantId, req.user.tenantId))).get();
+    if (!list) return res.status(404).json({ error: 'Không tìm thấy bảng giá' });
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    db.transaction((tx) => {
+      tx.delete(schema.priceListItems).where(eq(schema.priceListItems.priceListId, list.id)).run();
+      for (const item of items) {
+        const product = tx.select().from(schema.products).where(and(eq(schema.products.id, item.productId), eq(schema.products.tenantId, req.user.tenantId))).get();
+        const price = Number(item.price);
+        const factor = Number(item.unitFactor || 1);
+        if (!product || !item.unitName || !Number.isFinite(price) || price < 0 || !Number.isFinite(factor) || factor <= 0) continue;
+        tx.insert(schema.priceListItems).values({ id: uuid(), tenantId: req.user.tenantId, priceListId: list.id, productId: product.id, unitName: String(item.unitName), unitFactor: factor, price, createdAt: new Date().toISOString() }).run();
+      }
+    });
+    res.json(db.select().from(schema.priceListItems).where(eq(schema.priceListItems.priceListId, list.id)).all());
+  } catch (err) {
+    console.error('PUT /api/price-lists/:id/items error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể lưu giá sản phẩm' });
+  }
+});
+
+app.get('/api/products/lookup', (req, res) => {
+  try {
+    const code = String(req.query.code || '').trim().toLowerCase();
+    if (!code) return res.status(400).json({ error: 'Thiếu mã cần tra cứu' });
+    const rows = db.select().from(schema.products).where(eq(schema.products.tenantId, req.user.tenantId)).all();
+    const unit = db.select().from(schema.productUnits).where(eq(schema.productUnits.tenantId, req.user.tenantId)).all().find((row) => String(row.barcode || '').trim().toLowerCase() === code);
+    const product = rows.find((row) => row.sku.toLowerCase() === code || String(row.barcode || '').toLowerCase() === code) || unit;
+    if (!product) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+    const resolved = 'productId' in product ? db.select().from(schema.products).where(eq(schema.products.id, product.productId)).get() : product;
+    if (!resolved) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+    res.json(withStockAvailability(req.user.tenantId, resolved));
+  } catch (err) {
+    console.error('GET /api/products/lookup error:', err);
+    res.status(500).json({ error: 'Không thể tra cứu mã sản phẩm' });
+  }
+});
+
 app.get('/api/products', (req, res) => {
   try {
     const { category, search } = req.query;
@@ -726,7 +896,7 @@ app.get('/api/products', (req, res) => {
       );
     }
 
-    res.json(allProducts);
+    res.json(allProducts.map((product) => withStockAvailability(req.user.tenantId, product)));
   } catch (err) {
     console.error('GET /api/products error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -738,17 +908,78 @@ app.get('/api/products/:id', (req, res) => {
     const product = db.select().from(schema.products)
       .where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
     if (!product) return res.status(404).json({ error: 'Product not found' });
-    res.json(product);
+    res.json(withStockAvailability(req.user.tenantId, product));
   } catch (err) {
     console.error('GET /api/products/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
+app.get('/api/products/:id/units', (req, res) => {
+  try {
+    const product = db.select().from(schema.products).where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
+    if (!product) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+    res.json(productUnitsFor(req.user.tenantId, product));
+  } catch (err) { res.status(500).json({ error: 'Không thể tải đơn vị quy đổi' }); }
+});
+
+app.put('/api/products/:id/units', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.manage_pricing')) return;
+    const product = db.select().from(schema.products).where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
+    if (!product) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+    const units = Array.isArray(req.body?.units) ? req.body.units : [];
+    db.transaction((tx) => {
+      tx.delete(schema.productUnits).where(and(eq(schema.productUnits.productId, product.id), eq(schema.productUnits.tenantId, req.user.tenantId))).run();
+      for (const unit of units) {
+        const name = String(unit.name || '').trim();
+        const factor = Number(unit.factor);
+        if (!name || name === product.unit || !Number.isFinite(factor) || factor <= 0) continue;
+        tx.insert(schema.productUnits).values({ id: uuid(), tenantId: req.user.tenantId, productId: product.id, name, factor, barcode: unit.barcode ? String(unit.barcode).trim() : null, active: true, createdAt: new Date().toISOString() }).run();
+      }
+    });
+    res.json(productUnitsFor(req.user.tenantId, product));
+  } catch (err) { res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể lưu đơn vị quy đổi' }); }
+});
+
+app.get('/api/products/:id/components', (req, res) => {
+  try {
+    const product = db.select().from(schema.products).where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
+    if (!product) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+    const rows = productComponentsFor(req.user.tenantId, product.id);
+    res.json(rows.map((row) => ({ ...row, component: db.select().from(schema.products).where(eq(schema.products.id, row.componentProductId)).get() || null })));
+  } catch (err) { res.status(500).json({ error: 'Không thể tải thành phần combo' }); }
+});
+
+app.put('/api/products/:id/components', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.manage_pricing')) return;
+    const combo = db.select().from(schema.products).where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
+    if (!combo) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+    const components = Array.isArray(req.body?.components) ? req.body.components : [];
+    if (combo.productType !== 'combo' && components.length) return res.status(409).json({ error: 'Chỉ sản phẩm combo mới có thành phần' });
+    const componentIds = new Set<string>();
+    for (const item of components) {
+      const quantity = Number(item.quantity);
+      if (!item.componentProductId || item.componentProductId === combo.id || componentIds.has(item.componentProductId) || !Number.isFinite(quantity) || quantity <= 0) {
+        return res.status(400).json({ error: 'Thành phần combo không hợp lệ' });
+      }
+      const product = db.select().from(schema.products).where(and(eq(schema.products.id, item.componentProductId), eq(schema.products.tenantId, req.user.tenantId))).get();
+      if (!product || product.productType === 'combo') return res.status(400).json({ error: 'Combo chỉ được chứa sản phẩm thường' });
+      componentIds.add(item.componentProductId);
+    }
+    db.transaction((tx) => {
+      tx.delete(schema.productComponents).where(and(eq(schema.productComponents.comboProductId, combo.id), eq(schema.productComponents.tenantId, req.user.tenantId))).run();
+      for (const item of components) tx.insert(schema.productComponents).values({ id: uuid(), tenantId: req.user.tenantId, comboProductId: combo.id, componentProductId: item.componentProductId, quantity: Number(item.quantity), createdAt: new Date().toISOString() }).run();
+    });
+    res.json(productComponentsFor(req.user.tenantId, combo.id));
+  } catch (err) { res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể lưu thành phần combo' }); }
+});
+
 app.post('/api/products', (req, res) => {
   try {
     if (!ensurePermission(req, res, 'inventory.create')) return;
-    const product = { id: uuid(), ...req.body, tenantId: req.user.tenantId };
+    const product = { id: uuid(), productType: 'standard' as const, ...req.body, tenantId: req.user.tenantId };
     db.insert(schema.products).values(product).run();
     res.status(201).json(product);
   } catch (err) {
@@ -836,6 +1067,41 @@ app.post('/api/products/:id/stock', (req, res) => {
 // ═══════════════════════════════════════════════════════════
 // SUPPLIERS / PURCHASES
 // ═══════════════════════════════════════════════════════════
+
+const unitForProduct = (tenantId: string, product: any, unitName?: string, requestedFactor?: number) => {
+  const units = productUnitsFor(tenantId, product);
+  const match = units.find((unit) => unit.name === unitName);
+  if (match) return { name: match.name, factor: Number(match.factor) || 1 };
+  const factor = Number(requestedFactor);
+  return { name: unitName || product.unit, factor: Number.isFinite(factor) && factor > 0 ? factor : 1 };
+};
+
+const expandStockRequirements = (tenantId: string, productId: string, baseQuantity: number, seen = new Set<string>()): Array<{ productId: string; quantity: number }> => {
+  if (seen.has(productId)) throw new Error('Combo chứa vòng lặp thành phần');
+  const product = db.select().from(schema.products).where(and(eq(schema.products.id, productId), eq(schema.products.tenantId, tenantId))).get();
+  if (!product) throw new Error(`Không tìm thấy sản phẩm: ${productId}`);
+  if (product.productType !== 'combo') return [{ productId, quantity: baseQuantity }];
+  const components = productComponentsFor(tenantId, productId);
+  if (!components.length) throw new Error(`Combo ${product.name} chưa có thành phần`);
+  return components.flatMap((component) => expandStockRequirements(tenantId, component.componentProductId, baseQuantity * Number(component.quantity), new Set([...seen, productId])));
+};
+
+const supplierCreditBalance = (tenantId: string, supplierId: string) => {
+  const rows = db.select().from(schema.supplierCreditLedger)
+    .where(and(eq(schema.supplierCreditLedger.tenantId, tenantId), eq(schema.supplierCreditLedger.supplierId, supplierId))).all();
+  return rows.reduce((sum, row) => sum + (row.type === 'increase' ? Number(row.amount) : -Number(row.amount)), 0);
+};
+
+const defaultAccountForPayment = (tenantId: string, paymentMethod: string) => {
+  const type = paymentMethod === 'transfer' ? 'bank' : paymentMethod === 'wallet' ? 'wallet' : 'cash';
+  const existing = db.select().from(schema.cashAccounts).where(and(eq(schema.cashAccounts.tenantId, tenantId), eq(schema.cashAccounts.type, type), eq(schema.cashAccounts.active, 1))).get();
+  if (existing) return existing.id;
+  const defaults: Record<string, string> = { cash: 'Tiền mặt', bank: 'Chuyển khoản ngân hàng', wallet: 'Ví điện tử' };
+  db.insert(schema.cashAccounts).values({
+    id: uuid(), tenantId, name: defaults[type] || 'Tài khoản tiền', type, active: 1, createdAt: new Date().toISOString(),
+  }).run();
+  return db.select().from(schema.cashAccounts).where(and(eq(schema.cashAccounts.tenantId, tenantId), eq(schema.cashAccounts.type, type), eq(schema.cashAccounts.active, 1))).get()?.id || null;
+};
 app.get('/api/suppliers', (req, res) => {
   try {
     let rows = db.select().from(schema.suppliers)
@@ -910,41 +1176,155 @@ app.post('/api/purchases', (req, res) => {
       const quantity = Number(item.quantity) || 0;
       const price = Number(item.price) || 0;
       if (!item.productId || quantity <= 0 || price < 0) throw new Error('Invalid purchase item');
-      return { ...item, quantity, price, taxRate: Number(item.taxRate) || 0, total: quantity * price };
+      const product = db.select().from(schema.products).where(and(eq(schema.products.id, item.productId), eq(schema.products.tenantId, req.user.tenantId))).get();
+      if (!product) throw new Error(`Product not found: ${item.productId}`);
+      if (product.productType === 'combo') throw new Error('Không thể nhập trực tiếp sản phẩm combo');
+      const unit = unitForProduct(req.user.tenantId, product, item.unitName || item.unit, item.unitFactor);
+      return { ...item, quantity, price, unitName: unit.name, unitFactor: unit.factor, baseQuantity: quantity * unit.factor, taxRate: Number(item.taxRate) || 0, total: quantity * price };
     });
     const totalAmount = normalizedItems.reduce((sum: number, item: any) => sum + item.total, 0);
     const finalAmount = totalAmount + (Number(taxAmount) || 0);
-    const paid = Math.min(finalAmount, Math.max(0, Number(paidAmount) || 0));
+    const directPaid = Math.min(finalAmount, Math.max(0, Number(paidAmount) || 0));
+    const availableCredit = Math.max(0, supplierCreditBalance(req.user.tenantId, supplier.id));
+    const creditUsed = Math.min(Math.max(0, finalAmount - directPaid), availableCredit);
+    const paid = Math.min(finalAmount, directPaid + creditUsed);
     const payable = finalAmount - paid;
     const purchaseId = uuid();
     const documentNo = String(req.body?.documentNo || nextDocumentNo(req.user.tenantId, 'purchase', 'PN'));
     const timestamp = createdAt || new Date().toISOString();
     const status = payable <= 0 ? 'confirmed' : paid > 0 ? 'partial' : 'unpaid';
+    const accountId = directPaid > 0 ? (req.body?.accountId || defaultAccountForPayment(req.user.tenantId, paymentMethod)) : null;
 
     db.transaction((tx) => {
-      tx.insert(schema.purchases).values({ id: purchaseId, documentNo, tenantId: req.user.tenantId, supplierId, createdBy: req.user.id, totalAmount, taxAmount: Number(taxAmount) || 0, finalAmount, paidAmount: paid, payableAmount: payable, paymentMethod, status, note, createdAt: timestamp }).run();
+      tx.insert(schema.purchases).values({ id: purchaseId, documentNo, tenantId: req.user.tenantId, supplierId, createdBy: req.user.id, totalAmount, taxAmount: Number(taxAmount) || 0, finalAmount, paidAmount: paid, payableAmount: payable, paymentMethod, accountId, status, note, createdAt: timestamp }).run();
       for (const item of normalizedItems) {
         const product = tx.select().from(schema.products).where(and(eq(schema.products.id, item.productId), eq(schema.products.tenantId, req.user.tenantId))).get();
         if (!product) throw new Error(`Product not found: ${item.productId}`);
         const beforeStock = product.stock;
-        const afterStock = product.trackStock ? beforeStock + item.quantity : beforeStock;
+        const afterStock = product.trackStock ? beforeStock + item.baseQuantity : beforeStock;
         if (product.trackStock) {
           tx.update(schema.products).set({ stock: afterStock, purchasePrice: item.price }).where(eq(schema.products.id, product.id)).run();
-          tx.insert(schema.stockMovements).values({ id: uuid(), tenantId: req.user.tenantId, productId: product.id, type: 'in', quantity: item.quantity, beforeStock, afterStock, note: `Nhập hàng ${purchaseId}`, referenceId: purchaseId, createdAt: timestamp, createdBy: req.user.id }).run();
+          tx.insert(schema.stockMovements).values({ id: uuid(), tenantId: req.user.tenantId, productId: product.id, type: 'in', quantity: item.baseQuantity, beforeStock, afterStock, note: `Nhập hàng ${purchaseId}`, referenceId: purchaseId, createdAt: timestamp, createdBy: req.user.id }).run();
         }
-        tx.insert(schema.purchaseItems).values({ id: uuid(), purchaseId, productId: product.id, productName: product.name, unit: product.unit, quantity: item.quantity, price: item.price, taxRate: item.taxRate, total: item.total }).run();
+        tx.insert(schema.purchaseItems).values({ id: uuid(), purchaseId, productId: product.id, productName: product.name, unit: item.unitName, quantity: item.quantity, price: item.price, taxRate: item.taxRate, total: item.total, unitFactor: item.unitFactor, baseQuantity: item.baseQuantity }).run();
       }
+      if (creditUsed > 0) tx.insert(schema.supplierCreditLedger).values({ id: uuid(), tenantId: req.user.tenantId, supplierId: supplier.id, purchaseId, purchaseReturnId: null, amount: creditUsed, type: 'decrease', accountId: null, note: 'Cấn trừ số dư trả hàng nhà cung cấp', createdBy: req.user.id, createdAt: timestamp }).run();
       if (payable > 0) {
         tx.update(schema.suppliers).set({ currentPayable: supplier.currentPayable + payable }).where(eq(schema.suppliers.id, supplier.id)).run();
         tx.insert(schema.payableLedger).values({ id: uuid(), tenantId: req.user.tenantId, supplierId: supplier.id, purchaseId, amount: payable, type: 'increase', note: 'Nhập hàng chưa thanh toán đủ', createdAt: timestamp, createdBy: req.user.id }).run();
       }
-      if (paid > 0) tx.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'expense', amount: paid, category: 'Nhập hàng', note: `Thanh toán nhập hàng ${purchaseId}`, referenceId: purchaseId, createdAt: timestamp, createdBy: req.user.id }).run();
+      if (directPaid > 0) tx.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'expense', amount: directPaid, category: 'Nhập hàng', note: `Thanh toán nhập hàng ${purchaseId}`, referenceId: purchaseId, accountId, createdAt: timestamp, createdBy: req.user.id }).run();
     });
     res.status(201).json(db.select().from(schema.purchases).where(eq(schema.purchases.id, purchaseId)).get());
   } catch (err) {
     console.error('POST /api/purchases error:', err);
     res.status(400).json({ error: err instanceof Error ? err.message : 'Could not create purchase' });
   }
+});
+
+app.get('/api/purchases/:id/returnable', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'purchases.view')) return;
+    const purchase = db.select().from(schema.purchases).where(and(eq(schema.purchases.id, req.params.id), eq(schema.purchases.tenantId, req.user.tenantId))).get();
+    if (!purchase) return res.status(404).json({ error: 'Không tìm thấy phiếu nhập' });
+    const items = db.select().from(schema.purchaseItems).where(eq(schema.purchaseItems.purchaseId, purchase.id)).all();
+    const returns = db.select().from(schema.purchaseReturnItems).where(inArray(schema.purchaseReturnItems.purchaseItemId, items.map((item) => item.id))).all();
+    res.json({ purchase, items: items.map((item) => ({ ...item, returnedQuantity: returns.filter((row) => row.purchaseItemId === item.id).reduce((sum, row) => sum + Number(row.quantity), 0), returnedBaseQuantity: returns.filter((row) => row.purchaseItemId === item.id).reduce((sum, row) => sum + Number(row.baseQuantity), 0) })) });
+  } catch (err) { res.status(500).json({ error: 'Không thể tải dòng hàng có thể trả' }); }
+});
+
+app.get('/api/purchase-returns', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'purchases.view')) return;
+    let rows = db.select().from(schema.purchaseReturns).where(eq(schema.purchaseReturns.tenantId, req.user.tenantId)).orderBy(desc(schema.purchaseReturns.createdAt)).all();
+    if (req.query.supplierId) rows = rows.filter((row) => row.supplierId === req.query.supplierId);
+    res.json(rows.map((row) => ({ ...row, items: db.select().from(schema.purchaseReturnItems).where(eq(schema.purchaseReturnItems.returnId, row.id)).all(), supplier: db.select().from(schema.suppliers).where(eq(schema.suppliers.id, row.supplierId)).get() || null })));
+  } catch (err) { res.status(500).json({ error: 'Không thể tải phiếu trả nhà cung cấp' }); }
+});
+
+app.post('/api/purchases/:id/returns', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'purchases.return')) return;
+    const purchase = db.select().from(schema.purchases).where(and(eq(schema.purchases.id, req.params.id), eq(schema.purchases.tenantId, req.user.tenantId))).get();
+    if (!purchase) return res.status(404).json({ error: 'Không tìm thấy phiếu nhập' });
+    const requestedItems = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!requestedItems.length) return res.status(400).json({ error: 'Chọn ít nhất một dòng hàng để trả' });
+    const purchaseItems = db.select().from(schema.purchaseItems).where(eq(schema.purchaseItems.purchaseId, purchase.id)).all();
+    const purchaseItemById = new Map(purchaseItems.map((item) => [item.id, item]));
+    const priorReturns = db.select().from(schema.purchaseReturnItems).where(inArray(schema.purchaseReturnItems.purchaseItemId, purchaseItems.map((item) => item.id))).all();
+    const normalized = requestedItems.map((raw: any) => {
+      const original = purchaseItemById.get(String(raw.purchaseItemId));
+      if (!original) throw new Error('Dòng hàng trả không thuộc phiếu nhập');
+      const alreadyReturned = priorReturns.filter((item) => item.purchaseItemId === original.id).reduce((sum, item) => sum + Number(item.quantity), 0);
+      const quantity = Number(raw.quantity) || 0;
+      if (quantity <= 0 || quantity > Number(original.quantity) - alreadyReturned + 1e-9) throw new Error(`Số lượng trả không hợp lệ cho ${original.productName}`);
+      const factor = Number(original.unitFactor || 1);
+      return { original, quantity, unitFactor: factor, baseQuantity: quantity * factor, total: quantity * Number(original.price) };
+    });
+    const totalAmount = normalized.reduce((sum, item) => sum + item.total, 0);
+    const returnId = uuid();
+    const timestamp = new Date().toISOString();
+    const priorPurchaseReturns = db.select().from(schema.purchaseReturns).where(and(eq(schema.purchaseReturns.purchaseId, purchase.id), eq(schema.purchaseReturns.tenantId, req.user.tenantId))).all();
+    const remainingPurchasePayable = Math.max(0, Number(purchase.payableAmount) - priorPurchaseReturns.reduce((sum, item) => sum + Number(item.totalAmount), 0));
+    const appliedPayable = Math.min(remainingPurchasePayable, totalAmount);
+    const supplier = db.select().from(schema.suppliers).where(and(eq(schema.suppliers.id, purchase.supplierId), eq(schema.suppliers.tenantId, req.user.tenantId))).get();
+    if (!supplier) return res.status(404).json({ error: 'Không tìm thấy nhà cung cấp' });
+    const creditAmount = Math.max(0, totalAmount - appliedPayable);
+
+    db.transaction((tx) => {
+      tx.insert(schema.purchaseReturns).values({ id: returnId, documentNo: String(req.body?.documentNo || nextDocumentNo(req.user.tenantId, 'purchase_return', 'PTN')), tenantId: req.user.tenantId, purchaseId: purchase.id, supplierId: supplier.id, totalAmount, note: String(req.body?.note || ''), createdBy: req.user.id, createdAt: timestamp }).run();
+      for (const row of normalized) {
+        const product = tx.select().from(schema.products).where(and(eq(schema.products.id, row.original.productId), eq(schema.products.tenantId, req.user.tenantId))).get();
+        if (!product) throw new Error(`Không tìm thấy sản phẩm ${row.original.productName}`);
+        if (product.trackStock && Number(product.stock) < row.baseQuantity) throw new Error(`Tồn kho không đủ để trả ${product.name}`);
+        if (product.trackStock) {
+          const beforeStock = Number(product.stock);
+          const afterStock = beforeStock - row.baseQuantity;
+          tx.update(schema.products).set({ stock: afterStock }).where(eq(schema.products.id, product.id)).run();
+          tx.insert(schema.stockMovements).values({ id: uuid(), tenantId: req.user.tenantId, productId: product.id, type: 'out', quantity: row.baseQuantity, beforeStock, afterStock, note: `Trả hàng NCC ${returnId}`, referenceId: returnId, createdAt: timestamp, createdBy: req.user.id }).run();
+        }
+        tx.insert(schema.purchaseReturnItems).values({ id: uuid(), returnId, purchaseItemId: row.original.id, productId: row.original.productId, productName: row.original.productName, unit: row.original.unit, quantity: row.quantity, unitFactor: row.unitFactor, baseQuantity: row.baseQuantity, price: row.original.price, total: row.total }).run();
+      }
+      if (appliedPayable > 0) {
+        tx.update(schema.suppliers).set({ currentPayable: Math.max(0, Number(supplier.currentPayable) - appliedPayable) }).where(eq(schema.suppliers.id, supplier.id)).run();
+        tx.insert(schema.payableLedger).values({ id: uuid(), tenantId: req.user.tenantId, supplierId: supplier.id, purchaseId: purchase.id, amount: appliedPayable, type: 'decrease', note: `Giảm công nợ do trả hàng ${returnId}`, createdAt: timestamp, createdBy: req.user.id }).run();
+      }
+      if (creditAmount > 0) tx.insert(schema.supplierCreditLedger).values({ id: uuid(), tenantId: req.user.tenantId, supplierId: supplier.id, purchaseReturnId: returnId, purchaseId: purchase.id, amount: creditAmount, type: 'increase', accountId: null, note: `Số dư được nhận từ trả hàng ${returnId}`, createdBy: req.user.id, createdAt: timestamp }).run();
+    });
+    res.status(201).json(db.select().from(schema.purchaseReturns).where(eq(schema.purchaseReturns.id, returnId)).get());
+  } catch (err) {
+    console.error('POST /api/purchases/:id/returns error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể tạo phiếu trả nhà cung cấp' });
+  }
+});
+
+app.get('/api/supplier-credit-ledger', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'purchases.view')) return;
+    let rows = db.select().from(schema.supplierCreditLedger).where(eq(schema.supplierCreditLedger.tenantId, req.user.tenantId)).orderBy(desc(schema.supplierCreditLedger.createdAt)).all();
+    if (req.query.supplierId) rows = rows.filter((row) => row.supplierId === req.query.supplierId);
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: 'Không thể tải số dư nhà cung cấp' }); }
+});
+
+app.post('/api/suppliers/:id/credit-settlement', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'purchases.return')) return;
+    const supplier = db.select().from(schema.suppliers).where(and(eq(schema.suppliers.id, req.params.id), eq(schema.suppliers.tenantId, req.user.tenantId))).get();
+    if (!supplier) return res.status(404).json({ error: 'Không tìm thấy nhà cung cấp' });
+    const balance = Math.max(0, supplierCreditBalance(req.user.tenantId, supplier.id));
+    const amount = Number(req.body?.amount) || 0;
+    if (amount <= 0 || amount > balance) return res.status(400).json({ error: 'Số tiền nhận không hợp lệ' });
+    const paymentMethod = String(req.body?.paymentMethod || 'cash');
+    const accountId = req.body?.accountId || defaultAccountForPayment(req.user.tenantId, paymentMethod);
+    const timestamp = new Date().toISOString();
+    const entry = { id: uuid(), tenantId: req.user.tenantId, supplierId: supplier.id, purchaseReturnId: null, purchaseId: null, amount, type: 'decrease' as const, accountId, note: String(req.body?.note || 'Nhận tiền hoàn từ nhà cung cấp'), createdBy: req.user.id, createdAt: timestamp };
+    db.transaction((tx) => {
+      tx.insert(schema.supplierCreditLedger).values(entry).run();
+      tx.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'income', amount, category: 'Thu tiền NCC', note: entry.note, referenceId: entry.id, accountId, createdAt: timestamp, createdBy: req.user.id }).run();
+    });
+    res.status(201).json(entry);
+  } catch (err) { res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể nhận tiền nhà cung cấp' }); }
 });
 
 app.get('/api/payable-ledger', (req, res) => {
@@ -966,11 +1346,13 @@ app.post('/api/payable-ledger', (req, res) => {
     const payment = Number(amount) || 0;
     if (!supplier || payment <= 0) return res.status(400).json({ error: 'Supplier and positive amount are required' });
     const timestamp = new Date().toISOString();
+    const paymentMethod = String(req.body?.paymentMethod || 'cash');
+    const accountId = req.body?.accountId || defaultAccountForPayment(req.user.tenantId, paymentMethod);
     const entry = { id: uuid(), tenantId: req.user.tenantId, supplierId, purchaseId: null, amount: Math.min(payment, supplier.currentPayable), type: 'decrease' as const, note: note || 'Thanh toán nhà cung cấp', createdAt: timestamp, createdBy: req.user.id };
     db.transaction((tx) => {
       tx.insert(schema.payableLedger).values(entry).run();
       tx.update(schema.suppliers).set({ currentPayable: Math.max(0, supplier.currentPayable - entry.amount) }).where(eq(schema.suppliers.id, supplierId)).run();
-      tx.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'expense', amount: entry.amount, category: 'Thanh toán NCC', note: entry.note, referenceId: entry.id, createdAt: timestamp, createdBy: req.user.id }).run();
+      tx.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'expense', amount: entry.amount, category: 'Thanh toán NCC', note: entry.note, referenceId: entry.id, accountId, createdAt: timestamp, createdBy: req.user.id }).run();
     });
     res.status(201).json(entry);
   } catch (err) {
@@ -1038,6 +1420,11 @@ app.post('/api/customers', (req, res) => {
     const customer = {
       id: uuid(),
       totalDebt: 0,
+      note: '',
+      active: true,
+      allowDebt: true,
+      creditLimit: 0,
+      paymentDays: 0,
       ...req.body,
       tags: JSON.stringify(Array.isArray(req.body?.tags) ? req.body.tags : []),
       tenantId: req.user.tenantId,
@@ -1181,6 +1568,33 @@ app.post('/api/customers/:id/debt', (req, res) => {
 // INVOICES
 // ═══════════════════════════════════════════════════════════
 
+const priceListForCustomer = (tenantId: string, customerType?: string, requestedId?: string) => {
+  if (requestedId) {
+    const requested = db.select().from(schema.priceLists).where(and(eq(schema.priceLists.id, requestedId), eq(schema.priceLists.tenantId, tenantId), eq(schema.priceLists.active, true))).get();
+    if (requested) return requested;
+  }
+  const matching = db.select().from(schema.priceLists).where(and(eq(schema.priceLists.tenantId, tenantId), eq(schema.priceLists.customerType, customerType === 'loyal' ? 'loyal' : customerType === 'retail' ? 'retail' : 'all'), eq(schema.priceLists.active, true))).all();
+  return matching.find((list) => list.customerType !== 'all') || matching.find((list) => list.isDefault) || ensureDefaultPriceList(tenantId);
+};
+
+const priceForProduct = (tenantId: string, product: any, unitName?: string, unitFactor = 1, requestedPriceListId?: string, customerType?: string, seen = new Set<string>()): { price: number; priceList: any } => {
+  const priceList = priceListForCustomer(tenantId, customerType, requestedPriceListId);
+  if (product.productType === 'combo') {
+    if (seen.has(product.id)) throw new Error('Combo chứa vòng lặp thành phần');
+    const components = productComponentsFor(tenantId, product.id);
+    if (!components.length) throw new Error(`Combo ${product.name} chưa có thành phần`);
+    const price = components.reduce((sum, component) => {
+      const componentProduct = db.select().from(schema.products).where(eq(schema.products.id, component.componentProductId)).get();
+      if (!componentProduct) return sum;
+      return sum + Number(component.quantity) * priceForProduct(tenantId, componentProduct, componentProduct.unit, 1, priceList?.id, customerType, new Set([...seen, product.id])).price;
+    }, 0) * unitFactor;
+    return { price, priceList };
+  }
+  const resolvedUnit = unitForProduct(tenantId, product, unitName, unitFactor);
+  const item = priceList ? db.select().from(schema.priceListItems).where(and(eq(schema.priceListItems.priceListId, priceList.id), eq(schema.priceListItems.productId, product.id), eq(schema.priceListItems.unitName, resolvedUnit.name))).get() : null;
+  return { price: item ? Number(item.price) : Number(product.sellingPrice) * resolvedUnit.factor, priceList };
+};
+
 app.get('/api/invoices', (req, res) => {
   try {
     const { customerId, status } = req.query;
@@ -1235,45 +1649,107 @@ app.post('/api/invoices', (req, res) => {
     const { items, ...invoiceData } = req.body;
     const invoiceId = invoiceData.id || uuid();
     const documentNo = String(invoiceData.documentNo || nextDocumentNo(req.user.tenantId, 'sale', 'HD'));
+    const workflowStatus = invoiceData.workflowStatus || (invoiceData.status ? 'closed' : 'draft');
+    const paymentStatus = invoiceData.paymentStatus || (invoiceData.status === 'completed' ? 'paid' : invoiceData.status === 'partial' ? 'partial' : 'unpaid');
+    const customer = invoiceData.customerId ? db.select().from(schema.customers).where(and(eq(schema.customers.id, invoiceData.customerId), eq(schema.customers.tenantId, req.user.tenantId))).get() : null;
+    const normalizedItems = Array.isArray(items) ? items.map((raw: any) => {
+      const product = db.select().from(schema.products).where(and(eq(schema.products.id, raw.productId), eq(schema.products.tenantId, req.user.tenantId))).get();
+      if (!product) throw new Error(`Không tìm thấy sản phẩm: ${raw.productId}`);
+      const quantity = Number(raw.quantity) || 0;
+      if (quantity <= 0) throw new Error(`Số lượng không hợp lệ cho ${product.name}`);
+      const unit = unitForProduct(req.user.tenantId, product, raw.unitName || raw.unit, raw.unitFactor);
+      if (raw.priceOverride && !hasPermission(req, 'sales.override_price')) throw new Error('Bạn không có quyền sửa giá bán');
+      const resolved = priceForProduct(req.user.tenantId, product, unit.name, unit.factor, raw.priceListId, customer?.type);
+      const price = raw.price !== undefined && raw.price !== null && raw.price !== '' ? Number(raw.price) : resolved.price;
+      if (!Number.isFinite(price) || price < 0) throw new Error(`Giá bán không hợp lệ cho ${product.name}`);
+      return { ...raw, product, quantity, unitName: unit.name, unitFactor: unit.factor, baseQuantity: quantity * unit.factor, price, total: quantity * price, priceListId: raw.priceListId || resolved.priceList?.id || null, priceListName: raw.priceListName || resolved.priceList?.name || null };
+    }) : [];
     const invoice = {
       ...invoiceData,
       id: invoiceId,
       documentNo,
       tenantId: req.user.tenantId,
       createdBy: req.user.id,
-      createdAt: invoiceData.createdAt || new Date().toISOString()
+      createdAt: invoiceData.createdAt || new Date().toISOString(),
+      workflowStatus,
+      paymentStatus,
+      status: invoiceData.status || (paymentStatus === 'paid' ? 'completed' : paymentStatus === 'partial' ? 'partial' : 'unpaid'),
+      accountId: invoiceData.accountId || (Number(invoiceData.paidAmount) > 0 ? defaultAccountForPayment(req.user.tenantId, invoiceData.paymentMethod) : null),
+      version: 1,
     };
+
+    if (invoice.debtAmount > 0 && invoice.customerId) {
+      if (!customer) return res.status(400).json({ error: 'Khách hàng không tồn tại' });
+      if (customer.allowDebt === false) return res.status(409).json({ error: 'Khách hàng đang bị khóa bán nợ' });
+      if (Number(customer.creditLimit) > 0 && Number(customer.totalDebt) + Number(invoice.debtAmount) > Number(customer.creditLimit)) {
+        return res.status(409).json({ error: 'Bill vượt hạn mức công nợ khách hàng' });
+      }
+    }
 
     db.insert(schema.invoices).values(invoice).run();
 
     // Insert invoice items
-    if (items && items.length > 0) {
-      const itemsWithIds = items.map((item: any) => ({
-        ...item,
+    const stockRequirements = new Map<string, number>();
+    if (normalizedItems.length > 0) {
+      for (const item of normalizedItems) {
+        const quantity = Number(item.quantity) || 0;
+        if (quantity <= 0) continue;
+        const requirements = expandStockRequirements(req.user.tenantId, item.productId, Number(item.baseQuantity));
+        for (const requirement of requirements) stockRequirements.set(requirement.productId, (stockRequirements.get(requirement.productId) || 0) + requirement.quantity);
+        for (const requirement of requirements) {
+          const product = db.select().from(schema.products).where(and(eq(schema.products.id, requirement.productId), eq(schema.products.tenantId, req.user.tenantId))).get();
+          if (product?.trackStock && Number(product.stock) - reservedBaseStock(req.user.tenantId, product.id) < requirement.quantity) {
+            db.delete(schema.invoices).where(eq(schema.invoices.id, invoiceId)).run();
+            return res.status(409).json({ error: `Không đủ tồn khả dụng cho ${product.name}` });
+          }
+        }
+      }
+      const itemsWithIds = normalizedItems.map((item: any) => {
+        const { product: _product, ...itemData } = item;
+        return {
+        ...itemData,
         id: item.id || uuid(),
         invoiceId,
-      }));
+        orderedQuantity: Number(item.orderedQuantity ?? item.quantity) || 0,
+        pickedQuantity: Number(item.pickedQuantity) || 0,
+        confirmedQuantity: Number(item.confirmedQuantity) || 0,
+        lineStatus: item.lineStatus || 'ordered',
+        note: item.note || '',
+        };
+      });
       db.insert(schema.invoiceItems).values(itemsWithIds).run();
     }
 
-    // Update product stock
-    if (items && items.length > 0) {
-      for (const item of items) {
+    // Draft bills reserve availability without posting the final stock-out.
+    if (workflowStatus !== 'closed' && normalizedItems.length > 0) {
+      for (const [productId, quantity] of stockRequirements.entries()) {
+        if (quantity > 0) {
+          db.insert(schema.stockReservations).values({
+            id: uuid(), tenantId: req.user.tenantId, invoiceId, productId,
+            quantity, status: 'reserved', createdAt: invoice.createdAt,
+          }).run();
+        }
+      }
+    }
+
+    // Legacy POS requests send a payment status and are posted immediately.
+    if (workflowStatus === 'closed' && normalizedItems.length > 0) {
+      for (const [productId, quantity] of stockRequirements.entries()) {
         const product = db.select().from(schema.products)
-          .where(and(eq(schema.products.id, item.productId), eq(schema.products.tenantId, req.user.tenantId))).get();
+          .where(and(eq(schema.products.id, productId), eq(schema.products.tenantId, req.user.tenantId))).get();
         if (product && product.trackStock) {
           const beforeStock = product.stock;
-          const afterStock = Math.max(0, product.stock - item.quantity);
+          const afterStock = Math.max(0, product.stock - quantity);
           db.update(schema.products)
             .set({ stock: afterStock })
-            .where(eq(schema.products.id, item.productId))
+            .where(eq(schema.products.id, productId))
             .run();
           db.insert(schema.stockMovements).values({
             id: uuid(),
             tenantId: req.user.tenantId,
-            productId: item.productId,
+            productId,
             type: 'out',
-            quantity: Number(item.quantity) || 0,
+            quantity,
             beforeStock,
             afterStock,
             note: `Bán hàng ${invoiceId}`,
@@ -1285,8 +1761,8 @@ app.post('/api/invoices', (req, res) => {
       }
     }
 
-    // Update customer debt if applicable
-    if (invoice.debtAmount > 0 && invoice.customerId) {
+    // Update customer debt if applicable for immediately posted legacy bills.
+    if (workflowStatus === 'closed' && invoice.debtAmount > 0 && invoice.customerId) {
       const customer = db.select().from(schema.customers)
         .where(and(eq(schema.customers.id, invoice.customerId), eq(schema.customers.tenantId, req.user.tenantId)))
         .get();
@@ -1311,7 +1787,7 @@ app.post('/api/invoices', (req, res) => {
       }).run();
     }
 
-    if ((invoice.paidAmount || 0) > 0 && invoice.paymentMethod !== 'debt') {
+    if (workflowStatus === 'closed' && (invoice.paidAmount || 0) > 0 && invoice.paymentMethod !== 'debt') {
       db.insert(schema.cashbookEntries).values({
         id: uuid(),
         tenantId: req.user.tenantId,
@@ -1320,6 +1796,7 @@ app.post('/api/invoices', (req, res) => {
         category: 'Bán hàng',
         note: `Thu từ hóa đơn ${invoiceId}`,
         referenceId: invoiceId,
+        accountId: invoice.accountId || defaultAccountForPayment(req.user.tenantId, invoice.paymentMethod),
         createdAt: invoice.createdAt,
         createdBy: req.user.id,
       }).run();
@@ -1329,6 +1806,395 @@ app.post('/api/invoices', (req, res) => {
   } catch (err) {
     console.error('POST /api/invoices error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+const invoiceById = (tenantId: string, invoiceId: string) => db.select().from(schema.invoices)
+  .where(and(eq(schema.invoices.id, invoiceId), eq(schema.invoices.tenantId, tenantId))).get();
+
+const writeAudit = (req: Request, action: string, entityId: string, meta: Record<string, unknown> = {}) => {
+  db.insert(schema.auditLogs).values({
+    id: uuid(), actorType: 'tenant_user', actorId: req.user.id, action,
+    entityType: 'invoice', entityId, tenantId: req.user.tenantId,
+    meta: JSON.stringify(meta), createdAt: new Date().toISOString(),
+  }).run();
+};
+
+const postDraftInvoice = (req: Request, invoiceId: string, confirmedItems: any[]) => {
+  const invoice = invoiceById(req.user.tenantId, invoiceId);
+  if (!invoice) throw new Error('Invoice not found');
+  const now = new Date().toISOString();
+  let confirmedTotal = 0;
+  const stockRequirements = new Map<string, number>();
+  for (const item of confirmedItems) {
+    const quantity = item.lineStatus === 'short'
+      ? 0
+      : Number(item.confirmedQuantity || item.pickedQuantity || item.quantity) || 0;
+    const orderedQuantity = Number(item.orderedQuantity || item.quantity) || 1;
+    confirmedTotal += (Number(item.total) || 0) * Math.min(1, quantity / orderedQuantity);
+    if (quantity <= 0) continue;
+    const unitFactor = Number(item.unitFactor || 1);
+    const requirements = expandStockRequirements(req.user.tenantId, item.productId, quantity * unitFactor);
+    for (const requirement of requirements) stockRequirements.set(requirement.productId, (stockRequirements.get(requirement.productId) || 0) + requirement.quantity);
+    db.update(schema.invoiceItems).set({ confirmedQuantity: quantity, pickedQuantity: Number(item.pickedQuantity ?? quantity), lineStatus: 'confirmed' }).where(eq(schema.invoiceItems.id, item.id)).run();
+  }
+  for (const [productId, quantity] of stockRequirements.entries()) {
+    const product = db.select().from(schema.products).where(and(eq(schema.products.id, productId), eq(schema.products.tenantId, req.user.tenantId))).get();
+    if (!product || !product.trackStock) continue;
+    if (Number(product.stock) < quantity) throw new Error(`Tồn kho không đủ để chốt ${product.name}`);
+    const beforeStock = product.stock;
+    const afterStock = Math.max(0, beforeStock - quantity);
+    db.update(schema.products).set({ stock: afterStock }).where(eq(schema.products.id, product.id)).run();
+    db.insert(schema.stockMovements).values({ id: uuid(), tenantId: req.user.tenantId, productId: product.id, type: 'out', quantity, beforeStock, afterStock, note: `Chốt bán hàng ${invoiceId}`, referenceId: invoiceId, createdAt: now, createdBy: req.user.id }).run();
+  }
+  const totalRatio = Number(invoice.totalAmount) > 0 ? confirmedTotal / Number(invoice.totalAmount) : 0;
+  const adjustedFinalAmount = Math.max(0, Number(invoice.finalAmount) * totalRatio);
+  const adjustedPaidAmount = Math.min(Number(invoice.paidAmount) || 0, adjustedFinalAmount);
+  const adjustedDebtAmount = Math.max(0, adjustedFinalAmount - adjustedPaidAmount);
+  const adjustedPaymentStatus = adjustedPaidAmount >= adjustedFinalAmount && adjustedFinalAmount > 0 ? 'paid' : adjustedPaidAmount > 0 ? 'partial' : 'unpaid';
+  const adjustedLegacyStatus = adjustedPaymentStatus === 'paid' ? 'completed' : adjustedPaymentStatus === 'partial' ? 'partial' : 'unpaid';
+  db.update(schema.stockReservations).set({ status: 'released', releasedAt: now }).where(and(eq(schema.stockReservations.invoiceId, invoiceId), eq(schema.stockReservations.status, 'reserved'))).run();
+  if (adjustedDebtAmount > 0 && invoice.customerId && !db.select().from(schema.debtLedger).where(and(eq(schema.debtLedger.invoiceId, invoiceId), eq(schema.debtLedger.type, 'increase'))).get()) {
+    const customer = db.select().from(schema.customers).where(and(eq(schema.customers.id, invoice.customerId), eq(schema.customers.tenantId, req.user.tenantId))).get();
+    if (customer) db.update(schema.customers).set({ totalDebt: customer.totalDebt + adjustedDebtAmount }).where(eq(schema.customers.id, customer.id)).run();
+    db.insert(schema.debtLedger).values({ id: uuid(), tenantId: req.user.tenantId, customerId: invoice.customerId, invoiceId, amount: adjustedDebtAmount, type: 'increase', note: 'Mua hàng nợ', createdAt: now, createdBy: req.user.id }).run();
+  }
+  if (adjustedPaidAmount > 0 && invoice.paymentMethod !== 'debt' && !db.select().from(schema.cashbookEntries).where(eq(schema.cashbookEntries.referenceId, invoiceId)).get()) {
+    db.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'income', amount: adjustedPaidAmount, category: 'Bán hàng', note: `Thu từ hóa đơn ${invoiceId}`, referenceId: invoiceId, accountId: invoice.accountId || defaultAccountForPayment(req.user.tenantId, invoice.paymentMethod), createdAt: now, createdBy: req.user.id }).run();
+  }
+  return db.update(schema.invoices).set({ totalAmount: confirmedTotal, finalAmount: adjustedFinalAmount, paidAmount: adjustedPaidAmount, debtAmount: adjustedDebtAmount, status: adjustedLegacyStatus, workflowStatus: 'closed', paymentStatus: adjustedPaymentStatus, closedBy: req.user.id, closedAt: now, version: invoice.version + 1 }).where(eq(schema.invoices.id, invoiceId)).returning().get();
+};
+
+app.patch('/api/invoices/:id', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'sales.create')) return;
+    const invoice = invoiceById(req.user.tenantId, req.params.id);
+    if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+    if (invoice.workflowStatus === 'closed' || invoice.workflowStatus === 'cancelled') return res.status(409).json({ error: 'Bill đã chốt hoặc đã hủy, không thể sửa trực tiếp' });
+    const { id: _id, tenantId: _tenantId, createdBy: _createdBy, workflowStatus: _workflowStatus, ...updates } = req.body || {};
+    const nextVersion = Number(req.body?.version || invoice.version);
+    if (nextVersion !== invoice.version) return res.status(409).json({ error: 'Bill đã được cập nhật bởi người khác' });
+    db.update(schema.invoices).set({ ...updates, version: invoice.version + 1 }).where(and(eq(schema.invoices.id, invoice.id), eq(schema.invoices.version, invoice.version))).run();
+    writeAudit(req, 'invoice.update', invoice.id, { fields: Object.keys(updates) });
+    res.json(invoiceById(req.user.tenantId, invoice.id));
+  } catch (err) { console.error('PATCH /api/invoices/:id error:', err); res.status(500).json({ error: 'Internal server error' }); }
+});
+
+app.post('/api/invoices/:id/check', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'sales.create')) return;
+    const invoice = invoiceById(req.user.tenantId, req.params.id);
+    if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+    if (!['draft', 'checked'].includes(invoice.workflowStatus)) return res.status(409).json({ error: 'Bill không ở trạng thái có thể kiểm' });
+    const now = new Date().toISOString();
+    const updated = db.update(schema.invoices).set({ workflowStatus: 'checked', checkedBy: req.user.id, checkedAt: now, version: invoice.version + 1 }).where(eq(schema.invoices.id, invoice.id)).returning().get();
+    writeAudit(req, 'invoice.check', invoice.id);
+    res.json(updated);
+  } catch (err) { console.error('POST invoice check error:', err); res.status(500).json({ error: 'Internal server error' }); }
+});
+
+app.post('/api/invoices/:id/pick', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.adjust')) return;
+    const invoice = invoiceById(req.user.tenantId, req.params.id);
+    if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+    if (!['checked', 'picking', 'ready_to_close'].includes(invoice.workflowStatus)) return res.status(409).json({ error: 'Bill chưa được kiểm' });
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    for (const item of items) {
+      const pickedQuantity = Math.max(0, Number(item.pickedQuantity) || 0);
+      db.update(schema.invoiceItems).set({ pickedQuantity, confirmedQuantity: pickedQuantity, lineStatus: pickedQuantity > 0 ? 'picked' : 'short' }).where(and(eq(schema.invoiceItems.id, item.id), eq(schema.invoiceItems.invoiceId, invoice.id))).run();
+    }
+    const now = new Date().toISOString();
+    const updated = db.update(schema.invoices).set({ workflowStatus: 'ready_to_close', pickedBy: req.user.id, pickedAt: now, version: invoice.version + 1 }).where(eq(schema.invoices.id, invoice.id)).returning().get();
+    writeAudit(req, 'invoice.pick', invoice.id, { items });
+    res.json(updated);
+  } catch (err) { console.error('POST invoice pick error:', err); res.status(500).json({ error: 'Internal server error' }); }
+});
+
+app.post('/api/invoices/:id/close', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'sales.create')) return;
+    const invoice = invoiceById(req.user.tenantId, req.params.id);
+    if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+    if (!['draft', 'checked', 'picking', 'ready_to_close'].includes(invoice.workflowStatus)) return res.status(409).json({ error: 'Bill không ở trạng thái có thể chốt' });
+    const items = db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoice.id)).all();
+    const updated = postDraftInvoice(req, invoice.id, items);
+    writeAudit(req, 'invoice.close', invoice.id);
+    res.json(updated);
+  } catch (err) { console.error('POST invoice close error:', err); res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' }); }
+});
+
+app.post('/api/invoices/:id/cancel', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'sales.cancel')) return;
+    const invoice = invoiceById(req.user.tenantId, req.params.id);
+    if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+    if (invoice.workflowStatus === 'cancelled') return res.status(409).json({ error: 'Bill đã hủy' });
+    const now = new Date().toISOString();
+    db.update(schema.stockReservations).set({ status: 'released', releasedAt: now }).where(and(eq(schema.stockReservations.invoiceId, invoice.id), eq(schema.stockReservations.status, 'reserved'))).run();
+    const updated = db.update(schema.invoices).set({ workflowStatus: 'cancelled', cancelledBy: req.user.id, cancelledAt: now, version: invoice.version + 1 }).where(eq(schema.invoices.id, invoice.id)).returning().get();
+    writeAudit(req, 'invoice.cancel', invoice.id, { reason: req.body?.reason || '' });
+    res.json(updated);
+  } catch (err) { console.error('POST invoice cancel error:', err); res.status(500).json({ error: 'Internal server error' }); }
+});
+
+app.get('/api/invoices/:id/returnable', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'sales.view')) return;
+    const invoice = invoiceById(req.user.tenantId, req.params.id);
+    if (!invoice) return res.status(404).json({ error: 'Không tìm thấy hóa đơn' });
+    const items = db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoice.id)).all();
+    const returns = db.select().from(schema.salesReturnItems).where(inArray(schema.salesReturnItems.invoiceItemId, items.map((item) => item.id))).all();
+    res.json({ invoice, items: items.map((item) => ({ ...item, returnedQuantity: returns.filter((row) => row.invoiceItemId === item.id).reduce((sum, row) => sum + Number(row.quantity), 0), returnedBaseQuantity: returns.filter((row) => row.invoiceItemId === item.id).reduce((sum, row) => sum + Number(row.baseQuantity), 0) })) });
+  } catch (err) { res.status(500).json({ error: 'Không thể tải dòng hàng có thể trả' }); }
+});
+
+app.get('/api/sales-returns', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'sales.view')) return;
+    let rows = db.select().from(schema.salesReturns).where(eq(schema.salesReturns.tenantId, req.user.tenantId)).orderBy(desc(schema.salesReturns.createdAt)).all();
+    if (req.query.invoiceId) rows = rows.filter((row) => row.invoiceId === req.query.invoiceId);
+    res.json(rows.map((row) => ({ ...row, items: db.select().from(schema.salesReturnItems).where(eq(schema.salesReturnItems.returnId, row.id)).all() })));
+  } catch (err) { res.status(500).json({ error: 'Không thể tải phiếu trả khách hàng' }); }
+});
+
+app.post('/api/invoices/:id/returns', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'sales.return')) return;
+    const invoice = invoiceById(req.user.tenantId, req.params.id);
+    if (!invoice) return res.status(404).json({ error: 'Không tìm thấy hóa đơn' });
+    if (invoice.workflowStatus !== 'closed') return res.status(409).json({ error: 'Chỉ được trả hàng từ hóa đơn đã chốt' });
+    const requestedItems = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!requestedItems.length) return res.status(400).json({ error: 'Chọn ít nhất một dòng hàng để trả' });
+    const invoiceItems = db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoice.id)).all();
+    const itemById = new Map(invoiceItems.map((item) => [item.id, item]));
+    const priorReturns = db.select().from(schema.salesReturnItems).where(inArray(schema.salesReturnItems.invoiceItemId, invoiceItems.map((item) => item.id))).all();
+    const normalized = requestedItems.map((raw: any) => {
+      const original = itemById.get(String(raw.invoiceItemId));
+      if (!original) throw new Error('Dòng hàng trả không thuộc hóa đơn');
+      const soldQuantity = Number(original.confirmedQuantity || original.quantity);
+      const alreadyReturned = priorReturns.filter((item) => item.invoiceItemId === original.id).reduce((sum, item) => sum + Number(item.quantity), 0);
+      const quantity = Number(raw.quantity) || 0;
+      if (quantity <= 0 || quantity > soldQuantity - alreadyReturned + 1e-9) throw new Error(`Số lượng trả không hợp lệ cho ${original.productName}`);
+      const unitFactor = Number(original.unitFactor || 1);
+      const unitPrice = Number(original.quantity) > 0 ? Number(original.total) / Number(original.quantity) : Number(original.price);
+      return { original, quantity, unitFactor, baseQuantity: quantity * unitFactor, price: unitPrice, total: quantity * unitPrice };
+    });
+    const totalAmount = normalized.reduce((sum, item) => sum + item.total, 0);
+    const debtReduction = Math.min(Math.max(0, Number(invoice.debtAmount) || 0), totalAmount);
+    const refundAmount = Math.max(0, totalAmount - debtReduction);
+    const refundAccountId = refundAmount > 0 ? (req.body?.refundAccountId || invoice.accountId || defaultAccountForPayment(req.user.tenantId, invoice.paymentMethod)) : null;
+    if (refundAmount > 0 && !refundAccountId) return res.status(400).json({ error: 'Cần chọn tài khoản hoàn tiền' });
+    const returnId = uuid();
+    const timestamp = new Date().toISOString();
+    const stockRequirements = new Map<string, number>();
+    for (const item of normalized) {
+      for (const requirement of expandStockRequirements(req.user.tenantId, item.original.productId, item.baseQuantity)) {
+        stockRequirements.set(requirement.productId, (stockRequirements.get(requirement.productId) || 0) + requirement.quantity);
+      }
+    }
+
+    db.transaction((tx) => {
+      tx.insert(schema.salesReturns).values({ id: returnId, documentNo: String(req.body?.documentNo || nextDocumentNo(req.user.tenantId, 'sales_return', 'TBH')), tenantId: req.user.tenantId, invoiceId: invoice.id, customerId: invoice.customerId, totalAmount, debtReduction, refundAmount, refundAccountId, note: String(req.body?.note || ''), createdBy: req.user.id, createdAt: timestamp }).run();
+      for (const item of normalized) {
+        tx.insert(schema.salesReturnItems).values({ id: uuid(), returnId, invoiceItemId: item.original.id, productId: item.original.productId, productName: item.original.productName, unitName: item.original.unitName || 'Cái', quantity: item.quantity, unitFactor: item.unitFactor, baseQuantity: item.baseQuantity, price: item.price, total: item.total }).run();
+      }
+      for (const [productId, quantity] of stockRequirements.entries()) {
+        const product = tx.select().from(schema.products).where(and(eq(schema.products.id, productId), eq(schema.products.tenantId, req.user.tenantId))).get();
+        if (!product || !product.trackStock) continue;
+        const beforeStock = Number(product.stock);
+        const afterStock = beforeStock + quantity;
+        tx.update(schema.products).set({ stock: afterStock }).where(eq(schema.products.id, product.id)).run();
+        tx.insert(schema.stockMovements).values({ id: uuid(), tenantId: req.user.tenantId, productId, type: 'in', quantity, beforeStock, afterStock, note: `Khách trả hàng ${returnId}`, referenceId: returnId, createdAt: timestamp, createdBy: req.user.id }).run();
+      }
+      if (debtReduction > 0 && invoice.customerId) {
+        const customer = tx.select().from(schema.customers).where(and(eq(schema.customers.id, invoice.customerId), eq(schema.customers.tenantId, req.user.tenantId))).get();
+        if (customer) tx.update(schema.customers).set({ totalDebt: Math.max(0, Number(customer.totalDebt) - debtReduction) }).where(eq(schema.customers.id, customer.id)).run();
+        tx.insert(schema.debtLedger).values({ id: uuid(), tenantId: req.user.tenantId, customerId: invoice.customerId, invoiceId: invoice.id, amount: debtReduction, type: 'decrease', note: `Giảm công nợ do khách trả hàng ${returnId}`, createdAt: timestamp, createdBy: req.user.id }).run();
+        tx.update(schema.invoices).set({ debtAmount: Math.max(0, Number(invoice.debtAmount) - debtReduction), version: invoice.version + 1 }).where(eq(schema.invoices.id, invoice.id)).run();
+      }
+      if (refundAmount > 0) tx.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'expense', amount: refundAmount, category: 'Hoàn tiền khách hàng', note: `Hoàn tiền phiếu ${returnId}`, referenceId: returnId, accountId: refundAccountId, createdAt: timestamp, createdBy: req.user.id }).run();
+    });
+    writeAudit(req, 'sales_return.create', returnId, { invoiceId: invoice.id, totalAmount, debtReduction, refundAmount });
+    res.status(201).json({ ...db.select().from(schema.salesReturns).where(eq(schema.salesReturns.id, returnId)).get(), items: db.select().from(schema.salesReturnItems).where(eq(schema.salesReturnItems.returnId, returnId)).all() });
+  } catch (err) {
+    console.error('POST /api/invoices/:id/returns error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể tạo phiếu trả khách hàng' });
+  }
+});
+
+app.get('/api/invoices/:id/timeline', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'sales.view')) return;
+    const invoice = invoiceById(req.user.tenantId, req.params.id);
+    if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+    const events = db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.entityType, 'invoice'), eq(schema.auditLogs.entityId, invoice.id), eq(schema.auditLogs.tenantId, req.user.tenantId))).orderBy(desc(schema.auditLogs.createdAt)).all();
+    res.json(events);
+  } catch (err) { console.error('GET invoice timeline error:', err); res.status(500).json({ error: 'Internal server error' }); }
+});
+
+const ensureDefaultCashAccounts = (tenantId: string) => {
+  const defaults = [
+    ['cash', 'Tiền mặt'],
+    ['bank', 'Chuyển khoản ngân hàng'],
+    ['wallet', 'Ví điện tử'],
+  ];
+  for (const [type, name] of defaults) {
+    if (!db.select().from(schema.cashAccounts).where(and(eq(schema.cashAccounts.tenantId, tenantId), eq(schema.cashAccounts.type, type))).get()) {
+      db.insert(schema.cashAccounts).values({ id: uuid(), tenantId, name, type, active: 1, createdAt: new Date().toISOString() }).run();
+    }
+  }
+};
+
+app.get('/api/cash-accounts', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'cashbook.view')) return;
+    ensureDefaultCashAccounts(req.user.tenantId);
+    res.json(db.select().from(schema.cashAccounts).where(and(eq(schema.cashAccounts.tenantId, req.user.tenantId), eq(schema.cashAccounts.active, 1))).all());
+  } catch (err) { console.error('GET /api/cash-accounts error:', err); res.status(500).json({ error: 'Internal server error' }); }
+});
+
+app.post('/api/cash-accounts', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'cashbook.create')) return;
+    const account = { id: uuid(), tenantId: req.user.tenantId, name: String(req.body?.name || '').trim(), type: String(req.body?.type || 'cash'), active: 1, createdAt: new Date().toISOString() };
+    if (!account.name) return res.status(400).json({ error: 'Tên tài khoản là bắt buộc' });
+    db.insert(schema.cashAccounts).values(account).run();
+    res.status(201).json(account);
+  } catch (err) { console.error('POST /api/cash-accounts error:', err); res.status(500).json({ error: 'Internal server error' }); }
+});
+
+const invoiceOutstanding = (tenantId: string, invoiceId: string) => {
+  const invoice = invoiceById(tenantId, invoiceId);
+  if (!invoice || invoice.workflowStatus !== 'closed') return 0;
+  const allocated = db.select({ amount: sql<number>`coalesce(sum(${schema.paymentAllocations.amount}), 0)` }).from(schema.paymentAllocations)
+    .where(and(eq(schema.paymentAllocations.invoiceId, invoiceId), eq(schema.paymentAllocations.tenantId, tenantId))).get()?.amount || 0;
+  return Math.max(0, invoice.finalAmount - invoice.paidAmount - Number(allocated));
+};
+
+app.get('/api/payments', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'debt.view')) return;
+    let payments = db.select().from(schema.payments).where(eq(schema.payments.tenantId, req.user.tenantId)).orderBy(desc(schema.payments.createdAt)).all();
+    if (req.query.customerId) payments = payments.filter((payment) => payment.customerId === req.query.customerId);
+    res.json(payments);
+  } catch (err) { console.error('GET /api/payments error:', err); res.status(500).json({ error: 'Internal server error' }); }
+});
+
+app.get('/api/payments/:id', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'debt.view')) return;
+    const payment = db.select().from(schema.payments).where(and(eq(schema.payments.id, req.params.id), eq(schema.payments.tenantId, req.user.tenantId))).get();
+    if (!payment) return res.status(404).json({ error: 'Payment not found' });
+    const allocations = db.select().from(schema.paymentAllocations).where(eq(schema.paymentAllocations.paymentId, payment.id)).all();
+    res.json({ ...payment, allocations });
+  } catch (err) { console.error('GET /api/payments/:id error:', err); res.status(500).json({ error: 'Internal server error' }); }
+});
+
+app.post('/api/payments', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'debt.collect')) return;
+    const amount = Number(req.body?.amount) || 0;
+    if (amount <= 0) return res.status(400).json({ error: 'Số tiền thanh toán phải lớn hơn 0' });
+    ensureDefaultCashAccounts(req.user.tenantId);
+    const paymentMethod = String(req.body?.paymentMethod || 'cash');
+    const payment = { id: uuid(), tenantId: req.user.tenantId, customerId: req.body?.customerId || null, accountId: req.body?.accountId || defaultAccountForPayment(req.user.tenantId, paymentMethod), amount, paymentMethod, note: String(req.body?.note || ''), paymentDate: req.body?.paymentDate || new Date().toISOString(), status: 'posted', createdBy: req.user.id, createdAt: new Date().toISOString() };
+    db.insert(schema.payments).values(payment).run();
+    db.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'income', amount, category: 'Thu công nợ', note: payment.note || 'Thu công nợ', referenceId: payment.id, accountId: payment.accountId, createdAt: payment.createdAt, createdBy: req.user.id }).run();
+    writeAudit(req, 'payment.create', payment.id, { amount, customerId: payment.customerId, accountId: payment.accountId });
+    res.status(201).json({ ...payment, allocations: [] });
+  } catch (err) { console.error('POST /api/payments error:', err); res.status(500).json({ error: 'Internal server error' }); }
+});
+
+app.post('/api/payments/:id/allocations', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'debt.collect')) return;
+    const payment = db.select().from(schema.payments).where(and(eq(schema.payments.id, req.params.id), eq(schema.payments.tenantId, req.user.tenantId))).get();
+    if (!payment) return res.status(404).json({ error: 'Payment not found' });
+    const allocations = Array.isArray(req.body?.allocations) ? req.body.allocations : [];
+    const existing = db.select({ amount: sql<number>`coalesce(sum(${schema.paymentAllocations.amount}), 0)` }).from(schema.paymentAllocations).where(eq(schema.paymentAllocations.paymentId, payment.id)).get()?.amount || 0;
+    const requestedTotal = allocations.reduce((sum: number, item: any) => sum + (Number(item.amount) || 0), 0);
+    if (requestedTotal <= 0 || Number(existing) + requestedTotal > payment.amount) return res.status(400).json({ error: 'Tổng phân bổ vượt số tiền phiếu thu' });
+    const created = [];
+    for (const item of allocations) {
+      const amount = Number(item.amount) || 0;
+      const outstanding = invoiceOutstanding(req.user.tenantId, item.invoiceId);
+      if (amount <= 0 || amount > outstanding) return res.status(400).json({ error: `Số tiền phân bổ vượt công nợ bill ${item.invoiceId}` });
+      const invoice = invoiceById(req.user.tenantId, item.invoiceId);
+      if (!invoice || (payment.customerId && invoice.customerId !== payment.customerId)) return res.status(400).json({ error: 'Bill không thuộc khách hàng của phiếu thu' });
+      const allocation = { id: uuid(), tenantId: req.user.tenantId, paymentId: payment.id, invoiceId: item.invoiceId, amount, createdAt: new Date().toISOString() };
+      db.insert(schema.paymentAllocations).values(allocation).run();
+      db.insert(schema.debtLedger).values({ id: uuid(), tenantId: req.user.tenantId, customerId: invoice.customerId || payment.customerId, invoiceId: invoice.id, amount, type: 'decrease', note: payment.note || 'Phân bổ thu công nợ', createdAt: allocation.createdAt, createdBy: req.user.id }).run();
+      const newPaid = invoice.paidAmount + amount;
+      db.update(schema.invoices).set({ paidAmount: newPaid, paymentStatus: newPaid >= invoice.finalAmount ? 'paid' : 'partial', status: newPaid >= invoice.finalAmount ? 'completed' : 'partial', version: invoice.version + 1 }).where(eq(schema.invoices.id, invoice.id)).run();
+      if (invoice.customerId) {
+        const customer = db.select().from(schema.customers).where(and(eq(schema.customers.id, invoice.customerId), eq(schema.customers.tenantId, req.user.tenantId))).get();
+        if (customer) db.update(schema.customers).set({ totalDebt: Math.max(0, customer.totalDebt - amount) }).where(eq(schema.customers.id, customer.id)).run();
+      }
+      created.push(allocation);
+    }
+    writeAudit(req, 'payment.allocate', payment.id, { allocations: created });
+    res.status(201).json({ paymentId: payment.id, allocations: created });
+  } catch (err) { console.error('POST /api/payments/:id/allocations error:', err); res.status(500).json({ error: 'Internal server error' }); }
+});
+
+app.get('/api/reports/staff', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'reports.view')) return;
+    const from = req.query.from ? new Date(`${String(req.query.from)}T00:00:00`).getTime() : Number.NEGATIVE_INFINITY;
+    const to = req.query.to ? new Date(`${String(req.query.to)}T23:59:59.999`).getTime() : Number.POSITIVE_INFINITY;
+    const inRange = (value: string) => {
+      const timestamp = new Date(value).getTime();
+      return timestamp >= from && timestamp <= to;
+    };
+    const userId = req.query.userId ? String(req.query.userId) : '';
+    const users = db.select().from(schema.users).where(eq(schema.users.tenantId, req.user.tenantId)).all();
+    const rows = new Map<string, any>();
+    const details: any[] = [];
+    for (const user of users) rows.set(user.id, { userId: user.id, userName: user.name, salesCount: 0, salesAmount: 0, salesReturnAmount: 0, purchaseAmount: 0, purchaseReturnAmount: 0, cashIncome: 0, cashExpense: 0, netCash: 0, netSales: 0 });
+    const ensureRow = (id: string) => {
+      if (!rows.has(id)) rows.set(id, { userId: id, userName: id, salesCount: 0, salesAmount: 0, salesReturnAmount: 0, purchaseAmount: 0, purchaseReturnAmount: 0, cashIncome: 0, cashExpense: 0, netCash: 0, netSales: 0 });
+      return rows.get(id);
+    };
+    db.select().from(schema.invoices).where(eq(schema.invoices.tenantId, req.user.tenantId)).all().filter((invoice) => invoice.workflowStatus !== 'cancelled' && invoice.workflowStatus === 'closed' && inRange(invoice.createdAt)).forEach((invoice) => {
+      if (userId && invoice.createdBy !== userId) return;
+      const row = ensureRow(invoice.createdBy);
+      row.salesCount += 1;
+      row.salesAmount += Number(invoice.finalAmount) || 0;
+      details.push({ type: 'sale', id: invoice.id, documentNo: invoice.documentNo, userId: invoice.createdBy, userName: row.userName, amount: Number(invoice.finalAmount) || 0, createdAt: invoice.createdAt });
+    });
+    const salesReturns = db.select().from(schema.salesReturns).where(eq(schema.salesReturns.tenantId, req.user.tenantId)).all().filter((item) => inRange(item.createdAt));
+    for (const item of salesReturns) {
+      if (userId && item.createdBy !== userId) continue;
+      ensureRow(item.createdBy).salesReturnAmount += Number(item.totalAmount) || 0;
+      details.push({ type: 'sales_return', id: item.id, documentNo: item.documentNo, userId: item.createdBy, userName: ensureRow(item.createdBy).userName, amount: Number(item.totalAmount) || 0, createdAt: item.createdAt });
+    }
+    const purchases = db.select().from(schema.purchases).where(eq(schema.purchases.tenantId, req.user.tenantId)).all().filter((item) => inRange(item.createdAt));
+    for (const item of purchases) {
+      if (userId && item.createdBy !== userId) continue;
+      ensureRow(item.createdBy).purchaseAmount += Number(item.finalAmount) || 0;
+      details.push({ type: 'purchase', id: item.id, documentNo: item.documentNo, userId: item.createdBy, userName: ensureRow(item.createdBy).userName, amount: Number(item.finalAmount) || 0, createdAt: item.createdAt });
+    }
+    const purchaseReturns = db.select().from(schema.purchaseReturns).where(eq(schema.purchaseReturns.tenantId, req.user.tenantId)).all().filter((item) => inRange(item.createdAt));
+    for (const item of purchaseReturns) {
+      if (userId && item.createdBy !== userId) continue;
+      ensureRow(item.createdBy).purchaseReturnAmount += Number(item.totalAmount) || 0;
+      details.push({ type: 'purchase_return', id: item.id, documentNo: item.documentNo, userId: item.createdBy, userName: ensureRow(item.createdBy).userName, amount: Number(item.totalAmount) || 0, createdAt: item.createdAt });
+    }
+    const cancelledInvoiceIds = new Set(db.select({ id: schema.invoices.id }).from(schema.invoices).where(and(eq(schema.invoices.tenantId, req.user.tenantId), eq(schema.invoices.workflowStatus, 'cancelled'))).all().map((item) => item.id));
+    const cashbook = db.select().from(schema.cashbookEntries).where(eq(schema.cashbookEntries.tenantId, req.user.tenantId)).all().filter((item) => inRange(item.createdAt) && !(item.referenceId && cancelledInvoiceIds.has(item.referenceId)));
+    for (const item of cashbook) {
+      if (userId && item.createdBy !== userId) continue;
+      const row = ensureRow(item.createdBy);
+      if (item.type === 'income') row.cashIncome += Number(item.amount) || 0;
+      else row.cashExpense += Number(item.amount) || 0;
+      details.push({ type: item.type === 'income' ? 'cash_income' : 'cash_expense', id: item.id, userId: item.createdBy, userName: row.userName, amount: Number(item.amount) || 0, category: item.category, referenceId: item.referenceId, accountId: item.accountId, createdAt: item.createdAt });
+    }
+    const result = Array.from(rows.values()).map((row) => ({ ...row, netCash: row.cashIncome - row.cashExpense, netSales: row.salesAmount - row.salesReturnAmount })).filter((row) => !userId || row.userId === userId);
+    res.json({ from: req.query.from || null, to: req.query.to || null, rows: result, details: details.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt)) });
+  } catch (err) {
+    console.error('GET /api/reports/staff error:', err);
+    res.status(500).json({ error: 'Không thể tải báo cáo theo nhân viên' });
   }
 });
 
@@ -1358,6 +2224,7 @@ app.get('/api/cashbook', (req, res) => {
 app.post('/api/cashbook', (req, res) => {
   try {
     if (!ensurePermission(req, res, 'cashbook.create')) return;
+    ensureDefaultCashAccounts(req.user.tenantId);
     const { type, amount, category, note, referenceId } = req.body || {};
     if (!type || !['income', 'expense'].includes(type)) return res.status(400).json({ error: 'Invalid type' });
     const amt = Number(amount) || 0;
@@ -1371,6 +2238,7 @@ app.post('/api/cashbook', (req, res) => {
       category: category || 'Khác',
       note: note || '',
       referenceId: referenceId || null,
+      accountId: req.body?.accountId || defaultAccountForPayment(req.user.tenantId, req.body?.accountType || 'cash'),
       createdAt: new Date().toISOString(),
       createdBy: req.user.id,
     };
@@ -1519,13 +2387,19 @@ app.post('/api/debt-ledger', (req, res) => {
       .where(and(eq(schema.customers.id, req.body.customerId), eq(schema.customers.tenantId, req.user.tenantId))).get();
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
 
+    const accountId = req.body?.accountId || defaultAccountForPayment(req.user.tenantId, req.body?.paymentMethod || 'cash');
     const entry = {
       id: uuid(),
       createdAt: new Date().toISOString(),
-      ...req.body,
+      customerId: req.body.customerId,
+      invoiceId: req.body.invoiceId || null,
+      amount: Number(req.body.amount) || 0,
+      type: req.body.type,
+      note: String(req.body.note || ''),
       tenantId: req.user.tenantId,
       createdBy: req.user.id,
     };
+    if (!['increase', 'decrease'].includes(entry.type) || entry.amount <= 0) return res.status(400).json({ error: 'Giao dịch công nợ không hợp lệ' });
     db.insert(schema.debtLedger).values(entry).run();
 
     // Update customer debt
@@ -1546,6 +2420,7 @@ app.post('/api/debt-ledger', (req, res) => {
         category: 'Thu nợ',
         note: entry.note || `Thu nợ khách ${customer.name}`,
         referenceId: entry.invoiceId || null,
+        accountId,
         createdAt: entry.createdAt,
         createdBy: req.user.id,
       }).run();

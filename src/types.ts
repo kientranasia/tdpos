@@ -91,6 +91,50 @@ export interface Product {
   status: 'active' | 'inactive';
   barcode?: string;
   imageUrl?: string;
+  productType?: 'standard' | 'combo';
+  reservedStock?: number;
+  availableStock?: number;
+  units?: ProductUnit[];
+  components?: ProductComponent[];
+}
+
+export interface ProductUnit {
+  id: string;
+  tenantId: string;
+  productId: string;
+  name: string;
+  factor: number;
+  barcode?: string | null;
+  active?: boolean;
+}
+
+export interface ProductComponent {
+  id: string;
+  tenantId: string;
+  comboProductId: string;
+  componentProductId: string;
+  quantity: number;
+  component?: Product;
+}
+
+export interface PriceList {
+  id: string;
+  tenantId: string;
+  name: string;
+  customerType: 'all' | 'retail' | 'loyal';
+  isDefault: boolean;
+  active: boolean;
+  items?: PriceListItem[];
+}
+
+export interface PriceListItem {
+  id: string;
+  tenantId: string;
+  priceListId: string;
+  productId: string;
+  unitName: string;
+  unitFactor: number;
+  price: number;
 }
 
 export interface Category {
@@ -108,6 +152,16 @@ export interface Customer {
   name: string;
   phone: string;
   address: string;
+  taxCode?: string | null;
+  companyName?: string | null;
+  invoiceAddress?: string | null;
+  shippingAddress?: string | null;
+  creditLimit?: number;
+  paymentDays?: number;
+  allowDebt?: boolean;
+  contactName?: string | null;
+  note?: string;
+  active?: boolean;
   totalDebt: number;
   type: 'retail' | 'loyal'; // lẻ hay thân thiết
   tags?: string[];
@@ -136,6 +190,8 @@ export interface PurchaseItem {
   price: number;
   taxRate: number;
   total: number;
+  unitFactor?: number;
+  baseQuantity?: number;
 }
 
 export interface Purchase {
@@ -149,6 +205,7 @@ export interface Purchase {
   paidAmount: number;
   payableAmount: number;
   paymentMethod: 'cash' | 'transfer' | 'payable';
+  accountId?: string | null;
   status: 'confirmed' | 'partial' | 'unpaid';
   note: string;
   createdAt: string;
@@ -156,7 +213,34 @@ export interface Purchase {
   items?: PurchaseItem[];
 }
 
-export type PaymentMethod = 'cash' | 'transfer' | 'debt';
+export interface PurchaseReturn {
+  id: string;
+  documentNo: string;
+  tenantId: string;
+  purchaseId: string;
+  supplierId: string;
+  totalAmount: number;
+  note: string;
+  createdBy: string;
+  createdAt: string;
+  items?: PurchaseReturnItem[];
+}
+
+export interface PurchaseReturnItem {
+  id: string;
+  returnId: string;
+  purchaseItemId: string;
+  productId: string;
+  productName: string;
+  unit: string;
+  quantity: number;
+  unitFactor: number;
+  baseQuantity: number;
+  price: number;
+  total: number;
+}
+
+export type PaymentMethod = 'cash' | 'transfer' | 'wallet' | 'debt';
 
 export interface Invoice {
   id: string;
@@ -172,7 +256,19 @@ export interface Invoice {
   paidAmount: number;
   debtAmount: number;
   paymentMethod: PaymentMethod;
+  accountId?: string | null;
   status: 'completed' | 'partial' | 'unpaid';
+  workflowStatus?: 'draft' | 'checked' | 'picking' | 'ready_to_close' | 'closed' | 'cancelled';
+  paymentStatus?: 'unpaid' | 'partial' | 'paid';
+  version?: number;
+  checkedBy?: string | null;
+  checkedAt?: string | null;
+  pickedBy?: string | null;
+  pickedAt?: string | null;
+  closedBy?: string | null;
+  closedAt?: string | null;
+  cancelledBy?: string | null;
+  cancelledAt?: string | null;
   note?: string;
   createdAt: string;
 }
@@ -185,6 +281,46 @@ export interface InvoiceItem {
   quantity: number;
   price: number;
   taxRate: number;
+  total: number;
+  orderedQuantity?: number;
+  pickedQuantity?: number;
+  confirmedQuantity?: number;
+  lineStatus?: 'ordered' | 'picked' | 'short' | 'confirmed';
+  note?: string;
+  unitName?: string | null;
+  unitFactor?: number;
+  baseQuantity?: number;
+  priceListId?: string | null;
+  priceListName?: string | null;
+}
+
+export interface SalesReturn {
+  id: string;
+  documentNo: string;
+  tenantId: string;
+  invoiceId: string;
+  customerId?: string | null;
+  totalAmount: number;
+  debtReduction: number;
+  refundAmount: number;
+  refundAccountId?: string | null;
+  note: string;
+  createdBy: string;
+  createdAt: string;
+  items?: SalesReturnItem[];
+}
+
+export interface SalesReturnItem {
+  id: string;
+  returnId: string;
+  invoiceItemId: string;
+  productId: string;
+  productName: string;
+  unitName: string;
+  quantity: number;
+  unitFactor: number;
+  baseQuantity: number;
+  price: number;
   total: number;
 }
 
@@ -232,6 +368,43 @@ export interface CashbookEntry {
   referenceId?: string | null;
   createdAt: string;
   createdBy: string;
+  accountId?: string | null;
+}
+
+export interface CashAccount {
+  id: string;
+  tenantId: string;
+  name: string;
+  type: string;
+  active: boolean | number;
+}
+
+export interface SupplierCredit {
+  id: string;
+  tenantId: string;
+  supplierId: string;
+  purchaseReturnId?: string | null;
+  purchaseId?: string | null;
+  amount: number;
+  type: 'increase' | 'decrease';
+  accountId?: string | null;
+  note: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface StaffReportRow {
+  userId: string;
+  userName: string;
+  salesCount: number;
+  salesAmount: number;
+  salesReturnAmount: number;
+  purchaseAmount: number;
+  purchaseReturnAmount: number;
+  cashIncome: number;
+  cashExpense: number;
+  netCash: number;
+  netSales: number;
 }
 
 export interface StockMovement {

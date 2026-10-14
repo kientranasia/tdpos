@@ -11,6 +11,7 @@
     "build": "vite build",
     "test:smoke": "node scripts/hkdplus-smoke.mjs",
     "test:flow": "node scripts/hkdplus-flow-smoke.mjs",
+    "test:operations": "node scripts/hkdplus-operations-smoke.mjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"

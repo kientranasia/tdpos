@@ -1,12 +1,12 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { Search, Plus, AlertTriangle, Package, ArrowUpDown, X, Save, Edit3, Tag, CheckCircle, Camera, Layers, Trash2, Upload, Download, ScanLine, SlidersHorizontal, ListFilter, Ellipsis } from 'lucide-react';
+import { Search, Plus, AlertTriangle, Package, ArrowUpDown, X, Save, Edit3, Tag, CheckCircle, Camera, Layers, Trash2, Upload, Download, ScanLine, SlidersHorizontal, ListFilter, Ellipsis, Settings2 } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { formatCurrency } from '../lib/utils';
 import { Product } from '../types';
 import { v4 as uuid } from 'uuid';
-import { productsApi, stockMovementsApi } from '../lib/api';
+import { productsApi, stockMovementsApi, priceListsApi, productUnitsApi, productComponentsApi } from '../lib/api';
 import * as XLSX from 'xlsx';
 
 type ImportPreviewRow = {
@@ -47,6 +47,15 @@ export default function Inventory() {
   const [selectedImportRows, setSelectedImportRows] = useState<number[]>([]);
   const [showBarcodeScannerModal, setShowBarcodeScannerModal] = useState(false);
   const [barcodeScannerError, setBarcodeScannerError] = useState('');
+  const [showPricingModal, setShowPricingModal] = useState(false);
+  const [priceLists, setPriceLists] = useState<any[]>([]);
+  const [selectedPriceListId, setSelectedPriceListId] = useState('');
+  const [priceDrafts, setPriceDrafts] = useState<Record<string, number>>({});
+  const [pricingProductId, setPricingProductId] = useState('');
+  const [unitDrafts, setUnitDrafts] = useState<Array<{ name: string; factor: number; barcode: string }>>([]);
+  const [componentDrafts, setComponentDrafts] = useState<Array<{ componentProductId: string; quantity: number }>>([]);
+  const [newPriceList, setNewPriceList] = useState({ name: '', customerType: 'all' });
+  const [pricingMessage, setPricingMessage] = useState('');
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const barcodeVideoRef = React.useRef<HTMLVideoElement | null>(null);
   const barcodeStreamRef = React.useRef<MediaStream | null>(null);
@@ -69,7 +78,8 @@ export default function Inventory() {
     taxRate: 0,
     stock: 0,
     lowStockThreshold: 10,
-    imageUrl: ''
+    imageUrl: '',
+    productType: 'standard' as 'standard' | 'combo'
   });
 
   const [stockUpdateForm, setUpdateForm] = useState({
@@ -90,7 +100,8 @@ export default function Inventory() {
       taxRate: 0,
       stock: 0,
       lowStockThreshold: 10,
-      imageUrl: ''
+      imageUrl: '',
+      productType: 'standard'
     });
     setEditingProduct(null);
   };
@@ -116,6 +127,7 @@ export default function Inventory() {
       taxRate: Number(productForm.taxRate) || 0,
       stock: Number(productForm.stock) || 0,
       lowStockThreshold: Number(productForm.lowStockThreshold) || 0,
+      productType: productForm.productType,
     };
     let success = false;
     if (editingProduct) {
@@ -215,9 +227,89 @@ export default function Inventory() {
       sellingPrice: product.sellingPrice,
       stock: product.stock,
       lowStockThreshold: product.lowStockThreshold,
-      imageUrl: product.imageUrl || ''
+      imageUrl: product.imageUrl || '',
+      productType: product.productType || 'standard'
     });
     setShowProductModal(true);
+  };
+
+  const openPricing = async () => {
+    setPricingMessage('');
+    try {
+      const lists = await priceListsApi.list(true);
+      setPriceLists(lists);
+      const list = lists.find((item: any) => item.isDefault) || lists[0];
+      setSelectedPriceListId(list?.id || '');
+      const firstProduct = products[0];
+      setPricingProductId(firstProduct?.id || '');
+      setPriceDrafts(Object.fromEntries(products.map((product) => {
+        const item = list?.items?.find((row: any) => row.productId === product.id && row.unitName === product.unit);
+        return [product.id, Number(item?.price ?? product.sellingPrice)];
+      })));
+      if (firstProduct) {
+        const [units, components] = await Promise.all([productUnitsApi.list(firstProduct.id), productComponentsApi.list(firstProduct.id)]);
+        setUnitDrafts(units.filter((unit: any) => unit.name !== firstProduct.unit).map((unit: any) => ({ name: unit.name, factor: Number(unit.factor), barcode: unit.barcode || '' })));
+        setComponentDrafts(components.map((component: any) => ({ componentProductId: component.componentProductId, quantity: Number(component.quantity) })));
+      }
+      setShowPricingModal(true);
+    } catch (err) {
+      setPricingMessage(err instanceof Error ? err.message : 'Không thể tải cấu hình bán hàng.');
+    }
+  };
+
+  const changePricingProduct = async (productId: string) => {
+    const product = products.find((item) => item.id === productId);
+    setPricingProductId(productId);
+    if (!product) return;
+    try {
+      const [units, components] = await Promise.all([productUnitsApi.list(productId), productComponentsApi.list(productId)]);
+      setUnitDrafts(units.filter((unit: any) => unit.name !== product.unit).map((unit: any) => ({ name: unit.name, factor: Number(unit.factor), barcode: unit.barcode || '' })));
+      setComponentDrafts(components.map((component: any) => ({ componentProductId: component.componentProductId, quantity: Number(component.quantity) })));
+    } catch (err) {
+      setPricingMessage(err instanceof Error ? err.message : 'Không thể tải cấu hình sản phẩm.');
+    }
+  };
+
+  const changePricingList = (listId: string) => {
+    setSelectedPriceListId(listId);
+    const list = priceLists.find((item) => item.id === listId);
+    setPriceDrafts(Object.fromEntries(products.map((product) => {
+      const item = list?.items?.find((row: any) => row.productId === product.id && row.unitName === product.unit);
+      return [product.id, Number(item?.price ?? product.sellingPrice)];
+    })));
+  };
+
+  const savePricing = async () => {
+    const selectedList = priceLists.find((list) => list.id === selectedPriceListId);
+    const items = products.map((product) => ({ productId: product.id, unitName: product.unit, unitFactor: 1, price: Number(priceDrafts[product.id] ?? product.sellingPrice) }));
+    try {
+      if (selectedList) {
+        const untouched = (selectedList.items || []).filter((row: any) => !products.some((product) => product.id === row.productId && row.unitName === product.unit));
+        await priceListsApi.saveItems(selectedList.id, [...untouched, ...items]);
+      }
+      const selectedProduct = products.find((product) => product.id === pricingProductId);
+      if (selectedProduct) {
+        await productUnitsApi.save(selectedProduct.id, unitDrafts);
+        await productComponentsApi.save(selectedProduct.id, selectedProduct.productType === 'combo' ? componentDrafts : []);
+      }
+      setPriceLists(await priceListsApi.list(true));
+      setPricingMessage('Đã lưu cấu hình bảng giá, đơn vị và combo.');
+    } catch (err) {
+      setPricingMessage(err instanceof Error ? err.message : 'Không thể lưu cấu hình bán hàng.');
+    }
+  };
+
+  const createPriceList = async () => {
+    if (!newPriceList.name.trim()) return;
+    try {
+      const created = await priceListsApi.create({ name: newPriceList.name.trim(), customerType: newPriceList.customerType, active: true });
+      setPriceLists(await priceListsApi.list(true));
+      setSelectedPriceListId(created.id);
+      setNewPriceList({ name: '', customerType: 'all' });
+      setPricingMessage('Đã tạo bảng giá mới.');
+    } catch (err) {
+      setPricingMessage(err instanceof Error ? err.message : 'Không thể tạo bảng giá.');
+    }
   };
 
   const openStockEntry = (product: Product) => {
@@ -604,11 +696,12 @@ export default function Inventory() {
         (p.barcode || '').toLowerCase().includes(keyword) ||
         p.category.toLowerCase().includes(keyword);
       const matchesCategory = categoryFilter === 'all' || p.category === categoryFilter;
+      const availableStock = Number(p.availableStock ?? p.stock);
       const matchesStockStatus =
         stockStatusFilter === 'all' ||
-        (stockStatusFilter === 'in_stock' && p.stock > p.lowStockThreshold) ||
-        (stockStatusFilter === 'low_stock' && p.stock > 0 && p.stock <= p.lowStockThreshold) ||
-        (stockStatusFilter === 'out_of_stock' && p.stock <= 0);
+        (stockStatusFilter === 'in_stock' && availableStock > p.lowStockThreshold) ||
+        (stockStatusFilter === 'low_stock' && availableStock > 0 && availableStock <= p.lowStockThreshold) ||
+        (stockStatusFilter === 'out_of_stock' && availableStock <= 0);
       return matchesKeyword && matchesCategory && matchesStockStatus;
     });
   }, [products, searchTerm, categoryFilter, stockStatusFilter]);
@@ -620,10 +713,10 @@ export default function Inventory() {
         rows.sort((a, b) => a.name.localeCompare(b.name, 'vi'));
         break;
       case 'stock_asc':
-        rows.sort((a, b) => a.stock - b.stock);
+        rows.sort((a, b) => Number(a.availableStock ?? a.stock) - Number(b.availableStock ?? b.stock));
         break;
       case 'stock_desc':
-        rows.sort((a, b) => b.stock - a.stock);
+        rows.sort((a, b) => Number(b.availableStock ?? b.stock) - Number(a.availableStock ?? a.stock));
         break;
       case 'price_desc':
         rows.sort((a, b) => b.sellingPrice - a.sellingPrice);
@@ -653,10 +746,12 @@ export default function Inventory() {
   }, []);
 
   const inventoryStats = useMemo(() => {
-    const lowStock = products.filter((p) => p.trackStock && p.stock <= p.lowStockThreshold).length;
+    const lowStock = products.filter((p) => p.trackStock && Number(p.availableStock ?? p.stock) <= p.lowStockThreshold).length;
     const totalUnits = products.reduce((sum, p) => sum + (p.stock || 0), 0);
+    const reservedUnits = products.reduce((sum, p) => sum + Number(p.reservedStock || 0), 0);
+    const availableUnits = products.reduce((sum, p) => sum + Number(p.availableStock ?? p.stock ?? 0), 0);
     const totalStockValue = products.reduce((sum, p) => sum + (p.stock || 0) * (p.purchasePrice || 0), 0);
-    return { lowStock, totalUnits, totalStockValue };
+    return { lowStock, totalUnits, reservedUnits, availableUnits, totalStockValue };
   }, [products]);
 
   const uniqueCategories = useMemo(
@@ -1001,6 +1096,17 @@ export default function Inventory() {
                       ))}
                     </select>
                   </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-semibold text-slate-500 ml-1">Loại hàng hóa</label>
+                    <select
+                      value={productForm.productType}
+                      onChange={e => setProductForm({ ...productForm, productType: e.target.value as 'standard' | 'combo' })}
+                      className="w-full h-11 px-4 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm"
+                    >
+                      <option value="standard">Sản phẩm thường</option>
+                      <option value="combo">Combo bán hàng</option>
+                    </select>
+                  </div>
                </div>
 
                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
@@ -1056,6 +1162,68 @@ export default function Inventory() {
                  <Save className="h-4 w-4" />
                  <span>{savingProduct ? 'Đang lưu...' : 'Lưu sản phẩm'}</span>
                </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showPricingModal && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+          <div className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-lg border border-white bg-white shadow-2xl">
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white px-5 py-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-600 text-white"><Settings2 className="h-5 w-5" /></div>
+                <div><h2 className="font-semibold text-slate-900">Cấu hình bán hàng</h2><p className="text-xs text-slate-500">Bảng giá, đơn vị quy đổi và thành phần combo</p></div>
+              </div>
+              <button onClick={() => setShowPricingModal(false)} className="rounded-md p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="grid gap-5 p-5 lg:grid-cols-[260px_1fr]">
+              <div className="space-y-4">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Bảng giá</p>
+                  <select value={selectedPriceListId} onChange={(e) => changePricingList(e.target.value)} className="h-10 w-full rounded-md border border-slate-200 bg-white px-2 text-sm">
+                    {priceLists.map((list) => <option key={list.id} value={list.id}>{list.name} · {list.customerType === 'loyal' ? 'Thân thiết' : list.customerType === 'retail' ? 'Bán lẻ' : 'Mặc định'}</option>)}
+                  </select>
+                  <div className="mt-3 flex gap-2">
+                    <Input value={newPriceList.name} onChange={(e) => setNewPriceList({ ...newPriceList, name: e.target.value })} placeholder="Bảng giá mới" className="h-9 text-sm" />
+                    <Button onClick={createPriceList} className="h-9 shrink-0 px-3">Tạo</Button>
+                  </div>
+                  <select value={newPriceList.customerType} onChange={(e) => setNewPriceList({ ...newPriceList, customerType: e.target.value })} className="mt-2 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs">
+                    <option value="all">Mọi nhóm khách</option><option value="retail">Bán lẻ</option><option value="loyal">Khách thân thiết</option>
+                  </select>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500">Sản phẩm cấu hình</label>
+                  <select value={pricingProductId} onChange={(e) => changePricingProduct(e.target.value)} className="h-10 w-full rounded-md border border-slate-200 bg-white px-2 text-sm">
+                    {products.map((product) => <option key={product.id} value={product.id}>{product.name} · {product.productType === 'combo' ? 'Combo' : product.unit}</option>)}
+                  </select>
+                  <p className="mt-2 text-xs text-slate-500">Đơn vị cơ sở: <b>{products.find((p) => p.id === pricingProductId)?.unit || '—'}</b></p>
+                </div>
+              </div>
+              <div className="space-y-5">
+                <div>
+                  <div className="mb-2 flex items-center justify-between"><h3 className="font-semibold text-slate-900">Giá theo sản phẩm · {priceLists.find((list) => list.id === selectedPriceListId)?.name || '—'}</h3><span className="text-xs text-slate-500">Giá theo đơn vị cơ sở</span></div>
+                  <div className="max-h-64 overflow-auto rounded-lg border border-slate-200">
+                    <table className="w-full text-sm"><thead className="sticky top-0 bg-slate-50 text-left text-xs text-slate-500"><tr><th className="p-2">Sản phẩm</th><th className="p-2">Đơn vị</th><th className="p-2 text-right">Giá bán</th></tr></thead><tbody className="divide-y divide-slate-100">
+                      {products.map((product) => <tr key={product.id}><td className="p-2 font-medium text-slate-800">{product.name}</td><td className="p-2 text-slate-500">{product.unit}</td><td className="p-2"><Input type="number" min="0" value={priceDrafts[product.id] ?? product.sellingPrice} onChange={(e) => setPriceDrafts({ ...priceDrafts, [product.id]: Number(e.target.value) || 0 })} className="ml-auto h-9 max-w-36 text-right" /></td></tr>)}
+                    </tbody></table>
+                  </div>
+                </div>
+                <div className="grid gap-5 md:grid-cols-2">
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold text-slate-900">Đơn vị quy đổi</h3><Button variant="outline" className="h-8 px-2 text-xs" onClick={() => setUnitDrafts([...unitDrafts, { name: '', factor: 1, barcode: '' }])}><Plus className="mr-1 h-3 w-3" />Thêm</Button></div>
+                    <div className="space-y-2">{unitDrafts.map((unit, index) => <div key={`${unit.name}-${index}`} className="grid grid-cols-[1fr_70px_1fr_auto] gap-2"><Input value={unit.name} placeholder="Tên đơn vị" onChange={(e) => setUnitDrafts(unitDrafts.map((row, i) => i === index ? { ...row, name: e.target.value } : row))} className="h-9 text-xs" /><Input type="number" min="0.01" value={unit.factor} onChange={(e) => setUnitDrafts(unitDrafts.map((row, i) => i === index ? { ...row, factor: Number(e.target.value) || 1 } : row))} className="h-9 text-xs" /><Input value={unit.barcode} placeholder="Mã vạch" onChange={(e) => setUnitDrafts(unitDrafts.map((row, i) => i === index ? { ...row, barcode: e.target.value } : row))} className="h-9 text-xs" /><button onClick={() => setUnitDrafts(unitDrafts.filter((_, i) => i !== index))} className="text-rose-500"><Trash2 className="h-4 w-4" /></button></div>)}</div>
+                    <p className="mt-2 text-xs text-slate-500">Ví dụ: 1 Hộp = 20 {products.find((p) => p.id === pricingProductId)?.unit || 'đơn vị cơ sở'}.</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold text-slate-900">Thành phần combo</h3><Button variant="outline" className="h-8 px-2 text-xs" onClick={() => setComponentDrafts([...componentDrafts, { componentProductId: products.find((p) => p.productType !== 'combo' && p.id !== pricingProductId)?.id || '', quantity: 1 }])}><Plus className="mr-1 h-3 w-3" />Thêm</Button></div>
+                    <div className="space-y-2">{componentDrafts.map((component, index) => <div key={`${component.componentProductId}-${index}`} className="grid grid-cols-[1fr_70px_auto] gap-2"><select value={component.componentProductId} onChange={(e) => setComponentDrafts(componentDrafts.map((row, i) => i === index ? { ...row, componentProductId: e.target.value } : row))} className="h-9 rounded-md border border-slate-200 px-2 text-xs">{products.filter((p) => p.productType !== 'combo' && p.id !== pricingProductId).map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</select><Input type="number" min="0.01" value={component.quantity} onChange={(e) => setComponentDrafts(componentDrafts.map((row, i) => i === index ? { ...row, quantity: Number(e.target.value) || 1 } : row))} className="h-9 text-xs" /><button onClick={() => setComponentDrafts(componentDrafts.filter((_, i) => i !== index))} className="text-rose-500"><Trash2 className="h-4 w-4" /></button></div>)}</div>
+                    {products.find((p) => p.id === pricingProductId)?.productType !== 'combo' && <p className="mt-2 text-xs text-slate-500">Chuyển loại sản phẩm sang Combo để sử dụng thành phần.</p>}
+                  </div>
+                </div>
+                {pricingMessage && <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{pricingMessage}</p>}
+                <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setShowPricingModal(false)}>Đóng</Button><Button onClick={savePricing}><Save className="mr-2 h-4 w-4" />Lưu cấu hình</Button></div>
+              </div>
             </div>
           </div>
         </div>
@@ -1220,14 +1388,14 @@ export default function Inventory() {
         </div>
       )}
 
-      <div className="p-3 lg:p-8 bg-white border-b sticky top-0 z-40 flex flex-col lg:flex-row gap-2 lg:gap-6 items-start lg:items-center justify-between shadow-sm shrink-0">
+      <div className="p-3 lg:p-4 bg-white border-b border-slate-200 sticky top-0 z-40 flex flex-col lg:flex-row gap-2 lg:gap-4 items-start lg:items-center justify-between shadow-sm shrink-0">
         <div className="hidden lg:flex items-center gap-5">
-          <div className="h-9 w-9 sm:h-12 sm:w-12 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-lg shadow-sky-900/20 transform -rotate-3 shrink-0">
-            <Package className="h-4 w-4 sm:h-6 sm:w-6" />
+          <div className="h-9 w-9 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-sm shrink-0">
+            <Package className="h-4 w-4" />
           </div>
           <div>
-            <h1 className="text-page-title">Kho hàng</h1>
-            <p className="text-page-subtitle mt-1">{products.length} mặt hàng trong hệ thống</p>
+            <h1 className="text-base font-semibold leading-tight text-slate-900">Kho hàng</h1>
+            <p className="text-[11px] leading-tight text-slate-500 mt-0.5">{products.length} mặt hàng trong hệ thống</p>
           </div>
         </div>
         
@@ -1242,7 +1410,7 @@ export default function Inventory() {
           <div className="relative group w-full flex-1 lg:w-72">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-sky-600 transition-colors" />
             <Input 
-              className="h-10 lg:h-11 rounded-lg border-none bg-slate-100/70 shadow-inner focus:ring-2 focus:ring-sky-500/20 transition-all font-semibold text-sm placeholder:text-slate-400" 
+              className="h-9 lg:h-10 rounded-lg border-none bg-slate-100/70 shadow-inner focus:ring-2 focus:ring-sky-500/20 transition-all font-medium text-sm placeholder:text-slate-400"
                 placeholder="Tìm theo tên, SKU, danh mục..." 
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
@@ -1250,11 +1418,19 @@ export default function Inventory() {
           </div>
           <div className="grid grid-cols-[1fr_auto] gap-2 sm:flex sm:items-center sm:gap-2">
             <Button
+              variant="outline"
+              onClick={openPricing}
+              className="h-9 lg:h-10 px-3 rounded-lg gap-2 font-medium text-sm"
+            >
+              <Settings2 className="h-4 w-4" />
+              <span className="hidden sm:inline">Bảng giá & combo</span>
+            </Button>
+            <Button
               onClick={() => {
                   resetProductForm();
                   setShowProductModal(true);
               }}
-              className="h-10 lg:h-11 px-4 rounded-lg gap-2 font-semibold bg-sky-600 hover:bg-sky-700 shadow-lg shadow-sky-900/20 transition-all text-white shrink-0 text-sm"
+              className="h-9 lg:h-10 px-4 rounded-lg gap-2 font-semibold bg-sky-600 hover:bg-sky-700 shadow-sm transition-all text-white shrink-0 text-sm"
             >
               <Plus className="h-4 w-4 sm:h-5 sm:w-5" />
               <span>Thêm mới</span>
@@ -1292,10 +1468,18 @@ export default function Inventory() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-3 lg:p-6">
-        <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-3 lg:mb-6">
+        <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5 lg:mb-6">
           <div className="rounded-lg border border-slate-200 bg-white p-4">
-            <p className="text-xs text-slate-500">Tổng tồn kho (đơn vị)</p>
+            <p className="text-xs text-slate-500">Tồn thực tế</p>
             <p className="mt-1 text-lg font-semibold text-slate-900 tabular-nums">{inventoryStats.totalUnits}</p>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white p-4">
+            <p className="text-xs text-slate-500">Tồn khả dụng</p>
+            <p className="mt-1 text-lg font-semibold text-emerald-700 tabular-nums">{inventoryStats.availableUnits}</p>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white p-4">
+            <p className="text-xs text-slate-500">Đang giữ cho bill</p>
+            <p className="mt-1 text-lg font-semibold text-orange-600 tabular-nums">{inventoryStats.reservedUnits}</p>
           </div>
           <div className="rounded-lg border border-slate-200 bg-white p-4">
             <p className="text-xs text-slate-500">Giá trị tồn (giá nhập)</p>
@@ -1407,10 +1591,11 @@ export default function Inventory() {
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-500">Tồn kho</div>
                     <div className={`text-lg font-semibold tabular-nums leading-none ${
-                      product.stock <= product.lowStockThreshold ? 'text-orange-600' : 'text-slate-900'
+                      Number(product.availableStock ?? product.stock) <= product.lowStockThreshold ? 'text-orange-600' : 'text-slate-900'
                     }`}>
-                      {product.stock} <span className="text-xs text-slate-400 font-medium ml-0.5">{product.unit}</span>
+                      {Number(product.availableStock ?? product.stock)} <span className="text-xs text-slate-400 font-medium ml-0.5">{product.unit}</span>
                     </div>
+                    <div className="text-[11px] text-slate-400">Thực tế {product.stock} · Giữ {product.reservedStock || 0}</div>
                   </div>
                   <div className="text-right space-y-1">
                     <div className="text-xs font-medium text-slate-500">Giá nhập</div>
@@ -1490,7 +1675,7 @@ export default function Inventory() {
                     <td className="px-4 py-3 align-middle">
                       <div className="flex justify-center">
                         <div className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2.5 shadow-sm transition-transform group-hover:scale-105 ${
-                          product.stock <= product.lowStockThreshold 
+                          Number(product.availableStock ?? product.stock) <= product.lowStockThreshold
                             ? 'bg-orange-600 text-white ring-4 ring-orange-100' 
                             : 'bg-slate-900 text-white ring-4 ring-slate-100'
                         }`}>
@@ -1498,10 +1683,11 @@ export default function Inventory() {
                              e.stopPropagation();
                              openStockEntry(product);
                           }}><Plus className="h-4 w-4" /></button>
-                          <span className="text-sm font-semibold tabular-nums whitespace-nowrap">{product.stock}</span>
+                          <span className="text-sm font-semibold tabular-nums whitespace-nowrap">{Number(product.availableStock ?? product.stock)}</span>
                           <span className="opacity-70">{product.unit}</span>
-                          {product.stock <= product.lowStockThreshold && <AlertTriangle className="h-4 w-4" />}
+                          {Number(product.availableStock ?? product.stock) <= product.lowStockThreshold && <AlertTriangle className="h-4 w-4" />}
                         </div>
+                        <p className="mt-1 text-[10px] text-slate-400">Thực tế {product.stock} · Giữ {product.reservedStock || 0}</p>
                       </div>
                     </td>
                     <td className="px-4 py-3 align-middle">

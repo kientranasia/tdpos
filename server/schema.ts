@@ -136,6 +136,48 @@ export const products = sqliteTable('products', {
   status: text('status', { enum: ['active', 'inactive'] }).notNull().default('active'),
   barcode: text('barcode'),
   imageUrl: text('image_url'),
+  productType: text('product_type', { enum: ['standard', 'combo'] }).notNull().default('standard'),
+});
+
+export const priceLists = sqliteTable('price_lists', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  name: text('name').notNull(),
+  customerType: text('customer_type', { enum: ['all', 'retail', 'loyal'] }).notNull().default('all'),
+  isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
+  active: integer('active', { mode: 'boolean' }).notNull().default(true),
+  createdAt: text('created_at').notNull(),
+});
+
+export const priceListItems = sqliteTable('price_list_items', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  priceListId: text('price_list_id').notNull().references(() => priceLists.id),
+  productId: text('product_id').notNull().references(() => products.id),
+  unitName: text('unit_name').notNull(),
+  unitFactor: real('unit_factor').notNull().default(1),
+  price: real('price').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+
+export const productUnits = sqliteTable('product_units', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  productId: text('product_id').notNull().references(() => products.id),
+  name: text('name').notNull(),
+  factor: real('factor').notNull().default(1),
+  barcode: text('barcode'),
+  active: integer('active', { mode: 'boolean' }).notNull().default(true),
+  createdAt: text('created_at').notNull(),
+});
+
+export const productComponents = sqliteTable('product_components', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  comboProductId: text('combo_product_id').notNull().references(() => products.id),
+  componentProductId: text('component_product_id').notNull().references(() => products.id),
+  quantity: real('quantity').notNull(),
+  createdAt: text('created_at').notNull(),
 });
 
 // ─── Customers ─────────────────────────────────────────────
@@ -146,6 +188,16 @@ export const customers = sqliteTable('customers', {
   name: text('name').notNull(),
   phone: text('phone').notNull(),
   address: text('address').notNull(),
+  taxCode: text('tax_code'),
+  companyName: text('company_name'),
+  invoiceAddress: text('invoice_address'),
+  shippingAddress: text('shipping_address'),
+  creditLimit: real('credit_limit').notNull().default(0),
+  paymentDays: integer('payment_days').notNull().default(0),
+  allowDebt: integer('allow_debt', { mode: 'boolean' }).notNull().default(true),
+  contactName: text('contact_name'),
+  note: text('note').notNull().default(''),
+  active: integer('active', { mode: 'boolean' }).notNull().default(true),
   totalDebt: real('total_debt').notNull().default(0),
   type: text('type', { enum: ['retail', 'loyal'] }).notNull().default('retail'),
   tags: text('tags').notNull().default('[]'),
@@ -178,6 +230,7 @@ export const purchases = sqliteTable('purchases', {
   paidAmount: real('paid_amount').notNull().default(0),
   payableAmount: real('payable_amount').notNull().default(0),
   paymentMethod: text('payment_method', { enum: ['cash', 'transfer', 'payable'] }).notNull(),
+  accountId: text('account_id'),
   status: text('status', { enum: ['confirmed', 'partial', 'unpaid'] }).notNull(),
   note: text('note').notNull().default(''),
   createdAt: text('created_at').notNull(),
@@ -193,6 +246,48 @@ export const purchaseItems = sqliteTable('purchase_items', {
   price: real('price').notNull(),
   taxRate: real('tax_rate').notNull().default(0),
   total: real('total').notNull(),
+  unitFactor: real('unit_factor').notNull().default(1),
+  baseQuantity: real('base_quantity').notNull().default(0),
+});
+
+export const purchaseReturns = sqliteTable('purchase_returns', {
+  id: text('id').primaryKey(),
+  documentNo: text('document_no').notNull().default(''),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  purchaseId: text('purchase_id').notNull().references(() => purchases.id),
+  supplierId: text('supplier_id').notNull().references(() => suppliers.id),
+  totalAmount: real('total_amount').notNull(),
+  note: text('note').notNull().default(''),
+  createdBy: text('created_by').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+
+export const purchaseReturnItems = sqliteTable('purchase_return_items', {
+  id: text('id').primaryKey(),
+  returnId: text('return_id').notNull().references(() => purchaseReturns.id),
+  purchaseItemId: text('purchase_item_id').notNull().references(() => purchaseItems.id),
+  productId: text('product_id').notNull(),
+  productName: text('product_name').notNull(),
+  unit: text('unit').notNull(),
+  quantity: real('quantity').notNull(),
+  unitFactor: real('unit_factor').notNull().default(1),
+  baseQuantity: real('base_quantity').notNull().default(0),
+  price: real('price').notNull(),
+  total: real('total').notNull(),
+});
+
+export const supplierCreditLedger = sqliteTable('supplier_credit_ledger', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  supplierId: text('supplier_id').notNull().references(() => suppliers.id),
+  purchaseReturnId: text('purchase_return_id'),
+  purchaseId: text('purchase_id'),
+  amount: real('amount').notNull(),
+  type: text('type', { enum: ['increase', 'decrease'] }).notNull(),
+  accountId: text('account_id'),
+  note: text('note').notNull().default(''),
+  createdBy: text('created_by').notNull(),
+  createdAt: text('created_at').notNull(),
 });
 
 export const payableLedger = sqliteTable('payable_ledger', {
@@ -220,8 +315,20 @@ export const invoices = sqliteTable('invoices', {
   finalAmount: real('final_amount').notNull(),
   paidAmount: real('paid_amount').notNull(),
   debtAmount: real('debt_amount').notNull().default(0),
-  paymentMethod: text('payment_method', { enum: ['cash', 'transfer', 'debt'] }).notNull(),
+  paymentMethod: text('payment_method', { enum: ['cash', 'transfer', 'wallet', 'debt'] }).notNull(),
+  accountId: text('account_id'),
   status: text('status', { enum: ['completed', 'partial', 'unpaid'] }).notNull(),
+  workflowStatus: text('workflow_status', { enum: ['draft', 'checked', 'picking', 'ready_to_close', 'closed', 'cancelled'] }).notNull().default('closed'),
+  paymentStatus: text('payment_status', { enum: ['unpaid', 'partial', 'paid'] }).notNull().default('unpaid'),
+  checkedBy: text('checked_by'),
+  checkedAt: text('checked_at'),
+  pickedBy: text('picked_by'),
+  pickedAt: text('picked_at'),
+  closedBy: text('closed_by'),
+  closedAt: text('closed_at'),
+  cancelledBy: text('cancelled_by'),
+  cancelledAt: text('cancelled_at'),
+  version: integer('version').notNull().default(1),
   note: text('note').notNull().default(''),
   createdAt: text('created_at').notNull(),
 });
@@ -235,6 +342,45 @@ export const invoiceItems = sqliteTable('invoice_items', {
   quantity: real('quantity').notNull(),
   price: real('price').notNull(),
   taxRate: real('tax_rate').notNull().default(0),
+  total: real('total').notNull(),
+  orderedQuantity: real('ordered_quantity'),
+  pickedQuantity: real('picked_quantity'),
+  confirmedQuantity: real('confirmed_quantity'),
+  lineStatus: text('line_status').notNull().default('ordered'),
+  note: text('note').notNull().default(''),
+  unitName: text('unit_name'),
+  unitFactor: real('unit_factor').notNull().default(1),
+  baseQuantity: real('base_quantity').notNull().default(0),
+  priceListId: text('price_list_id'),
+  priceListName: text('price_list_name'),
+});
+
+export const salesReturns = sqliteTable('sales_returns', {
+  id: text('id').primaryKey(),
+  documentNo: text('document_no').notNull().default(''),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  invoiceId: text('invoice_id').notNull().references(() => invoices.id),
+  customerId: text('customer_id'),
+  totalAmount: real('total_amount').notNull(),
+  debtReduction: real('debt_reduction').notNull().default(0),
+  refundAmount: real('refund_amount').notNull().default(0),
+  refundAccountId: text('refund_account_id'),
+  note: text('note').notNull().default(''),
+  createdBy: text('created_by').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+
+export const salesReturnItems = sqliteTable('sales_return_items', {
+  id: text('id').primaryKey(),
+  returnId: text('return_id').notNull().references(() => salesReturns.id),
+  invoiceItemId: text('invoice_item_id').notNull().references(() => invoiceItems.id),
+  productId: text('product_id').notNull(),
+  productName: text('product_name').notNull(),
+  unitName: text('unit_name').notNull(),
+  quantity: real('quantity').notNull(),
+  unitFactor: real('unit_factor').notNull().default(1),
+  baseQuantity: real('base_quantity').notNull().default(0),
+  price: real('price').notNull(),
   total: real('total').notNull(),
 });
 
@@ -259,8 +405,52 @@ export const cashbookEntries = sqliteTable('cashbook_entries', {
   category: text('category').notNull().default('Khác'),
   note: text('note').notNull().default(''),
   referenceId: text('reference_id'),
+  accountId: text('account_id'),
   createdAt: text('created_at').notNull(),
   createdBy: text('created_by').notNull(),
+});
+
+export const stockReservations = sqliteTable('stock_reservations', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  invoiceId: text('invoice_id').notNull().references(() => invoices.id),
+  productId: text('product_id').notNull().references(() => products.id),
+  quantity: real('quantity').notNull(),
+  status: text('status').notNull().default('reserved'),
+  createdAt: text('created_at').notNull(),
+  releasedAt: text('released_at'),
+});
+
+export const cashAccounts = sqliteTable('cash_accounts', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  name: text('name').notNull(),
+  type: text('type').notNull().default('cash'),
+  active: integer('active').notNull().default(1),
+  createdAt: text('created_at').notNull(),
+});
+
+export const payments = sqliteTable('payments', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  customerId: text('customer_id').references(() => customers.id),
+  accountId: text('account_id'),
+  amount: real('amount').notNull(),
+  paymentMethod: text('payment_method').notNull(),
+  note: text('note').notNull().default(''),
+  paymentDate: text('payment_date').notNull(),
+  status: text('status').notNull().default('posted'),
+  createdBy: text('created_by').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+
+export const paymentAllocations = sqliteTable('payment_allocations', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  paymentId: text('payment_id').notNull().references(() => payments.id),
+  invoiceId: text('invoice_id').notNull().references(() => invoices.id),
+  amount: real('amount').notNull(),
+  createdAt: text('created_at').notNull(),
 });
 
 export const stockMovements = sqliteTable('stock_movements', {

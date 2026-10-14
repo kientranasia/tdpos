@@ -8,6 +8,7 @@ import { Button } from '../components/ui/Button';
 import { toPng } from 'html-to-image';
 import download from 'downloadjs';
 import { v4 as uuid } from 'uuid';
+import { cashAccountsApi, priceListsApi } from '../lib/api';
 
 // Components
 import { POSCartItem } from '../components/pos/POSCartItem';
@@ -41,6 +42,10 @@ export default function POS() {
   const [cart, setCart] = useState<CartLine[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
+  const [priceLists, setPriceLists] = useState<any[]>([]);
+  const [selectedPriceListId, setSelectedPriceListId] = useState('');
+  const [cashAccounts, setCashAccounts] = useState<any[]>([]);
+  const [selectedAccountId, setSelectedAccountId] = useState('');
   const [orderNote, setOrderNote] = useState('');
   const [orderDiscountType, setOrderDiscountType] = useState<'percent' | 'amount'>('amount');
   const [orderDiscountValue, setOrderDiscountValue] = useState(0);
@@ -62,6 +67,34 @@ export default function POS() {
   const [showOrderItemsSheet, setShowOrderItemsSheet] = useState(false);
   const [isDelivery, setIsDelivery] = useState(false);
   const isCashier = currentUser?.role === 'cashier';
+
+  useEffect(() => {
+    Promise.all([priceListsApi.list(true), cashAccountsApi.list()]).then(([lists, accounts]) => {
+      setPriceLists(lists); setCashAccounts(accounts);
+      const defaultList = lists.find((list: any) => list.isDefault) || lists[0];
+      setSelectedPriceListId(defaultList?.id || '');
+      setSelectedAccountId(accounts.find((account: any) => account.type === 'cash')?.id || accounts[0]?.id || '');
+    }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    const matching = priceLists.find((list: any) => list.customerType === selectedCustomer?.type) || priceLists.find((list: any) => list.isDefault) || priceLists[0];
+    if (matching) setSelectedPriceListId(matching.id);
+  }, [selectedCustomer?.type, priceLists]);
+
+  const productUnits = (product: Product) => product.units?.length ? product.units : [{ name: product.unit, factor: 1 }];
+  const resolvePrice = (product: Product, unitName = product.unit, unitFactor = 1, seen = new Set<string>()): number => {
+    if (product.productType === 'combo') {
+      if (seen.has(product.id)) return 0;
+      return (product.components || []).reduce((sum, component: any) => {
+        const componentProduct = products.find((item) => item.id === component.componentProductId);
+        return sum + (componentProduct ? Number(component.quantity) * resolvePrice(componentProduct, componentProduct.unit, 1, new Set([...seen, product.id])) : 0);
+      }, 0) * unitFactor;
+    }
+    const list = priceLists.find((item: any) => item.id === selectedPriceListId);
+    const item = list?.items?.find((row: any) => row.productId === product.id && row.unitName === unitName);
+    return item ? Number(item.price) : Number(product.sellingPrice) * unitFactor;
+  };
 
   const invoiceRef = useRef<HTMLDivElement>(null);
   const scannerVideoRef = useRef<HTMLVideoElement>(null);
@@ -178,13 +211,17 @@ export default function POS() {
   };
 
   const addToCart = (product: Product) => {
-    if (product.stock <= 0) return;
+    const maxStock = Number(product.availableStock ?? product.stock);
+    if (maxStock <= 0) return;
+    const units = productUnits(product);
+    const unit = units[0];
+    const price = resolvePrice(product, unit.name, Number(unit.factor) || 1);
 
     let wasAdded = false;
     setCart(prev => {
       const existing = prev.find(item => item.productId === product.id);
       if (existing) {
-        if (existing.quantity >= product.stock) return prev;
+        if (existing.quantity >= existing.maxStock) return prev;
         wasAdded = true;
         return prev.map(item => 
           item.productId === product.id 
@@ -198,11 +235,15 @@ export default function POS() {
         invoiceId: '',
         productId: product.id,
         productName: product.name,
-        price: product.sellingPrice,
+        price,
         taxRate: product.taxRate || 0,
         quantity: 1,
-        total: product.sellingPrice,
-        maxStock: product.stock,
+        total: price,
+        maxStock,
+        unitName: unit.name,
+        unitFactor: Number(unit.factor) || 1,
+        priceListId: selectedPriceListId || undefined,
+        priceListName: priceLists.find((list: any) => list.id === selectedPriceListId)?.name,
         discountPercent: 0,
       }];
     });
@@ -217,6 +258,14 @@ export default function POS() {
       addedPulseTimerRef.current = window.setTimeout(() => setLastAddedProductId(null), 420);
       cartPulseTimerRef.current = window.setTimeout(() => setCartPulse(false), 360);
     }
+  };
+
+  const updateLineUnit = (productId: string, unitName: string) => {
+    const product = products.find((item) => item.id === productId);
+    const unit = product ? productUnits(product).find((row) => row.name === unitName) : null;
+    if (!product || !unit) return;
+    const price = resolvePrice(product, unit.name, Number(unit.factor) || 1);
+    setCart((prev) => prev.map((item) => item.productId === productId ? { ...item, unitName: unit.name, unitFactor: Number(unit.factor) || 1, price, total: item.quantity * price } : item));
   };
 
   const updateQuantity = (productId: string, delta: number) => {
@@ -335,13 +384,17 @@ export default function POS() {
       paidAmount: paymentMethod === 'debt' ? 0 : finalAmount,
       debtAmount: paymentMethod === 'debt' ? finalAmount : 0,
       paymentMethod,
+      accountId: paymentMethod === 'debt' ? null : selectedAccountId || null,
       status: paymentMethod === 'debt' ? 'unpaid' : 'completed',
+      workflowStatus: 'draft',
+      paymentStatus: paymentMethod === 'debt' ? 'unpaid' : 'paid',
       note: orderNote?.trim() || '',
       createdAt: new Date().toISOString()
     };
 
     addInvoice(newInvoice, cart.map((item) => ({
       ...item,
+      priceOverride: false,
       discountPercent: item.discountPercent || 0,
     })));
 
@@ -541,8 +594,8 @@ export default function POS() {
         <div className="h-28 w-28 rounded-full bg-sky-100 flex items-center justify-center mb-8 shadow-sm ring-4 ring-sky-50">
           <CheckCircle className="h-14 w-14 text-sky-600" />
         </div>
-        <h2 className="text-3xl font-semibold text-slate-900 mb-3">Thanh toán thành công</h2>
-        <p className="text-slate-500 mb-10 text-base">Mã hóa đơn <span className="text-sky-700 font-semibold">{lastInvoiceId}</span> đã được ghi nhận.</p>
+        <h2 className="text-3xl font-semibold text-slate-900 mb-3">Đã tạo bill</h2>
+        <p className="text-slate-500 mb-10 text-base">Bill <span className="text-sky-700 font-semibold">{lastInvoiceId}</span> đã lưu nháp, chờ kiểm bill và chốt xuất kho.</p>
         
         <div className="flex flex-col gap-4 w-full max-w-sm">
           <Button 
@@ -646,6 +699,7 @@ export default function POS() {
                   {[
                     { key: 'cash', label: 'Tiền mặt' },
                     { key: 'transfer', label: 'Chuyển khoản' },
+                    { key: 'wallet', label: 'Ví điện tử' },
                     { key: 'debt', label: 'Ghi nợ' }
                   ].map((method) => (
                     <button
@@ -663,6 +717,14 @@ export default function POS() {
                 </div>
                 <button type="button" className="h-12 w-12 rounded-xl bg-slate-100 text-slate-700 text-lg">•••</button>
               </div>
+              {paymentMethod !== 'debt' && (
+                <label className="block text-sm text-slate-600">Tài khoản nhận tiền
+                  <select value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3">
+                    <option value="">Tự động theo phương thức</option>
+                    {cashAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+                  </select>
+                </label>
+              )}
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-white px-4 py-4 flex items-center justify-between">
@@ -806,8 +868,11 @@ export default function POS() {
               <span className="flex min-w-0 items-center gap-2 text-sm text-slate-800"><User className="h-4 w-4 text-slate-400" /><span className="truncate">{selectedCustomer?.name || 'Khách lẻ / khách ngoài'}</span></span>
               <span className="flex items-center gap-2 text-xs text-slate-500">Nợ: {formatCurrency(selectedCustomer?.totalDebt || 0)} <ChevronRight className="h-4 w-4 text-slate-400" /></span>
             </button>
-            <div className="h-10 w-full px-3 flex items-center justify-between">
-              <span className="text-xs text-slate-500">Bảng giá chung · {currentUser?.name || 'Nhân viên'}</span>
+            <div className="h-10 w-full px-3 flex items-center justify-between gap-2">
+              <select value={selectedPriceListId} onChange={(e) => setSelectedPriceListId(e.target.value)} className="min-w-0 flex-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600">
+                {priceLists.map((list: any) => <option key={list.id} value={list.id}>{list.name}</option>)}
+              </select>
+              <span className="hidden text-xs text-slate-500 sm:inline">· {currentUser?.name || 'Nhân viên'}</span>
               {selectedCustomer && <button type="button" onClick={() => selectCustomer(null)} className="text-xs text-sky-700">Bán khách lẻ</button>}
             </div>
           </div>
@@ -869,8 +934,9 @@ export default function POS() {
           <div className="space-y-0 lg:hidden rounded-lg border border-slate-200 bg-white overflow-hidden">
             {mobileVisibleProducts.map((product) => {
               const inCart = cart.find((line) => line.productId === product.id);
-              const isOutOfStock = product.stock <= 0;
-              const isLowStock = product.stock > 0 && product.stock <= product.lowStockThreshold;
+              const available = Number(product.availableStock ?? product.stock);
+              const isOutOfStock = available <= 0;
+              const isLowStock = available > 0 && available <= product.lowStockThreshold;
               return (
                 <div key={product.id} className={`px-3 py-2.5 border-b border-slate-100 last:border-b-0 ${isOutOfStock ? 'opacity-60' : ''}`}>
                   <div className="flex items-start gap-3">
@@ -887,7 +953,7 @@ export default function POS() {
                       <div className="mt-1 flex items-center gap-1.5">
                         <span className="text-[18px] leading-none font-semibold text-sky-700 tabular-nums">{formatCurrency(product.sellingPrice)}</span>
                         <span className={`text-[11px] ${isOutOfStock ? 'text-rose-600' : isLowStock ? 'text-amber-600' : 'text-slate-500'}`}>
-                          {isOutOfStock ? 'Hết hàng' : `Tồn: ${product.stock}`}
+                          {isOutOfStock ? 'Hết hàng' : `Tồn: ${available}`}
                         </span>
                       </div>
                     </div>
@@ -932,14 +998,15 @@ export default function POS() {
             </div>
             {filteredProducts.map(product => {
               const inCart = cart.find((line) => line.productId === product.id);
-              const out = product.stock <= 0;
-              const low = product.stock > 0 && product.stock <= product.lowStockThreshold;
+              const available = Number(product.availableStock ?? product.stock);
+              const out = available <= 0;
+              const low = available > 0 && available <= product.lowStockThreshold;
               return (
                 <button key={product.id} type="button" disabled={out} onClick={() => addToCart(product)} className={`grid w-full grid-cols-[90px_minmax(0,1fr)_55px_75px_105px_38px] items-center gap-2 border-b border-slate-100 px-3 py-2 text-left text-xs last:border-0 ${out ? 'cursor-not-allowed opacity-50' : 'hover:bg-sky-50'} ${inCart ? 'bg-sky-50/70' : 'bg-white'}`}>
                   <span className="truncate font-mono text-[11px] text-slate-500">{product.sku}</span>
                   <span className="min-w-0 truncate font-medium text-slate-800">{product.name}</span>
                   <span className="text-slate-500">{product.unit}</span>
-                  <span className={`text-right tabular-nums ${out ? 'text-rose-600' : low ? 'text-amber-600' : 'text-slate-700'}`}>{out ? 'Hết' : product.stock}</span>
+                  <span className={`text-right tabular-nums ${out ? 'text-rose-600' : low ? 'text-amber-600' : 'text-slate-700'}`}>{out ? 'Hết' : available}</span>
                   <span className="text-right font-semibold tabular-nums text-sky-700">{formatCurrency(product.sellingPrice)}</span>
                   <span className={`flex h-6 w-6 items-center justify-center rounded-md ${inCart ? 'bg-sky-600 text-white' : 'border border-slate-200 text-slate-500'}`}>{inCart ? inCart.quantity : '+'}</span>
                 </button>
@@ -998,6 +1065,12 @@ export default function POS() {
             <span className="text-slate-500">Công nợ hiện tại</span>
             <span className={`font-semibold tabular-nums ${selectedCustomer?.totalDebt ? 'text-rose-600' : 'text-emerald-700'}`}>{formatCurrency(selectedCustomer?.totalDebt || 0)}</span>
           </div>
+          <div className="mt-2 flex items-center gap-2">
+            <span className="whitespace-nowrap text-xs text-slate-500">Bảng giá</span>
+            <select value={selectedPriceListId} onChange={(e) => setSelectedPriceListId(e.target.value)} className="h-8 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-xs">
+              {priceLists.map((list: any) => <option key={list.id} value={list.id}>{list.name}</option>)}
+            </select>
+          </div>
         </div>
         
         <div className="flex-none h-auto lg:flex-1 lg:overflow-y-auto p-3 sm:p-4 space-y-2 sm:space-y-3">
@@ -1019,6 +1092,8 @@ export default function POS() {
                    onUpdateQuantity={updateQuantity}
                    onRemove={removeFromCart}
                    onUpdateDiscount={updateLineDiscount}
+                   units={productUnits(products.find((product) => product.id === item.productId) || ({} as Product))}
+                   onChangeUnit={updateLineUnit}
                  />
                ))}
             </div>

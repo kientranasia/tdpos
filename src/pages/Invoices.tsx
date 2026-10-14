@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, ArrowUpDown, Calendar, ChevronDown, ChevronRight, Printer, Receipt, Search, ShoppingCart, SlidersHorizontal, User, Wallet, X } from 'lucide-react';
+import { ArrowLeft, ArrowUpDown, Calendar, ChevronDown, ChevronRight, Printer, Receipt, RotateCcw, Search, ShoppingCart, SlidersHorizontal, User, Wallet, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { formatCurrency } from '../lib/utils';
-import { debtLedgerApi, invoiceItemsApi } from '../lib/api';
-import { DebtLedger, InvoiceItem } from '../types';
+import { cashAccountsApi, debtLedgerApi, invoiceItemsApi, invoicesApi } from '../lib/api';
+import { DebtLedger, Invoice, InvoiceItem } from '../types';
 
 export default function Invoices() {
-  const { invoices, customers, products } = useApp();
+  const { invoices, customers, products, refreshInvoices } = useApp();
   const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'partial' | 'unpaid'>('all');
@@ -24,6 +24,13 @@ export default function Invoices() {
   const [showMobileSearch, setShowMobileSearch] = useState(false);
   const [showFilterSheet, setShowFilterSheet] = useState(false);
   const [showInvoiceActions, setShowInvoiceActions] = useState(false);
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const [lifecycleError, setLifecycleError] = useState('');
+  const [showReturnModal, setShowReturnModal] = useState(false);
+  const [returnLines, setReturnLines] = useState<Array<{ invoiceItemId: string; productName: string; quantity: number; maxQuantity: number; price: number }>>([]);
+  const [returnAccountId, setReturnAccountId] = useState('');
+  const [returnAccounts, setReturnAccounts] = useState<any[]>([]);
+  const [returnMessage, setReturnMessage] = useState('');
 
   const customerNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -105,6 +112,61 @@ export default function Invoices() {
     if (status === 'completed') return { label: 'Đã thanh toán', tone: 'status-chip-success' };
     if (status === 'partial') return { label: 'Thanh toán một phần', tone: 'status-chip-warning' };
     return { label: 'Chưa thanh toán', tone: 'status-chip-danger' };
+  };
+
+  const workflowMeta = (status?: Invoice['workflowStatus']) => {
+    switch (status) {
+      case 'draft': return { label: 'Nháp', tone: 'status-chip-info' };
+      case 'checked': return { label: 'Đã kiểm', tone: 'status-chip-warning' };
+      case 'picking': return { label: 'Đang lấy hàng', tone: 'status-chip-warning' };
+      case 'ready_to_close': return { label: 'Chờ chốt', tone: 'status-chip-warning' };
+      case 'cancelled': return { label: 'Đã hủy', tone: 'status-chip-danger' };
+      default: return { label: 'Đã chốt', tone: 'status-chip-success' };
+    }
+  };
+
+  const runLifecycleAction = async (action: 'check' | 'pick' | 'close' | 'cancel', invoiceId: string) => {
+    setLifecycleBusy(true);
+    setLifecycleError('');
+    try {
+      if (action === 'check') await invoicesApi.check(invoiceId);
+      if (action === 'pick') {
+        const items = selectedInvoiceId === invoiceId ? selectedInvoiceItems : await invoiceItemsApi.list(invoiceId);
+        await invoicesApi.pick(invoiceId, items.map((item) => ({
+          id: item.id,
+          pickedQuantity: Number(item.pickedQuantity ?? item.orderedQuantity ?? item.quantity),
+        })));
+      }
+      if (action === 'close') await invoicesApi.close(invoiceId);
+      if (action === 'cancel') {
+        if (!window.confirm('Hủy bill này? Tồn đang giữ sẽ được giải phóng.')) return;
+        await invoicesApi.cancel(invoiceId, 'Hủy theo thao tác người dùng');
+      }
+      await refreshInvoices();
+    } catch (error) {
+      setLifecycleError(error instanceof Error ? error.message : 'Không thể cập nhật trạng thái bill.');
+    } finally {
+      setLifecycleBusy(false);
+    }
+  };
+
+  const openReturnModal = async (invoice: Invoice) => {
+    try {
+      const [data, accounts] = await Promise.all([invoicesApi.returnable(invoice.id), cashAccountsApi.list()]);
+      setReturnLines(data.items.map((item: any) => ({ invoiceItemId: item.id, productName: item.productName, quantity: 0, maxQuantity: Math.max(0, Number(item.quantity) - Number(item.returnedQuantity || 0)), price: Number(item.price) })));
+      setReturnAccounts(accounts); setReturnAccountId(invoice.accountId || accounts.find((account: any) => account.type === 'cash')?.id || accounts[0]?.id || ''); setReturnMessage(''); setShowReturnModal(true);
+    } catch (error) { setReturnMessage(error instanceof Error ? error.message : 'Không thể tải hàng hóa có thể trả.'); }
+  };
+
+  const submitReturn = async () => {
+    if (!selectedInvoice) return;
+    const items = returnLines.filter((line) => line.quantity > 0).map((line) => ({ invoiceItemId: line.invoiceItemId, quantity: line.quantity }));
+    if (!items.length) return setReturnMessage('Nhập số lượng trả cho ít nhất một dòng.');
+    try {
+      const result = await invoicesApi.createReturn(selectedInvoice.id, { items, refundAccountId: returnAccountId || null });
+      setReturnMessage(`Đã trả hàng. Giảm công nợ ${formatCurrency(Number(result.debtReduction || 0))}, hoàn tiền ${formatCurrency(Number(result.refundAmount || 0))}.`);
+      setShowReturnModal(false); await refreshInvoices();
+    } catch (error) { setReturnMessage(error instanceof Error ? error.message : 'Không thể tạo phiếu trả khách hàng.'); }
   };
 
   const dayLabel = (value: string) => new Date(value).toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -295,14 +357,14 @@ export default function Invoices() {
         </button>
       </div>
 
-      <div className="hidden lg:flex p-3 lg:p-8 bg-white border-b sticky top-0 z-40 flex-col lg:flex-row gap-2 lg:gap-6 items-start lg:items-center justify-between shadow-sm shrink-0">
+      <div className="hidden lg:flex p-3 lg:p-4 bg-white border-b border-slate-200 sticky top-0 z-40 flex-col lg:flex-row gap-2 lg:gap-4 items-start lg:items-center justify-between shadow-sm shrink-0">
         <div className="hidden lg:flex items-center gap-5">
-          <div className="h-9 w-9 sm:h-12 sm:w-12 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-lg shadow-sky-900/20 transform -rotate-3 shrink-0">
-            <Receipt className="h-5 w-5 sm:h-6 sm:w-6" />
+          <div className="h-9 w-9 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-sm shrink-0">
+            <Receipt className="h-4 w-4" />
           </div>
           <div>
-            <h1 className="text-page-title">Lịch sử đơn hàng</h1>
-            <p className="text-page-subtitle mt-1">{invoices.length} đơn hàng trong hệ thống</p>
+            <h1 className="text-base font-semibold leading-tight text-slate-900">Lịch sử đơn hàng</h1>
+            <p className="text-[11px] leading-tight text-slate-500 mt-0.5">{invoices.length} đơn hàng trong hệ thống</p>
           </div>
         </div>
 
@@ -310,7 +372,7 @@ export default function Invoices() {
           <div className="relative w-full sm:w-auto">
             <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <Input
-              className="h-10 lg:h-11 pl-10 text-sm rounded-lg border-none bg-slate-100/70 shadow-inner"
+              className="h-9 lg:h-10 pl-10 text-sm rounded-lg border-none bg-slate-100/70 shadow-inner"
               placeholder="Tìm theo mã đơn hoặc tên khách"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -320,14 +382,14 @@ export default function Invoices() {
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as 'all' | 'completed' | 'partial' | 'unpaid')}
-              className="h-10 lg:h-11 rounded-lg border-none bg-slate-100/70 shadow-inner px-3 text-sm text-slate-700"
+              className="h-9 lg:h-10 rounded-lg border-none bg-slate-100/70 shadow-inner px-3 text-sm text-slate-700"
             >
               <option value="all">Tất cả trạng thái</option>
               <option value="completed">Đã thanh toán</option>
               <option value="partial">Thanh toán một phần</option>
               <option value="unpaid">Chưa thanh toán</option>
             </select>
-            <Button className="h-10 lg:h-11 text-sm px-3 lg:px-4" onClick={() => navigate('/app/pos')}>
+            <Button className="h-9 lg:h-10 text-sm px-3 lg:px-4" onClick={() => navigate('/app/pos')}>
               <ShoppingCart className="h-4 w-4 sm:mr-2" />
               <span className="hidden sm:inline">Lên đơn mới</span>
             </Button>
@@ -410,6 +472,7 @@ export default function Invoices() {
                 <div className="mb-2 md:mb-0">
                   <p className="text-sm font-semibold text-slate-900">#{inv.id}</p>
                   <span className={`status-chip mt-1 ${meta.tone}`}>{meta.label}</span>
+                  <span className={`status-chip mt-1 ml-1 ${workflowMeta(inv.workflowStatus).tone}`}>{workflowMeta(inv.workflowStatus).label}</span>
                 </div>
                 <p className="mb-2 text-sm text-slate-800 md:mb-0">{customerName}</p>
                 <div className="mb-2 flex items-center gap-1 text-sm text-slate-600 md:mb-0">
@@ -421,6 +484,16 @@ export default function Invoices() {
                   <p className="text-xs text-slate-500">Tạo bởi: {inv.createdByName || inv.createdBy || 'N/A'}</p>
                 </div>
                 <div className="flex items-center justify-end gap-1">
+                  {inv.workflowStatus && inv.workflowStatus !== 'closed' && inv.workflowStatus !== 'cancelled' && (
+                    <Button
+                      variant="outline"
+                      className="h-8 px-2 text-xs"
+                      disabled={lifecycleBusy}
+                      onClick={() => void runLifecycleAction(inv.workflowStatus === 'draft' ? 'check' : inv.workflowStatus === 'checked' ? 'pick' : 'close', inv.id)}
+                    >
+                      {inv.workflowStatus === 'draft' ? 'Kiểm bill' : inv.workflowStatus === 'checked' ? 'Lấy hàng' : 'Chốt bill'}
+                    </Button>
+                  )}
                   <Button variant="ghost" size="icon" onClick={() => printInvoice(inv.id)}>
                     <Printer className="h-4 w-4" />
                   </Button>
@@ -618,9 +691,10 @@ export default function Invoices() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Trạng thái</span>
-                <span className={`status-chip ${statusMeta(selectedInvoice.status).tone}`}>
-                  {statusMeta(selectedInvoice.status).label}
-                </span>
+                <div className="flex gap-1">
+                  <span className={`status-chip ${statusMeta(selectedInvoice.status).tone}`}>{statusMeta(selectedInvoice.status).label}</span>
+                  <span className={`status-chip ${workflowMeta(selectedInvoice.workflowStatus).tone}`}>{workflowMeta(selectedInvoice.workflowStatus).label}</span>
+                </div>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Tổng tiền</span>
@@ -636,13 +710,28 @@ export default function Invoices() {
               </div>
             </div>
 
-            <div className="mt-4 flex items-center justify-end gap-2">
+            {lifecycleError && <p className="mt-3 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700">{lifecycleError}</p>}
+            <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+              {selectedInvoice.workflowStatus && selectedInvoice.workflowStatus !== 'closed' && selectedInvoice.workflowStatus !== 'cancelled' && (
+                <>
+                  <Button
+                    variant="outline"
+                    className="h-10 text-sm"
+                    disabled={lifecycleBusy}
+                    onClick={() => void runLifecycleAction(selectedInvoice.workflowStatus === 'draft' ? 'check' : selectedInvoice.workflowStatus === 'checked' ? 'pick' : 'close', selectedInvoice.id)}
+                  >
+                    {selectedInvoice.workflowStatus === 'draft' ? 'Kiểm bill' : selectedInvoice.workflowStatus === 'checked' ? 'Bắt đầu lấy hàng' : 'Chốt bill'}
+                  </Button>
+                  <Button variant="outline" className="h-10 text-sm text-rose-700" disabled={lifecycleBusy} onClick={() => void runLifecycleAction('cancel', selectedInvoice.id)}>Hủy bill</Button>
+                </>
+              )}
               {selectedInvoice.customerId && (
                 <Button variant="outline" className="h-10 text-sm" onClick={() => navigate(`/app/customers/${selectedInvoice.customerId}`)}>
                   <User className="mr-2 h-4 w-4" />
                   Mở khách hàng
                 </Button>
               )}
+              {selectedInvoice.workflowStatus === 'closed' && <Button variant="outline" className="h-10 text-sm" onClick={() => void openReturnModal(selectedInvoice)}><RotateCcw className="mr-2 h-4 w-4" />Trả hàng</Button>}
               <Button className="h-10 text-sm" onClick={() => printInvoice(selectedInvoice.id)}>
                 <Printer className="mr-2 h-4 w-4" />
                 In hóa đơn
@@ -719,12 +808,23 @@ export default function Invoices() {
           </div>
         </div>
       )}
+      {showReturnModal && selectedInvoice && (
+        <div className="fixed inset-0 z-[180] flex items-center justify-center bg-slate-900/60 p-4">
+          <div className="w-full max-w-2xl space-y-4 rounded-lg bg-white p-5 shadow-2xl">
+            <div className="flex items-center justify-between"><div><h2 className="font-semibold text-slate-900">Trả hàng khách hàng</h2><p className="text-xs text-slate-500">Hóa đơn #{selectedInvoice.id} · Công nợ được giảm trước, phần còn lại hoàn tiền</p></div><button onClick={() => setShowReturnModal(false)}><X className="h-5 w-5 text-slate-400" /></button></div>
+            <div className="space-y-2">{returnLines.map((line, index) => <div key={line.invoiceItemId} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded-md border border-slate-100 p-3"><div><p className="font-medium text-slate-900">{line.productName}</p><p className="text-xs text-slate-500">Đã bán tối đa có thể trả: {line.maxQuantity}</p></div><Input type="number" min="0" max={line.maxQuantity} value={line.quantity || ''} disabled={line.maxQuantity <= 0} onChange={(e) => setReturnLines(returnLines.map((row, i) => i === index ? { ...row, quantity: Math.min(row.maxQuantity, Number(e.target.value) || 0) } : row))} className="h-9 w-24" /><span className="text-sm text-slate-600">{formatCurrency(line.quantity * line.price)}</span></div>)}</div>
+            <label className="block text-sm text-slate-600">Tài khoản hoàn tiền<select value={returnAccountId} onChange={(e) => setReturnAccountId(e.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-200 px-3"><option value="">Tự động</option>{returnAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
+            {returnMessage && <p className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-700">{returnMessage}</p>}
+            <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setShowReturnModal(false)}>Hủy</Button><Button onClick={() => void submitReturn()}><RotateCcw className="mr-2 h-4 w-4" />Xác nhận trả hàng</Button></div>
+          </div>
+        </div>
+      )}
       {selectedInvoice && showInvoiceActions && (
         <div className="lg:hidden fixed inset-0 z-[170] bg-black/45" onClick={() => setShowInvoiceActions(false)}>
           <div className="absolute inset-x-0 bottom-0 rounded-t-3xl bg-white p-4" onClick={(e) => e.stopPropagation()}>
             <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-slate-300" />
             <div className="space-y-1 text-base">
-              <button className="h-12 w-full text-left px-2 rounded-lg hover:bg-slate-50">Trả hàng</button>
+              <button className="h-12 w-full text-left px-2 rounded-lg hover:bg-slate-50 disabled:opacity-40" disabled={selectedInvoice.workflowStatus !== 'closed'} onClick={() => { setShowInvoiceActions(false); void openReturnModal(selectedInvoice); }}>Trả hàng</button>
               <button className="h-12 w-full text-left px-2 rounded-lg hover:bg-slate-50" onClick={() => { printInvoice(selectedInvoice.id); setShowInvoiceActions(false); }}>In</button>
               <button className="h-12 w-full text-left px-2 rounded-lg hover:bg-slate-50">Chia sẻ</button>
               <button className="h-12 w-full text-left px-2 rounded-lg text-rose-600 hover:bg-rose-50">Hủy hóa đơn</button>

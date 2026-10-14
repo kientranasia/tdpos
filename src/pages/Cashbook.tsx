@@ -1,13 +1,16 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { ArrowDownCircle, ArrowUpCircle, BookText, Download, Plus } from 'lucide-react';
-import { cashbookApi } from '../lib/api';
+import { cashAccountsApi, cashbookApi } from '../lib/api';
 import { CashbookEntry } from '../types';
 import { formatCurrency } from '../lib/utils';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
+import AppPageHeader from '../components/layout/AppPageHeader';
 
 export default function Cashbook() {
   const [entries, setEntries] = useState<CashbookEntry[]>([]);
+  const [accounts, setAccounts] = useState<any[]>([]);
+  const [accountFilter, setAccountFilter] = useState('all');
   const [loading, setLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [fromDate, setFromDate] = useState('');
@@ -18,6 +21,7 @@ export default function Cashbook() {
     amount: 0,
     category: '',
     note: '',
+    accountId: '',
   });
   const [error, setError] = useState('');
 
@@ -40,12 +44,14 @@ export default function Cashbook() {
   useEffect(() => {
     loadEntries();
   }, [fromDate, toDate, typeFilter]);
+  useEffect(() => { cashAccountsApi.list().then(setAccounts).catch(() => setAccounts([])); }, []);
 
   const totals = useMemo(() => {
-    const income = entries.filter((e) => e.type === 'income').reduce((sum, e) => sum + e.amount, 0);
-    const expense = entries.filter((e) => e.type === 'expense').reduce((sum, e) => sum + e.amount, 0);
+    const scoped = accountFilter === 'all' ? entries : entries.filter((entry) => entry.accountId === accountFilter);
+    const income = scoped.filter((e) => e.type === 'income').reduce((sum, e) => sum + e.amount, 0);
+    const expense = scoped.filter((e) => e.type === 'expense').reduce((sum, e) => sum + e.amount, 0);
     return { income, expense, balance: income - expense };
-  }, [entries]);
+  }, [accountFilter, entries]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -58,17 +64,18 @@ export default function Cashbook() {
       const created = await cashbookApi.create(form);
       setEntries((prev) => [created, ...prev]);
       setShowModal(false);
-      setForm({ type: 'income', amount: 0, category: '', note: '' });
+      setForm({ type: 'income', amount: 0, category: '', note: '', accountId: '' });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Không thể tạo giao dịch.');
     }
   };
 
   const exportCsv = () => {
-    const header = ['Thoi gian', 'Loai', 'Danh muc', 'So tien', 'Ghi chu'];
-    const rows = entries.map((e) => [
+    const header = ['Thoi gian', 'Loai', 'Tai khoan', 'Danh muc', 'So tien', 'Ghi chu'];
+    const rows = entries.filter((e) => accountFilter === 'all' || e.accountId === accountFilter).map((e) => [
       new Date(e.createdAt).toLocaleString('vi-VN'),
       e.type === 'income' ? 'Thu' : 'Chi',
+      accounts.find((account) => account.id === e.accountId)?.name || 'Chưa phân bổ',
       e.category || '',
       String(e.amount || 0),
       (e.note || '').replaceAll(',', ' '),
@@ -84,25 +91,14 @@ export default function Cashbook() {
 
   return (
     <div className="flex h-full flex-col bg-slate-50 overflow-hidden">
-      <div className="p-3 lg:p-8 bg-white border-b sticky top-0 z-40 flex items-center justify-between gap-2 lg:gap-4 shadow-sm shrink-0">
-        <div className="hidden lg:flex items-center gap-5">
-          <div className="h-12 w-12 rounded-lg bg-emerald-600 text-white flex items-center justify-center shadow-lg">
-            <BookText className="h-6 w-6" />
-          </div>
-          <div>
-            <h1 className="text-page-title">Sổ quỹ</h1>
-            <p className="text-page-subtitle">Thu - Chi và số dư quỹ hiện tại</p>
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2">
+      <AppPageHeader icon={BookText} accentClassName="bg-emerald-600" title="Sổ quỹ" subtitle="Thu - Chi và số dư quỹ hiện tại" actions={<div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2">
           <Button variant="outline" className="h-10 lg:h-11 px-3" onClick={exportCsv}>
             <Download className="h-4 w-4 mr-1" /> CSV
           </Button>
           <Button className="h-10 lg:h-11 px-3" onClick={() => setShowModal(true)}>
           <Plus className="h-4 w-4 mr-1" /> Tạo giao dịch
           </Button>
-        </div>
-      </div>
+        </div>} />
 
       <div className="flex-1 overflow-y-auto p-4 lg:p-8 space-y-4">
         <section className="rounded-lg border border-slate-200 bg-white p-3 grid grid-cols-1 md:grid-cols-4 gap-2">
@@ -113,6 +109,7 @@ export default function Cashbook() {
             <option value="income">Thu</option>
             <option value="expense">Chi</option>
           </select>
+          <select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 text-sm"><option value="all">Tất cả tài khoản</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select>
           <Button variant="outline" onClick={() => { setFromDate(''); setToDate(''); setTypeFilter('all'); }} className="h-10">Reset lọc</Button>
         </section>
 
@@ -143,7 +140,7 @@ export default function Cashbook() {
                 <div key={entry.id} className="px-4 py-3 flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-slate-900">{entry.category || 'Khác'}</p>
-                    <p className="text-xs text-slate-500 truncate">{entry.note || 'Không ghi chú'} · {new Date(entry.createdAt).toLocaleString('vi-VN')}</p>
+                    <p className="text-xs text-slate-500 truncate">{accounts.find((account) => account.id === entry.accountId)?.name || 'Chưa phân bổ'} · {entry.note || 'Không ghi chú'} · {new Date(entry.createdAt).toLocaleString('vi-VN')}</p>
                   </div>
                   <div className={`text-sm font-semibold tabular-nums ${entry.type === 'income' ? 'text-emerald-700' : 'text-rose-700'}`}>
                     {entry.type === 'income' ? '+' : '-'}{formatCurrency(entry.amount)}
@@ -170,6 +167,7 @@ export default function Cashbook() {
             <Input type="number" value={form.amount || ''} onChange={(e) => setForm((p) => ({ ...p, amount: Number(e.target.value) }))} placeholder="Số tiền" />
             <Input value={form.category} onChange={(e) => setForm((p) => ({ ...p, category: e.target.value }))} placeholder="Danh mục (vd: Bán hàng, Điện nước...)" />
             <Input value={form.note} onChange={(e) => setForm((p) => ({ ...p, note: e.target.value }))} placeholder="Ghi chú" />
+            <select value={form.accountId} onChange={(e) => setForm((p) => ({ ...p, accountId: e.target.value }))} className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"><option value="">Tự động: Tiền mặt</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select>
             {error && <p className="text-sm text-rose-600">{error}</p>}
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setShowModal(false)}>Hủy</Button>

@@ -9,9 +9,11 @@ interface POSCartItemProps {
   onUpdateQuantity: (productId: string, delta: number) => void;
   onRemove: (productId: string) => void;
   onUpdateDiscount?: (productId: string, discountPercent: number) => void;
+  units?: Array<{ name: string; factor: number }>;
+  onChangeUnit?: (productId: string, unitName: string) => void;
 }
 
-export const POSCartItem = ({ item, onUpdateQuantity, onRemove, onUpdateDiscount }: POSCartItemProps) => {
+export const POSCartItem = ({ item, onUpdateQuantity, onRemove, onUpdateDiscount, units, onChangeUnit }: POSCartItemProps) => {
   return (
     <div className="rounded-md border border-slate-200 bg-white px-2.5 py-2 hover:border-sky-200 transition-all group" id={`cart-item-${item.productId}`}>
       <div className="flex items-center gap-2">
@@ -27,6 +29,11 @@ export const POSCartItem = ({ item, onUpdateQuantity, onRemove, onUpdateDiscount
           <X className="h-4 w-4" />
         </button>
       </div>
+      {units && units.length > 1 && onChangeUnit && (
+        <select value={item.unitName || units[0].name} onChange={(event) => onChangeUnit(item.productId, event.target.value)} className="mt-2 h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-600">
+          {units.map((unit) => <option key={unit.name} value={unit.name}>{unit.name} · ×{unit.factor}</option>)}
+        </select>
+      )}
       
       <div className="mt-2 flex items-center justify-between gap-2">
         <div className="text-sky-700 font-semibold text-sm leading-none tabular-nums">{formatCurrency(item.total)}</div>

@@ -68,7 +68,8 @@ sqlite.exec(`
     low_stock_threshold REAL NOT NULL DEFAULT 10,
     status TEXT NOT NULL DEFAULT 'active',
     barcode TEXT,
-    image_url TEXT
+    image_url TEXT,
+    product_type TEXT NOT NULL DEFAULT 'standard'
   );
 
   CREATE TABLE IF NOT EXISTS customers (
@@ -77,6 +78,16 @@ sqlite.exec(`
     name TEXT NOT NULL,
     phone TEXT NOT NULL,
     address TEXT NOT NULL,
+    tax_code TEXT,
+    company_name TEXT,
+    invoice_address TEXT,
+    shipping_address TEXT,
+    credit_limit REAL NOT NULL DEFAULT 0,
+    payment_days INTEGER NOT NULL DEFAULT 0,
+    allow_debt INTEGER NOT NULL DEFAULT 1,
+    contact_name TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
     total_debt REAL NOT NULL DEFAULT 0,
     type TEXT NOT NULL DEFAULT 'retail'
   );
@@ -88,11 +99,25 @@ sqlite.exec(`
     created_by TEXT NOT NULL,
     total_amount REAL NOT NULL,
     discount REAL NOT NULL DEFAULT 0,
+    tax_amount REAL NOT NULL DEFAULT 0,
     final_amount REAL NOT NULL,
     paid_amount REAL NOT NULL,
     debt_amount REAL NOT NULL DEFAULT 0,
     payment_method TEXT NOT NULL,
+    account_id TEXT,
     status TEXT NOT NULL,
+    document_no TEXT NOT NULL DEFAULT '',
+    workflow_status TEXT NOT NULL DEFAULT 'closed',
+    payment_status TEXT NOT NULL DEFAULT 'unpaid',
+    checked_by TEXT,
+    checked_at TEXT,
+    picked_by TEXT,
+    picked_at TEXT,
+    closed_by TEXT,
+    closed_at TEXT,
+    cancelled_by TEXT,
+    cancelled_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
   );
 
@@ -103,7 +128,17 @@ sqlite.exec(`
     product_name TEXT NOT NULL,
     quantity REAL NOT NULL,
     price REAL NOT NULL,
-    total REAL NOT NULL
+    total REAL NOT NULL,
+    ordered_quantity REAL,
+    picked_quantity REAL,
+    confirmed_quantity REAL,
+    line_status TEXT NOT NULL DEFAULT 'ordered',
+    note TEXT NOT NULL DEFAULT '',
+    unit_name TEXT,
+    unit_factor REAL NOT NULL DEFAULT 1,
+    base_quantity REAL NOT NULL DEFAULT 0,
+    price_list_id TEXT,
+    price_list_name TEXT
   );
 
   CREATE TABLE IF NOT EXISTS debt_ledger (
@@ -116,6 +151,49 @@ sqlite.exec(`
     note TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     created_by TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS stock_reservations (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    invoice_id TEXT NOT NULL REFERENCES invoices(id),
+    product_id TEXT NOT NULL REFERENCES products(id),
+    quantity REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'reserved',
+    created_at TEXT NOT NULL,
+    released_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS cash_accounts (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    name TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'cash',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS payments (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    customer_id TEXT REFERENCES customers(id),
+    account_id TEXT,
+    amount REAL NOT NULL,
+    payment_method TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    payment_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'posted',
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS payment_allocations (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    payment_id TEXT NOT NULL REFERENCES payments(id),
+    invoice_id TEXT NOT NULL REFERENCES invoices(id),
+    amount REAL NOT NULL,
+    created_at TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS admin_users (

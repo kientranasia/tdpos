@@ -67,6 +67,32 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
   addColumnIfMissing('invoices', 'note', "note TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing('invoices', 'tax_amount', "tax_amount REAL NOT NULL DEFAULT 0");
   addColumnIfMissing('invoices', 'document_no', "document_no TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing('invoices', 'workflow_status', "workflow_status TEXT NOT NULL DEFAULT 'closed'");
+  addColumnIfMissing('invoices', 'payment_status', "payment_status TEXT NOT NULL DEFAULT 'unpaid'");
+  addColumnIfMissing('invoices', 'checked_by', 'checked_by TEXT');
+  addColumnIfMissing('invoices', 'checked_at', 'checked_at TEXT');
+  addColumnIfMissing('invoices', 'picked_by', 'picked_by TEXT');
+  addColumnIfMissing('invoices', 'picked_at', 'picked_at TEXT');
+  addColumnIfMissing('invoices', 'closed_by', 'closed_by TEXT');
+  addColumnIfMissing('invoices', 'closed_at', 'closed_at TEXT');
+  addColumnIfMissing('invoices', 'cancelled_by', 'cancelled_by TEXT');
+  addColumnIfMissing('invoices', 'cancelled_at', 'cancelled_at TEXT');
+  addColumnIfMissing('invoices', 'version', 'version INTEGER NOT NULL DEFAULT 1');
+  sqlite.prepare("UPDATE invoices SET workflow_status = 'closed' WHERE workflow_status IS NULL OR workflow_status = ''").run();
+  sqlite.prepare("UPDATE invoices SET payment_status = CASE WHEN status = 'completed' THEN 'paid' WHEN status = 'partial' THEN 'partial' ELSE 'unpaid' END WHERE payment_status IS NULL OR payment_status = '' OR payment_status = 'unpaid'").run();
+}
+
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'customers'").get()) {
+  addColumnIfMissing('customers', 'tax_code', 'tax_code TEXT');
+  addColumnIfMissing('customers', 'company_name', 'company_name TEXT');
+  addColumnIfMissing('customers', 'invoice_address', 'invoice_address TEXT');
+  addColumnIfMissing('customers', 'shipping_address', 'shipping_address TEXT');
+  addColumnIfMissing('customers', 'credit_limit', 'credit_limit REAL NOT NULL DEFAULT 0');
+  addColumnIfMissing('customers', 'payment_days', 'payment_days INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing('customers', 'allow_debt', 'allow_debt INTEGER NOT NULL DEFAULT 1');
+  addColumnIfMissing('customers', 'contact_name', 'contact_name TEXT');
+  addColumnIfMissing('customers', 'note', "note TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing('customers', 'active', 'active INTEGER NOT NULL DEFAULT 1');
 }
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'purchases'").get()) {
@@ -75,10 +101,42 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'products'").get()) {
   addColumnIfMissing('products', 'tax_rate', "tax_rate REAL NOT NULL DEFAULT 0");
+  addColumnIfMissing('products', 'product_type', "product_type TEXT NOT NULL DEFAULT 'standard'");
+  sqlite.prepare("UPDATE products SET product_type = 'standard' WHERE product_type IS NULL OR product_type = ''").run();
 }
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'invoice_items'").get()) {
   addColumnIfMissing('invoice_items', 'tax_rate', "tax_rate REAL NOT NULL DEFAULT 0");
+  addColumnIfMissing('invoice_items', 'ordered_quantity', 'ordered_quantity REAL');
+  addColumnIfMissing('invoice_items', 'picked_quantity', 'picked_quantity REAL');
+  addColumnIfMissing('invoice_items', 'confirmed_quantity', 'confirmed_quantity REAL');
+  addColumnIfMissing('invoice_items', 'line_status', "line_status TEXT NOT NULL DEFAULT 'ordered'");
+  addColumnIfMissing('invoice_items', 'note', "note TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing('invoice_items', 'unit_name', 'unit_name TEXT');
+  addColumnIfMissing('invoice_items', 'unit_factor', 'unit_factor REAL NOT NULL DEFAULT 1');
+  addColumnIfMissing('invoice_items', 'base_quantity', 'base_quantity REAL NOT NULL DEFAULT 0');
+  addColumnIfMissing('invoice_items', 'price_list_id', 'price_list_id TEXT');
+  addColumnIfMissing('invoice_items', 'price_list_name', 'price_list_name TEXT');
+  sqlite.prepare("UPDATE invoice_items SET unit_name = (SELECT unit FROM products WHERE products.id = invoice_items.product_id) WHERE unit_name IS NULL").run();
+  sqlite.prepare('UPDATE invoice_items SET base_quantity = quantity * unit_factor WHERE base_quantity = 0').run();
+}
+
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'purchases'").get()) {
+  addColumnIfMissing('purchases', 'account_id', 'account_id TEXT');
+}
+
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'purchase_items'").get()) {
+  addColumnIfMissing('purchase_items', 'unit_factor', 'unit_factor REAL NOT NULL DEFAULT 1');
+  addColumnIfMissing('purchase_items', 'base_quantity', 'base_quantity REAL NOT NULL DEFAULT 0');
+  sqlite.prepare('UPDATE purchase_items SET base_quantity = quantity * unit_factor WHERE base_quantity = 0').run();
+}
+
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'invoices'").get()) {
+  addColumnIfMissing('invoices', 'account_id', 'account_id TEXT');
+}
+
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cashbook_entries'").get()) {
+  addColumnIfMissing('cashbook_entries', 'account_id', 'account_id TEXT');
 }
 
 sqlite.exec(`
@@ -281,6 +339,159 @@ sqlite.exec(`
     created_at TEXT NOT NULL,
     created_by TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS stock_reservations (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    invoice_id TEXT NOT NULL REFERENCES invoices(id),
+    product_id TEXT NOT NULL REFERENCES products(id),
+    quantity REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'reserved',
+    created_at TEXT NOT NULL,
+    released_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS cash_accounts (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    name TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'cash',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS payments (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    customer_id TEXT REFERENCES customers(id),
+    account_id TEXT,
+    amount REAL NOT NULL,
+    payment_method TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    payment_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'posted',
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS payment_allocations (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    payment_id TEXT NOT NULL REFERENCES payments(id),
+    invoice_id TEXT NOT NULL REFERENCES invoices(id),
+    amount REAL NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS price_lists (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    name TEXT NOT NULL,
+    customer_type TEXT NOT NULL DEFAULT 'all',
+    is_default INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS price_list_items (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    price_list_id TEXT NOT NULL REFERENCES price_lists(id),
+    product_id TEXT NOT NULL REFERENCES products(id),
+    unit_name TEXT NOT NULL,
+    unit_factor REAL NOT NULL DEFAULT 1,
+    price REAL NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS product_units (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    product_id TEXT NOT NULL REFERENCES products(id),
+    name TEXT NOT NULL,
+    factor REAL NOT NULL DEFAULT 1,
+    barcode TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS product_components (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    combo_product_id TEXT NOT NULL REFERENCES products(id),
+    component_product_id TEXT NOT NULL REFERENCES products(id),
+    quantity REAL NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS purchase_returns (
+    id TEXT PRIMARY KEY,
+    document_no TEXT NOT NULL DEFAULT '',
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    purchase_id TEXT NOT NULL REFERENCES purchases(id),
+    supplier_id TEXT NOT NULL REFERENCES suppliers(id),
+    total_amount REAL NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS purchase_return_items (
+    id TEXT PRIMARY KEY,
+    return_id TEXT NOT NULL REFERENCES purchase_returns(id),
+    purchase_item_id TEXT NOT NULL REFERENCES purchase_items(id),
+    product_id TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    unit_factor REAL NOT NULL DEFAULT 1,
+    base_quantity REAL NOT NULL DEFAULT 0,
+    price REAL NOT NULL,
+    total REAL NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS supplier_credit_ledger (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    supplier_id TEXT NOT NULL REFERENCES suppliers(id),
+    purchase_return_id TEXT,
+    purchase_id TEXT,
+    amount REAL NOT NULL,
+    type TEXT NOT NULL,
+    account_id TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS sales_returns (
+    id TEXT PRIMARY KEY,
+    document_no TEXT NOT NULL DEFAULT '',
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    invoice_id TEXT NOT NULL REFERENCES invoices(id),
+    customer_id TEXT,
+    total_amount REAL NOT NULL,
+    debt_reduction REAL NOT NULL DEFAULT 0,
+    refund_amount REAL NOT NULL DEFAULT 0,
+    refund_account_id TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS sales_return_items (
+    id TEXT PRIMARY KEY,
+    return_id TEXT NOT NULL REFERENCES sales_returns(id),
+    invoice_item_id TEXT NOT NULL REFERENCES invoice_items(id),
+    product_id TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    unit_name TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    unit_factor REAL NOT NULL DEFAULT 1,
+    base_quantity REAL NOT NULL DEFAULT 0,
+    price REAL NOT NULL,
+    total REAL NOT NULL
+  );
 `);
 
 const permissionDefinitions = [
@@ -295,9 +506,13 @@ const permissionDefinitions = [
   ['inventory.delete', 'inventory', 'delete', 'Xóa hàng hóa'],
   ['inventory.adjust', 'inventory', 'adjust', 'Điều chỉnh tồn kho'],
   ['inventory.view_cost', 'inventory', 'view_cost', 'Xem giá vốn'],
+  ['inventory.manage_pricing', 'inventory', 'manage_pricing', 'Quản lý bảng giá và combo'],
   ['purchases.view', 'purchases', 'view', 'Xem nhập hàng'],
   ['purchases.create', 'purchases', 'create', 'Tạo phiếu nhập'],
   ['purchases.approve', 'purchases', 'approve', 'Xác nhận phiếu nhập'],
+  ['purchases.return', 'purchases', 'return', 'Trả hàng nhà cung cấp'],
+  ['sales.return', 'sales', 'return', 'Trả hàng khách hàng'],
+  ['sales.override_price', 'sales', 'override_price', 'Sửa giá bán tại quầy'],
   ['partners.view', 'partners', 'view', 'Xem đối tác'],
   ['partners.create', 'partners', 'create', 'Thêm đối tác'],
   ['partners.update', 'partners', 'update', 'Sửa đối tác'],
@@ -320,7 +535,7 @@ const roleDefaults: Record<string, string[]> = {
   owner: permissionDefinitions.map(([code]) => code),
   manager: permissionDefinitions.filter(([code]) => !['settings.manage_users', 'settings.manage_permissions', 'sales.cancel'].includes(code)).map(([code]) => code),
   cashier: ['sales.view', 'sales.create', 'partners.view', 'partners.create', 'debt.view'],
-  warehouse: ['inventory.view', 'inventory.adjust', 'inventory.view_cost', 'purchases.view', 'purchases.create', 'purchases.approve', 'partners.view'],
+  warehouse: ['inventory.view', 'inventory.adjust', 'inventory.view_cost', 'inventory.manage_pricing', 'purchases.view', 'purchases.create', 'purchases.approve', 'purchases.return', 'partners.view'],
   accountant: ['dashboard.view', 'purchases.view', 'partners.view', 'debt.view', 'debt.collect', 'cashbook.view', 'cashbook.create', 'reports.view', 'reports.export'],
 };
 for (const [role, codes] of Object.entries(roleDefaults)) {

@@ -86,6 +86,26 @@ export const productsApi = {
   delete: (id: string) => request<any>(`/products/${id}`, { method: 'DELETE' }),
   adjustStock: (id: string, quantity: number, type: 'increase' | 'decrease', note?: string) =>
     request<any>(`/products/${id}/stock`, { method: 'POST', body: { quantity, type, note } }),
+  lookup: (code: string) => request<any>(`/products/lookup`, { params: { code } }),
+};
+
+export const priceListsApi = {
+  list: (includeItems = true) => request<any[]>('/price-lists', { params: { includeItems: String(includeItems) } }),
+  get: (id: string) => request<any>(`/price-lists/${id}`),
+  create: (data: any) => request<any>('/price-lists', { method: 'POST', body: data }),
+  update: (id: string, data: any) => request<any>(`/price-lists/${id}`, { method: 'PATCH', body: data }),
+  remove: (id: string) => request<any>(`/price-lists/${id}`, { method: 'DELETE' }),
+  saveItems: (id: string, items: any[]) => request<any[]>(`/price-lists/${id}/items`, { method: 'PUT', body: { items } }),
+};
+
+export const productUnitsApi = {
+  list: (productId: string) => request<any[]>(`/products/${productId}/units`),
+  save: (productId: string, units: any[]) => request<any[]>(`/products/${productId}/units`, { method: 'PUT', body: { units } }),
+};
+
+export const productComponentsApi = {
+  list: (productId: string) => request<any[]>(`/products/${productId}/components`),
+  save: (productId: string, components: any[]) => request<any[]>(`/products/${productId}/components`, { method: 'PUT', body: { components } }),
 };
 
 // ─── Customers ─────────────────────────────────────────────
@@ -109,6 +129,14 @@ export const purchasesApi = {
   list: () => request<any[]>('/purchases'),
   get: (id: string) => request<any>(`/purchases/${id}`),
   create: (data: any) => request<any>('/purchases', { method: 'POST', body: data }),
+  returnable: (id: string) => request<any>(`/purchases/${id}/returnable`),
+  returns: () => request<any[]>('/purchase-returns'),
+  createReturn: (id: string, data: any) => request<any>(`/purchases/${id}/returns`, { method: 'POST', body: data }),
+};
+
+export const supplierCreditsApi = {
+  list: (supplierId?: string) => request<any[]>('/supplier-credit-ledger', { params: { supplierId: supplierId || '' } }),
+  settle: (supplierId: string, data: any) => request<any>(`/suppliers/${supplierId}/credit-settlement`, { method: 'POST', body: data }),
 };
 
 export const payableLedgerApi = {
@@ -141,12 +169,37 @@ export const invoicesApi = {
     request<any[]>('/invoices', { params: { tenantId: tenantId || '', ...filters } }),
   get: (id: string) => request<any>(`/invoices/${id}`),
   create: (data: any) => request<any>('/invoices', { method: 'POST', body: data }),
+  update: (id: string, data: any) => request<any>(`/invoices/${id}`, { method: 'PATCH', body: data }),
+  check: (id: string) => request<any>(`/invoices/${id}/check`, { method: 'POST', body: {} }),
+  pick: (id: string, items: any[]) => request<any>(`/invoices/${id}/pick`, { method: 'POST', body: { items } }),
+  close: (id: string) => request<any>(`/invoices/${id}/close`, { method: 'POST', body: {} }),
+  cancel: (id: string, reason?: string) => request<any>(`/invoices/${id}/cancel`, { method: 'POST', body: { reason } }),
+  timeline: (id: string) => request<any[]>(`/invoices/${id}/timeline`),
+  returnable: (id: string) => request<any>(`/invoices/${id}/returnable`),
+  returns: () => request<any[]>('/sales-returns'),
+  createReturn: (id: string, data: any) => request<any>(`/invoices/${id}/returns`, { method: 'POST', body: data }),
+};
+
+export const cashAccountsApi = {
+  list: () => request<any[]>('/cash-accounts'),
+  create: (data: any) => request<any>('/cash-accounts', { method: 'POST', body: data }),
+};
+
+export const paymentsApi = {
+  list: (customerId?: string) => request<any[]>('/payments', { params: { customerId: customerId || '' } }),
+  get: (id: string) => request<any>(`/payments/${id}`),
+  create: (data: any) => request<any>('/payments', { method: 'POST', body: data }),
+  allocate: (id: string, allocations: Array<{ invoiceId: string; amount: number }>) => request<any>(`/payments/${id}/allocations`, { method: 'POST', body: { allocations } }),
 };
 
 export const cashbookApi = {
   list: (filters?: { from?: string; to?: string; type?: 'income' | 'expense' }) => request<any[]>('/cashbook', { params: filters as any }),
-  create: (data: { type: 'income' | 'expense'; amount: number; category?: string; note?: string; referenceId?: string | null }) =>
+  create: (data: { type: 'income' | 'expense'; amount: number; category?: string; note?: string; referenceId?: string | null; accountId?: string | null }) =>
     request<any>('/cashbook', { method: 'POST', body: data }),
+};
+
+export const reportsApi = {
+  staff: (filters?: { from?: string; to?: string; userId?: string }) => request<any>('/reports/staff', { params: filters as any }),
 };
 
 export const stockMovementsApi = {
