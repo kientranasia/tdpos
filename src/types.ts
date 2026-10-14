@@ -121,7 +121,7 @@ export interface PriceList {
   id: string;
   tenantId: string;
   name: string;
-  customerType: 'all' | 'retail' | 'loyal';
+  customerType: string;
   isDefault: boolean;
   active: boolean;
   items?: PriceListItem[];

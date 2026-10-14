@@ -13,6 +13,7 @@ import { cashAccountsApi, priceListsApi } from '../lib/api';
 // Components
 import { POSCartItem } from '../components/pos/POSCartItem';
 import { POSInvoiceModal } from '../components/pos/POSInvoiceModal';
+import { BarcodeScannerModal } from '../components/barcode/BarcodeScannerModal';
 
 type CartLine = InvoiceItem & { maxStock: number; discountPercent?: number };
 type OrderDraft = {
@@ -60,7 +61,6 @@ export default function POS() {
   const [lastAddedProductId, setLastAddedProductId] = useState<string | null>(null);
   const [cartPulse, setCartPulse] = useState(false);
   const [showScannerModal, setShowScannerModal] = useState(false);
-  const [scanError, setScanError] = useState('');
   const [scanHint, setScanHint] = useState('');
   const [showSalesInfoModal, setShowSalesInfoModal] = useState(false);
   const [showMobileFilters, setShowMobileFilters] = useState(false);
@@ -93,13 +93,36 @@ export default function POS() {
     }
     const list = priceLists.find((item: any) => item.id === selectedPriceListId);
     const item = list?.items?.find((row: any) => row.productId === product.id && row.unitName === unitName);
-    return item ? Number(item.price) : Number(product.sellingPrice) * unitFactor;
+    if (item) return Number(item.price);
+    const baseItem = list?.items?.find((row: any) => row.productId === product.id && row.unitName === product.unit);
+    return (baseItem ? Number(baseItem.price) : Number(product.sellingPrice)) * unitFactor;
   };
 
+  const displayPrice = (product: Product) => resolvePrice(product, product.unit, 1);
+  const maxQuantityForUnit = (product: Product, factor: number) => Math.max(0, Math.floor(Number(product.availableStock ?? product.stock) / Math.max(1, factor)));
+  const totalForLine = (price: number, quantity: number, discountPercent = 0) => {
+    const rawTotal = price * quantity;
+    return Math.max(0, rawTotal - (rawTotal * Math.min(100, Math.max(0, Number(discountPercent) || 0))) / 100);
+  };
+
+  useEffect(() => {
+    const list = priceLists.find((item: any) => item.id === selectedPriceListId);
+    setCart((prev) => prev.map((item) => {
+      const product = products.find((row) => row.id === item.productId);
+      if (!product) return item;
+      const price = resolvePrice(product, item.unitName || product.unit, Number(item.unitFactor) || 1);
+      return {
+        ...item,
+        price,
+        priceListId: selectedPriceListId || undefined,
+        priceListName: list?.name,
+        maxStock: maxQuantityForUnit(product, Number(item.unitFactor) || 1),
+        total: totalForLine(price, item.quantity, item.discountPercent),
+      };
+    }));
+  }, [selectedPriceListId, priceLists, products]);
+
   const invoiceRef = useRef<HTMLDivElement>(null);
-  const scannerVideoRef = useRef<HTMLVideoElement>(null);
-  const scannerStreamRef = useRef<MediaStream | null>(null);
-  const scannerIntervalRef = useRef<number | null>(null);
   const scannerBufferRef = useRef('');
   const scannerLastKeyTimeRef = useRef(0);
   const addedPulseTimerRef = useRef<number | null>(null);
@@ -154,10 +177,10 @@ export default function POS() {
 
     switch (mobileSortKey) {
       case 'price_asc':
-        rows.sort((a, b) => a.sellingPrice - b.sellingPrice);
+        rows.sort((a, b) => displayPrice(a) - displayPrice(b));
         break;
       case 'price_desc':
-        rows.sort((a, b) => b.sellingPrice - a.sellingPrice);
+        rows.sort((a, b) => displayPrice(b) - displayPrice(a));
         break;
       case 'stock_asc':
         rows.sort((a, b) => a.stock - b.stock);
@@ -172,7 +195,7 @@ export default function POS() {
         break;
     }
     return rows;
-  }, [filteredProducts, mobileSortKey, mobileStockFilter]);
+  }, [filteredProducts, mobileSortKey, mobileStockFilter, priceLists, selectedPriceListId]);
 
   const filteredCustomers = useMemo(() => {
     if (!customerSearchTerm) return [];
@@ -225,7 +248,7 @@ export default function POS() {
         wasAdded = true;
         return prev.map(item => 
           item.productId === product.id 
-            ? { ...item, quantity: item.quantity + 1, total: (item.quantity + 1) * item.price }
+            ? { ...item, quantity: item.quantity + 1, total: totalForLine(item.price, item.quantity + 1, item.discountPercent) }
             : item
         );
       }
@@ -265,7 +288,13 @@ export default function POS() {
     const unit = product ? productUnits(product).find((row) => row.name === unitName) : null;
     if (!product || !unit) return;
     const price = resolvePrice(product, unit.name, Number(unit.factor) || 1);
-    setCart((prev) => prev.map((item) => item.productId === productId ? { ...item, unitName: unit.name, unitFactor: Number(unit.factor) || 1, price, total: item.quantity * price } : item));
+    const unitFactor = Number(unit.factor) || 1;
+    const maxStock = maxQuantityForUnit(product, unitFactor);
+    setCart((prev) => prev.map((item) => {
+      if (item.productId !== productId) return item;
+      const quantity = Math.min(item.quantity, maxStock);
+      return { ...item, unitName: unit.name, unitFactor, quantity, maxStock, price, total: totalForLine(price, quantity, item.discountPercent) };
+    }).filter((item) => item.quantity > 0));
   };
 
   const updateQuantity = (productId: string, delta: number) => {
@@ -274,7 +303,7 @@ export default function POS() {
         const newQ = item.quantity + delta;
         if (newQ <= 0) return item; 
         if (newQ > item.maxStock) return item;
-        return { ...item, quantity: newQ, total: newQ * item.price };
+        return { ...item, quantity: newQ, total: totalForLine(item.price, newQ, item.discountPercent) };
       }
       return item;
     }).filter(item => item.quantity > 0));
@@ -298,9 +327,7 @@ export default function POS() {
     setCart((prev) => prev.map((item) => {
       if (item.productId !== productId) return item;
       const pct = Math.min(100, Math.max(0, Number(discountPercent) || 0));
-      const rawTotal = item.price * item.quantity;
-      const discountedTotal = rawTotal - (rawTotal * pct) / 100;
-      return { ...item, discountPercent: pct, total: Math.max(0, discountedTotal) };
+      return { ...item, discountPercent: pct, total: totalForLine(item.price, item.quantity, pct) };
     }));
   };
 
@@ -480,78 +507,9 @@ export default function POS() {
     window.print();
   };
 
-  const stopCameraScanner = () => {
-    if (scannerIntervalRef.current) {
-      window.clearInterval(scannerIntervalRef.current);
-      scannerIntervalRef.current = null;
-    }
-    if (scannerStreamRef.current) {
-      scannerStreamRef.current.getTracks().forEach((t) => t.stop());
-      scannerStreamRef.current = null;
-    }
-  };
-
   const closeScannerModal = () => {
-    stopCameraScanner();
     setShowScannerModal(false);
   };
-
-  const openCameraScanner = async () => {
-    setScanError('');
-    setScanHint('');
-    if (!('BarcodeDetector' in window)) {
-      setScanError('Thiết bị chưa hỗ trợ BarcodeDetector. Vui lòng dùng máy quét mã vạch hoặc Chrome mới.');
-      setShowScannerModal(true);
-      return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } }
-      });
-      scannerStreamRef.current = stream;
-      setShowScannerModal(true);
-      window.setTimeout(() => {
-        if (scannerVideoRef.current) {
-          scannerVideoRef.current.srcObject = stream;
-          void scannerVideoRef.current.play();
-        }
-      }, 40);
-    } catch {
-      setScanError('Không mở được camera. Hãy cấp quyền camera hoặc dùng máy quét mã vạch.');
-      setShowScannerModal(true);
-    }
-  };
-
-  useEffect(() => {
-    if (!showScannerModal || !scannerVideoRef.current || !('BarcodeDetector' in window)) return;
-    const detector = new (window as any).BarcodeDetector({
-      formats: ['ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e', 'qr_code'],
-    });
-
-    scannerIntervalRef.current = window.setInterval(async () => {
-      try {
-        if (!scannerVideoRef.current) return;
-        const barcodes = await detector.detect(scannerVideoRef.current);
-        if (barcodes?.length) {
-          const code = barcodes[0]?.rawValue || '';
-          if (code) {
-            handleScannedCode(code);
-            closeScannerModal();
-          }
-        }
-      } catch {
-        // ignore frame-level detect error
-      }
-    }, 320);
-
-    return () => {
-      if (scannerIntervalRef.current) {
-        window.clearInterval(scannerIntervalRef.current);
-        scannerIntervalRef.current = null;
-      }
-    };
-  }, [showScannerModal, products]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -585,8 +543,6 @@ export default function POS() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [products]);
-
-  useEffect(() => () => stopCameraScanner(), []);
 
   if (step === 'success') {
     return (
@@ -778,33 +734,16 @@ export default function POS() {
 
   return (
     <div className="erp-compact flex flex-col h-full lg:flex-row bg-slate-50 overflow-y-auto lg:overflow-hidden font-sans relative">
-      {showScannerModal && (
-        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-slate-900/70 p-4">
-          <div className="w-full max-w-md rounded-lg bg-white border border-slate-200 shadow-2xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-base font-semibold text-slate-900">Quét mã vạch</h3>
-              <button onClick={closeScannerModal} className="text-slate-400 hover:text-slate-700">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="p-4 space-y-3">
-              <div className="rounded-lg bg-slate-950 overflow-hidden aspect-video flex items-center justify-center">
-                {scanError ? (
-                  <div className="px-4 text-center text-sm text-rose-300">{scanError}</div>
-                ) : (
-                  <video ref={scannerVideoRef} className="h-full w-full object-cover" muted playsInline />
-                )}
-              </div>
-              <p className="text-xs text-slate-500">
-                Đưa mã vạch vào giữa khung để tự động thêm vào giỏ.
-              </p>
-              <Button variant="outline" className="w-full" onClick={closeScannerModal}>
-                Đóng
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <BarcodeScannerModal
+        open={showScannerModal}
+        title="Quét mã để thêm vào giỏ"
+        description="Đưa mã vạch vào giữa khung để tự động thêm sản phẩm vào giỏ hàng."
+        onClose={closeScannerModal}
+        onDetected={(code) => {
+          setScanHint('');
+          handleScannedCode(code);
+        }}
+      />
 
       {/* Product List Section */}
       <div className="w-full lg:flex-1 flex flex-col min-h-0 border-b lg:border-b-0 lg:border-r border-slate-200/50 bg-slate-50 relative shrink-0">
@@ -852,7 +791,10 @@ export default function POS() {
               <Plus className="h-5 w-5" />
             </Button>
             <Button
-              onClick={openCameraScanner}
+              onClick={() => {
+                setScanHint('');
+                setShowScannerModal(true);
+              }}
               variant="outline"
               className="h-10 sm:h-11 px-3 sm:px-4 rounded-lg border-slate-200 bg-white text-slate-700"
               title="Quét bằng camera"
@@ -935,6 +877,7 @@ export default function POS() {
             {mobileVisibleProducts.map((product) => {
               const inCart = cart.find((line) => line.productId === product.id);
               const available = Number(product.availableStock ?? product.stock);
+              const price = displayPrice(product);
               const isOutOfStock = available <= 0;
               const isLowStock = available > 0 && available <= product.lowStockThreshold;
               return (
@@ -951,7 +894,8 @@ export default function POS() {
                       <p className="line-clamp-1 text-sm font-medium text-slate-900">{product.name}</p>
                       <p className="mt-0.5 text-[11px] text-slate-500">Chọn gợi ý bán</p>
                       <div className="mt-1 flex items-center gap-1.5">
-                        <span className="text-[18px] leading-none font-semibold text-sky-700 tabular-nums">{formatCurrency(product.sellingPrice)}</span>
+                        <span className="text-[18px] leading-none font-semibold text-sky-700 tabular-nums">{formatCurrency(price)}</span>
+                        <span className="text-[11px] text-slate-400">/{product.unit}</span>
                         <span className={`text-[11px] ${isOutOfStock ? 'text-rose-600' : isLowStock ? 'text-amber-600' : 'text-slate-500'}`}>
                           {isOutOfStock ? 'Hết hàng' : `Tồn: ${available}`}
                         </span>
@@ -999,6 +943,7 @@ export default function POS() {
             {filteredProducts.map(product => {
               const inCart = cart.find((line) => line.productId === product.id);
               const available = Number(product.availableStock ?? product.stock);
+              const price = displayPrice(product);
               const out = available <= 0;
               const low = available > 0 && available <= product.lowStockThreshold;
               return (
@@ -1007,7 +952,7 @@ export default function POS() {
                   <span className="min-w-0 truncate font-medium text-slate-800">{product.name}</span>
                   <span className="text-slate-500">{product.unit}</span>
                   <span className={`text-right tabular-nums ${out ? 'text-rose-600' : low ? 'text-amber-600' : 'text-slate-700'}`}>{out ? 'Hết' : available}</span>
-                  <span className="text-right font-semibold tabular-nums text-sky-700">{formatCurrency(product.sellingPrice)}</span>
+                  <span className="text-right font-semibold tabular-nums text-sky-700">{formatCurrency(price)}</span>
                   <span className={`flex h-6 w-6 items-center justify-center rounded-md ${inCart ? 'bg-sky-600 text-white' : 'border border-slate-200 text-slate-500'}`}>{inCart ? inCart.quantity : '+'}</span>
                 </button>
               );

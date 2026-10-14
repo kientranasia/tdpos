@@ -19,7 +19,7 @@ export const POSCartItem = ({ item, onUpdateQuantity, onRemove, onUpdateDiscount
       <div className="flex items-center gap-2">
         <div className="font-medium text-slate-900 flex-1 min-w-0 leading-tight text-xs">
           <p className="truncate">{item.productName}</p>
-          <div className="text-[11px] text-slate-500 mt-1 leading-none">{formatCurrency(item.price)} / đơn vị</div>
+          <div className="text-[11px] text-slate-500 mt-1 leading-none">{formatCurrency(item.price)} / {item.unitName || 'đơn vị'}</div>
         </div>
         <button 
           onClick={() => onRemove(item.productId)} 

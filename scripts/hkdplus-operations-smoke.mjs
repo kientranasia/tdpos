@@ -15,21 +15,21 @@ const assert = (condition, message) => { if (!condition) throw new Error(message
 const login = await request('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
 assert(login.response.ok && login.body?.token, 'Đăng nhập operations smoke thất bại');
 const auth = { Authorization: `Bearer ${login.body.token}` };
-const created = { priceListId: null, standardId: null, comboId: null, supplierId: null, purchaseId: null, paidPurchaseId: null, invoiceId: null, purchaseReturnId: null, paidPurchaseReturnId: null, salesReturnId: null, settlementId: null };
+const created = { priceListId: null, standardId: null, comboId: null, supplierId: null, purchaseId: null, paidPurchaseId: null, invoiceId: null, unitInvoiceId: null, purchaseReturnId: null, paidPurchaseReturnId: null, salesReturnId: null, settlementId: null };
 
 const cleanup = () => {
   const db = new Database(dbPath); db.pragma('foreign_keys = OFF');
   const del = (table, column, value) => { if (value) db.prepare(`DELETE FROM ${table} WHERE ${column} = ?`).run(value); };
-  del('cashbook_entries', 'reference_id', created.salesReturnId); del('cashbook_entries', 'reference_id', created.invoiceId); del('cashbook_entries', 'reference_id', created.purchaseId);
+  del('cashbook_entries', 'reference_id', created.salesReturnId); del('cashbook_entries', 'reference_id', created.invoiceId); del('cashbook_entries', 'reference_id', created.unitInvoiceId); del('cashbook_entries', 'reference_id', created.purchaseId);
   del('cashbook_entries', 'reference_id', created.settlementId); del('cashbook_entries', 'reference_id', created.paidPurchaseId);
-  del('stock_movements', 'reference_id', created.salesReturnId); del('stock_movements', 'reference_id', created.purchaseReturnId); del('stock_movements', 'reference_id', created.invoiceId); del('stock_movements', 'reference_id', created.purchaseId);
+  del('stock_movements', 'reference_id', created.salesReturnId); del('stock_movements', 'reference_id', created.purchaseReturnId); del('stock_movements', 'reference_id', created.invoiceId); del('stock_movements', 'reference_id', created.unitInvoiceId); del('stock_movements', 'reference_id', created.purchaseId);
   del('stock_movements', 'reference_id', created.paidPurchaseReturnId); del('stock_movements', 'reference_id', created.paidPurchaseId);
   del('sales_return_items', 'return_id', created.salesReturnId); del('sales_returns', 'id', created.salesReturnId);
   del('purchase_return_items', 'return_id', created.purchaseReturnId); del('purchase_returns', 'id', created.purchaseReturnId);
   del('purchase_return_items', 'return_id', created.paidPurchaseReturnId); del('purchase_returns', 'id', created.paidPurchaseReturnId);
   del('supplier_credit_ledger', 'purchase_return_id', created.purchaseReturnId); del('supplier_credit_ledger', 'purchase_return_id', created.paidPurchaseReturnId); del('supplier_credit_ledger', 'purchase_id', created.purchaseId); del('supplier_credit_ledger', 'purchase_id', created.paidPurchaseId); del('supplier_credit_ledger', 'id', created.settlementId);
   del('payable_ledger', 'purchase_id', created.purchaseId); del('debt_ledger', 'invoice_id', created.invoiceId);
-  del('stock_reservations', 'invoice_id', created.invoiceId); del('invoice_items', 'invoice_id', created.invoiceId); del('invoices', 'id', created.invoiceId);
+  del('stock_reservations', 'invoice_id', created.invoiceId); del('stock_reservations', 'invoice_id', created.unitInvoiceId); del('invoice_items', 'invoice_id', created.invoiceId); del('invoice_items', 'invoice_id', created.unitInvoiceId); del('invoices', 'id', created.invoiceId); del('invoices', 'id', created.unitInvoiceId);
   del('purchase_items', 'purchase_id', created.purchaseId); del('purchase_items', 'purchase_id', created.paidPurchaseId); del('purchases', 'id', created.purchaseId); del('purchases', 'id', created.paidPurchaseId);
   del('product_components', 'combo_product_id', created.comboId); del('product_units', 'product_id', created.standardId);
   del('price_list_items', 'price_list_id', created.priceListId); del('price_lists', 'id', created.priceListId);
@@ -53,22 +53,29 @@ try {
   assert(units.response.ok && units.body.some((unit) => unit.name === 'Hộp' && Number(unit.factor) === 20), 'Không lưu được đơn vị quy đổi');
   const priceList = await request('/api/price-lists', { method: 'POST', headers: auth, body: JSON.stringify({ name: `OPS-${Date.now()}`, customerType: 'retail', active: true }) });
   assert(priceList.response.status === 201, `Tạo bảng giá thất bại: ${JSON.stringify(priceList.body)}`); created.priceListId = priceList.body.id;
-  const savePrices = await request(`/api/price-lists/${created.priceListId}/items`, { method: 'PUT', headers: auth, body: JSON.stringify([{ productId: created.standardId, unitName: 'Cây', unitFactor: 1, price: 60 }]) });
-  assert(savePrices.response.ok, 'Không lưu được giá theo bảng giá');
+  const savePrices = await request(`/api/price-lists/${created.priceListId}/items`, { method: 'PUT', headers: auth, body: JSON.stringify({ items: [{ productId: created.standardId, unitName: 'Cây', unitFactor: 1, price: 60 }, { productId: created.standardId, unitName: 'Hộp', unitFactor: 20, price: 1000 }] }) });
+  assert(savePrices.response.ok && savePrices.body.some((item) => item.unitName === 'Hộp' && Number(item.price) === 1000), 'Không lưu được giá riêng theo đơn vị');
   const components = await request(`/api/products/${created.comboId}/components`, { method: 'PUT', headers: auth, body: JSON.stringify({ components: [{ componentProductId: created.standardId, quantity: 2 }] }) });
   assert(components.response.ok, `Không lưu được thành phần combo: ${JSON.stringify(components.body)}`);
 
   const supplier = await request('/api/suppliers', { method: 'POST', headers: auth, body: JSON.stringify({ code: `OPS-NCC-${Date.now()}`, name: 'NCC operations smoke', phone: '0900000000' }) });
   assert(supplier.response.status === 201, 'Tạo NCC operations smoke thất bại'); created.supplierId = supplier.body.id;
-  const purchase = await request('/api/purchases', { method: 'POST', headers: auth, body: JSON.stringify({ supplierId: created.supplierId, paymentMethod: 'payable', items: [{ productId: created.standardId, quantity: 1, unitName: 'Hộp', unitFactor: 20, price: 1000 }] }) });
-  assert(purchase.response.status === 201, `Nhập 1 hộp thất bại: ${JSON.stringify(purchase.body)}`); created.purchaseId = purchase.body.id;
+  const purchase = await request('/api/purchases', { method: 'POST', headers: auth, body: JSON.stringify({ supplierId: created.supplierId, paymentMethod: 'payable', items: [{ productId: created.standardId, quantity: 2, unitName: 'Hộp', unitFactor: 20, price: 1000 }] }) });
+  assert(purchase.response.status === 201, `Nhập 2 hộp thất bại: ${JSON.stringify(purchase.body)}`); created.purchaseId = purchase.body.id;
   const afterPurchase = await request(`/api/products/${created.standardId}`, { headers: auth });
-  assert(Number(afterPurchase.body.stock) === 20, `Tồn sau nhập hộp phải là 20, nhận ${afterPurchase.body.stock}`);
+  assert(Number(afterPurchase.body.stock) === 40, `Tồn sau nhập 2 hộp phải là 40, nhận ${afterPurchase.body.stock}`);
 
   const invoice = await request('/api/invoices', { method: 'POST', headers: auth, body: JSON.stringify({ customerId: null, totalAmount: 120, discount: 0, taxAmount: 0, finalAmount: 120, paidAmount: 120, debtAmount: 0, paymentMethod: 'cash', accountId: cashAccount.id, status: 'completed', workflowStatus: 'closed', paymentStatus: 'paid', items: [{ productId: created.comboId, productName: 'Combo operations smoke', quantity: 1, priceListId: created.priceListId }] }) });
   assert(invoice.response.status === 201, `Bán combo thất bại: ${JSON.stringify(invoice.body)}`); created.invoiceId = invoice.body.id;
   const afterComboSale = await request(`/api/products/${created.standardId}`, { headers: auth });
-  assert(Number(afterComboSale.body.stock) === 18, `Tồn sau bán combo phải là 18, nhận ${afterComboSale.body.stock}`);
+  assert(Number(afterComboSale.body.stock) === 38, `Tồn sau bán combo phải là 38, nhận ${afterComboSale.body.stock}`);
+
+  const unitInvoice = await request('/api/invoices', { method: 'POST', headers: auth, body: JSON.stringify({ customerId: null, totalAmount: 1000, discount: 0, taxAmount: 0, finalAmount: 1000, paidAmount: 1000, debtAmount: 0, paymentMethod: 'cash', accountId: cashAccount.id, status: 'completed', workflowStatus: 'closed', paymentStatus: 'paid', items: [{ productId: created.standardId, productName: 'Bút operations smoke', quantity: 1, unitName: 'Hộp', unitFactor: 20, priceListId: created.priceListId }] }) });
+  assert(unitInvoice.response.status === 201, `Bán theo hộp thất bại: ${JSON.stringify(unitInvoice.body)}`); created.unitInvoiceId = unitInvoice.body.id;
+  const unitInvoiceDetail = await request(`/api/invoices/${created.unitInvoiceId}`, { headers: auth });
+  assert(unitInvoiceDetail.response.ok && Number(unitInvoiceDetail.body.items?.[0]?.price) === 1000, `Giá bán theo hộp phải là 1000, nhận ${unitInvoiceDetail.body.items?.[0]?.price}`);
+  const afterBoxSale = await request(`/api/products/${created.standardId}`, { headers: auth });
+  assert(Number(afterBoxSale.body.stock) === 18, `Tồn sau bán 1 hộp phải là 18, nhận ${afterBoxSale.body.stock}`);
 
   const invoiceDetail = await request(`/api/invoices/${created.invoiceId}`, { headers: auth });
   const salesReturn = await request(`/api/invoices/${created.invoiceId}/returns`, { method: 'POST', headers: auth, body: JSON.stringify({ items: [{ invoiceItemId: invoiceDetail.body.items?.[0]?.id, quantity: 1 }], refundAccountId: cashAccount.id }) });

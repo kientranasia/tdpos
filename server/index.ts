@@ -1573,8 +1573,9 @@ const priceListForCustomer = (tenantId: string, customerType?: string, requested
     const requested = db.select().from(schema.priceLists).where(and(eq(schema.priceLists.id, requestedId), eq(schema.priceLists.tenantId, tenantId), eq(schema.priceLists.active, true))).get();
     if (requested) return requested;
   }
-  const matching = db.select().from(schema.priceLists).where(and(eq(schema.priceLists.tenantId, tenantId), eq(schema.priceLists.customerType, customerType === 'loyal' ? 'loyal' : customerType === 'retail' ? 'retail' : 'all'), eq(schema.priceLists.active, true))).all();
-  return matching.find((list) => list.customerType !== 'all') || matching.find((list) => list.isDefault) || ensureDefaultPriceList(tenantId);
+  const normalizedCustomerType = String(customerType || 'all').trim() || 'all';
+  const matching = db.select().from(schema.priceLists).where(and(eq(schema.priceLists.tenantId, tenantId), eq(schema.priceLists.customerType, normalizedCustomerType), eq(schema.priceLists.active, true))).all();
+  return matching.find((list) => list.customerType === normalizedCustomerType && normalizedCustomerType !== 'all') || matching.find((list) => list.isDefault) || ensureDefaultPriceList(tenantId);
 };
 
 const priceForProduct = (tenantId: string, product: any, unitName?: string, unitFactor = 1, requestedPriceListId?: string, customerType?: string, seen = new Set<string>()): { price: number; priceList: any } => {
@@ -1592,7 +1593,10 @@ const priceForProduct = (tenantId: string, product: any, unitName?: string, unit
   }
   const resolvedUnit = unitForProduct(tenantId, product, unitName, unitFactor);
   const item = priceList ? db.select().from(schema.priceListItems).where(and(eq(schema.priceListItems.priceListId, priceList.id), eq(schema.priceListItems.productId, product.id), eq(schema.priceListItems.unitName, resolvedUnit.name))).get() : null;
-  return { price: item ? Number(item.price) : Number(product.sellingPrice) * resolvedUnit.factor, priceList };
+  if (item) return { price: Number(item.price), priceList };
+  const baseItem = priceList ? db.select().from(schema.priceListItems).where(and(eq(schema.priceListItems.priceListId, priceList.id), eq(schema.priceListItems.productId, product.id), eq(schema.priceListItems.unitName, product.unit))).get() : null;
+  const basePrice = baseItem ? Number(baseItem.price) : Number(product.sellingPrice);
+  return { price: basePrice * resolvedUnit.factor, priceList };
 };
 
 app.get('/api/invoices', (req, res) => {

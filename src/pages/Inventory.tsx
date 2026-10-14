@@ -8,6 +8,7 @@ import { Product } from '../types';
 import { v4 as uuid } from 'uuid';
 import { productsApi, stockMovementsApi, priceListsApi, productUnitsApi, productComponentsApi } from '../lib/api';
 import * as XLSX from 'xlsx';
+import { BarcodeScannerModal } from '../components/barcode/BarcodeScannerModal';
 
 type ImportPreviewRow = {
   rowNumber: number;
@@ -46,7 +47,6 @@ export default function Inventory() {
   const [importPreviewRows, setImportPreviewRows] = useState<ImportPreviewRow[]>([]);
   const [selectedImportRows, setSelectedImportRows] = useState<number[]>([]);
   const [showBarcodeScannerModal, setShowBarcodeScannerModal] = useState(false);
-  const [barcodeScannerError, setBarcodeScannerError] = useState('');
   const [showPricingModal, setShowPricingModal] = useState(false);
   const [priceLists, setPriceLists] = useState<any[]>([]);
   const [selectedPriceListId, setSelectedPriceListId] = useState('');
@@ -57,9 +57,6 @@ export default function Inventory() {
   const [newPriceList, setNewPriceList] = useState({ name: '', customerType: 'all' });
   const [pricingMessage, setPricingMessage] = useState('');
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
-  const barcodeVideoRef = React.useRef<HTMLVideoElement | null>(null);
-  const barcodeStreamRef = React.useRef<MediaStream | null>(null);
-  const barcodeScanIntervalRef = React.useRef<number | null>(null);
 
   const unitOptions = useMemo(() => {
     const defaults = ['Cái', 'Chai', 'Thùng', 'Hộp', 'Gói', 'Kg', 'Lít'];
@@ -81,6 +78,38 @@ export default function Inventory() {
     imageUrl: '',
     productType: 'standard' as 'standard' | 'combo'
   });
+
+  const priceDraftKey = (productId: string, unitName: string) => `${productId}::${unitName}`;
+  const baseUnit = (product: Product) => ({ name: product.unit, factor: 1, barcode: product.barcode || '' });
+  const unitsForPricing = (product: Product, selectedProductId = pricingProductId, selectedUnitDrafts = unitDrafts) => {
+    const extraUnits = product.id === selectedProductId
+      ? selectedUnitDrafts
+      : (product.units || []).filter((unit) => unit.name !== product.unit || Number(unit.factor) !== 1).map((unit) => ({ name: unit.name, factor: Number(unit.factor) || 1, barcode: unit.barcode || '' }));
+    const seen = new Set<string>();
+    return [baseUnit(product), ...extraUnits].filter((unit) => {
+      if (!unit.name.trim() || seen.has(unit.name.trim())) return false;
+      seen.add(unit.name.trim());
+      return true;
+    });
+  };
+  const fallbackUnitPrice = (product: Product, unit: { name: string; factor: number }, list?: any, seen = new Set<string>()): number => {
+    if (product.productType === 'combo') {
+      if (seen.has(product.id)) return 0;
+      const comboPrice = (product.components || []).reduce((sum, component) => {
+        const componentProduct = products.find((item) => item.id === component.componentProductId);
+        return sum + (componentProduct ? Number(component.quantity) * fallbackUnitPrice(componentProduct, baseUnit(componentProduct), list, new Set([...seen, product.id])) : 0);
+      }, 0);
+      return comboPrice * (Number(unit.factor) || 1);
+    }
+    const saved = list?.items?.find((row: any) => row.productId === product.id && row.unitName === unit.name);
+    return Number(saved?.price ?? (Number(product.sellingPrice) * (Number(unit.factor) || 1)));
+  };
+  const buildPriceDrafts = (list?: any, selectedProductId = pricingProductId, selectedUnitDrafts = unitDrafts) => Object.fromEntries(
+    products.flatMap((product) => unitsForPricing(product, selectedProductId, selectedUnitDrafts).map((unit) => [
+      priceDraftKey(product.id, unit.name),
+      fallbackUnitPrice(product, unit, list),
+    ])),
+  );
 
   const [stockUpdateForm, setUpdateForm] = useState({
     quantity: 0,
@@ -241,16 +270,19 @@ export default function Inventory() {
       const list = lists.find((item: any) => item.isDefault) || lists[0];
       setSelectedPriceListId(list?.id || '');
       const firstProduct = products[0];
-      setPricingProductId(firstProduct?.id || '');
-      setPriceDrafts(Object.fromEntries(products.map((product) => {
-        const item = list?.items?.find((row: any) => row.productId === product.id && row.unitName === product.unit);
-        return [product.id, Number(item?.price ?? product.sellingPrice)];
-      })));
+      const firstProductId = firstProduct?.id || '';
       if (firstProduct) {
         const [units, components] = await Promise.all([productUnitsApi.list(firstProduct.id), productComponentsApi.list(firstProduct.id)]);
-        setUnitDrafts(units.filter((unit: any) => unit.name !== firstProduct.unit).map((unit: any) => ({ name: unit.name, factor: Number(unit.factor), barcode: unit.barcode || '' })));
+        const nextUnitDrafts = units.filter((unit: any) => unit.name !== firstProduct.unit).map((unit: any) => ({ name: unit.name, factor: Number(unit.factor), barcode: unit.barcode || '' }));
+        setUnitDrafts(nextUnitDrafts);
         setComponentDrafts(components.map((component: any) => ({ componentProductId: component.componentProductId, quantity: Number(component.quantity) })));
+        setPriceDrafts(buildPriceDrafts(list, firstProductId, nextUnitDrafts));
+      } else {
+        setUnitDrafts([]);
+        setComponentDrafts([]);
+        setPriceDrafts(buildPriceDrafts(list, '', []));
       }
+      setPricingProductId(firstProductId);
       setShowPricingModal(true);
     } catch (err) {
       setPricingMessage(err instanceof Error ? err.message : 'Không thể tải cấu hình bán hàng.');
@@ -273,19 +305,20 @@ export default function Inventory() {
   const changePricingList = (listId: string) => {
     setSelectedPriceListId(listId);
     const list = priceLists.find((item) => item.id === listId);
-    setPriceDrafts(Object.fromEntries(products.map((product) => {
-      const item = list?.items?.find((row: any) => row.productId === product.id && row.unitName === product.unit);
-      return [product.id, Number(item?.price ?? product.sellingPrice)];
-    })));
+    setPriceDrafts(buildPriceDrafts(list));
   };
 
   const savePricing = async () => {
     const selectedList = priceLists.find((list) => list.id === selectedPriceListId);
-    const items = products.map((product) => ({ productId: product.id, unitName: product.unit, unitFactor: 1, price: Number(priceDrafts[product.id] ?? product.sellingPrice) }));
+    const items = products.flatMap((product) => unitsForPricing(product).map((unit) => ({
+      productId: product.id,
+      unitName: unit.name,
+      unitFactor: Number(unit.factor) || 1,
+      price: Number(priceDrafts[priceDraftKey(product.id, unit.name)] ?? fallbackUnitPrice(product, unit, selectedList)),
+    })));
     try {
       if (selectedList) {
-        const untouched = (selectedList.items || []).filter((row: any) => !products.some((product) => product.id === row.productId && row.unitName === product.unit));
-        await priceListsApi.saveItems(selectedList.id, [...untouched, ...items]);
+        await priceListsApi.saveItems(selectedList.id, items);
       }
       const selectedProduct = products.find((product) => product.id === pricingProductId);
       if (selectedProduct) {
@@ -572,75 +605,9 @@ export default function Inventory() {
     setSelectedImportRows([]);
   };
 
-  const stopBarcodeScanner = () => {
-    if (barcodeScanIntervalRef.current) {
-      window.clearInterval(barcodeScanIntervalRef.current);
-      barcodeScanIntervalRef.current = null;
-    }
-    if (barcodeStreamRef.current) {
-      barcodeStreamRef.current.getTracks().forEach((track) => track.stop());
-      barcodeStreamRef.current = null;
-    }
-  };
-
   const closeBarcodeScannerModal = () => {
-    stopBarcodeScanner();
     setShowBarcodeScannerModal(false);
   };
-
-  const openBarcodeScanner = async () => {
-    setBarcodeScannerError('');
-    if (!('BarcodeDetector' in window)) {
-      setBarcodeScannerError('Thiết bị chưa hỗ trợ BarcodeDetector. Vui lòng nhập tay hoặc dùng trình duyệt mới.');
-      setShowBarcodeScannerModal(true);
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } },
-      });
-      barcodeStreamRef.current = stream;
-      setShowBarcodeScannerModal(true);
-      window.setTimeout(() => {
-        if (barcodeVideoRef.current) {
-          barcodeVideoRef.current.srcObject = stream;
-          void barcodeVideoRef.current.play();
-        }
-      }, 50);
-    } catch {
-      setBarcodeScannerError('Không mở được camera. Hãy cấp quyền camera rồi thử lại.');
-      setShowBarcodeScannerModal(true);
-    }
-  };
-
-  useEffect(() => {
-    if (!showBarcodeScannerModal || !barcodeVideoRef.current || !('BarcodeDetector' in window)) return;
-    const detector = new BarcodeDetector({
-      formats: ['ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e', 'qr_code'],
-    });
-    barcodeScanIntervalRef.current = window.setInterval(async () => {
-      if (!barcodeVideoRef.current) return;
-      try {
-        const codes = await detector.detect(barcodeVideoRef.current);
-        const code = codes?.[0]?.rawValue?.trim();
-        if (code) {
-          setProductForm((prev) => ({ ...prev, barcode: code }));
-          closeBarcodeScannerModal();
-        }
-      } catch {
-        // Ignore frame decode errors.
-      }
-    }, 300);
-
-    return () => {
-      if (barcodeScanIntervalRef.current) {
-        window.clearInterval(barcodeScanIntervalRef.current);
-        barcodeScanIntervalRef.current = null;
-      }
-    };
-  }, [showBarcodeScannerModal]);
-
-  useEffect(() => () => stopBarcodeScanner(), []);
 
   const downloadTemplates = () => {
     const templateRows = [
@@ -767,31 +734,15 @@ export default function Inventory() {
 
   return (
     <div className="flex h-full flex-col bg-slate-50 animate-in fade-in duration-500 overflow-hidden relative">
-      {showBarcodeScannerModal && (
-        <div className="fixed inset-0 z-[140] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-2xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-base font-semibold text-slate-900">Quét mã vạch sản phẩm</h3>
-              <button onClick={closeBarcodeScannerModal} className="text-slate-400 hover:text-slate-700">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="p-4 space-y-3">
-              <div className="rounded-lg bg-slate-950 overflow-hidden aspect-video flex items-center justify-center">
-                {barcodeScannerError ? (
-                  <div className="px-4 text-center text-sm text-rose-300">{barcodeScannerError}</div>
-                ) : (
-                  <video ref={barcodeVideoRef} className="h-full w-full object-cover" muted playsInline />
-                )}
-              </div>
-              <p className="text-xs text-slate-500">Đưa mã vạch vào giữa khung, hệ thống sẽ tự điền vào trường mã vạch.</p>
-              <Button variant="outline" className="w-full" onClick={closeBarcodeScannerModal}>
-                Đóng
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <BarcodeScannerModal
+        open={showBarcodeScannerModal}
+        title="Quét mã sản phẩm"
+        onClose={closeBarcodeScannerModal}
+        onDetected={(code) => {
+          setProductForm((prev) => ({ ...prev, barcode: code }));
+          closeBarcodeScannerModal();
+        }}
+      />
 
       {showImportPreviewModal && (
         <div className="fixed inset-0 z-[130] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
@@ -1031,7 +982,7 @@ export default function Inventory() {
                         />
                         <button
                           type="button"
-                          onClick={openBarcodeScanner}
+                          onClick={() => setShowBarcodeScannerModal(true)}
                           className="absolute right-2 top-1/2 -translate-y-1/2 h-8 px-2.5 rounded-md bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 flex items-center gap-1 text-xs font-medium"
                         >
                           <Camera className="h-3.5 w-3.5" />
@@ -1182,12 +1133,13 @@ export default function Inventory() {
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                   <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Bảng giá</p>
                   <select value={selectedPriceListId} onChange={(e) => changePricingList(e.target.value)} className="h-10 w-full rounded-md border border-slate-200 bg-white px-2 text-sm">
-                    {priceLists.map((list) => <option key={list.id} value={list.id}>{list.name} · {list.customerType === 'loyal' ? 'Thân thiết' : list.customerType === 'retail' ? 'Bán lẻ' : 'Mặc định'}</option>)}
+                    {priceLists.map((list) => <option key={list.id} value={list.id}>{list.name} · {list.customerType === 'loyal' ? 'Thân thiết' : list.customerType === 'retail' ? 'Bán lẻ' : list.customerType === 'all' ? 'Mặc định' : list.customerType}</option>)}
                   </select>
                   <div className="mt-3 flex gap-2">
                     <Input value={newPriceList.name} onChange={(e) => setNewPriceList({ ...newPriceList, name: e.target.value })} placeholder="Bảng giá mới" className="h-9 text-sm" />
                     <Button onClick={createPriceList} className="h-9 shrink-0 px-3">Tạo</Button>
                   </div>
+                  <p className="mt-2 text-[11px] leading-4 text-slate-500">Tên bảng giá là loại giá sẽ chọn khi bán, ví dụ: Chung, Cơ quan, Sỉ, Y tế.</p>
                   <select value={newPriceList.customerType} onChange={(e) => setNewPriceList({ ...newPriceList, customerType: e.target.value })} className="mt-2 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs">
                     <option value="all">Mọi nhóm khách</option><option value="retail">Bán lẻ</option><option value="loyal">Khách thân thiết</option>
                   </select>
@@ -1202,23 +1154,27 @@ export default function Inventory() {
               </div>
               <div className="space-y-5">
                 <div>
-                  <div className="mb-2 flex items-center justify-between"><h3 className="font-semibold text-slate-900">Giá theo sản phẩm · {priceLists.find((list) => list.id === selectedPriceListId)?.name || '—'}</h3><span className="text-xs text-slate-500">Giá theo đơn vị cơ sở</span></div>
+                  <div className="mb-2 flex items-center justify-between"><h3 className="font-semibold text-slate-900">Giá theo sản phẩm · {priceLists.find((list) => list.id === selectedPriceListId)?.name || '—'}</h3><span className="text-xs text-slate-500">Mỗi đơn vị có thể có giá riêng</span></div>
                   <div className="max-h-64 overflow-auto rounded-lg border border-slate-200">
                     <table className="w-full text-sm"><thead className="sticky top-0 bg-slate-50 text-left text-xs text-slate-500"><tr><th className="p-2">Sản phẩm</th><th className="p-2">Đơn vị</th><th className="p-2 text-right">Giá bán</th></tr></thead><tbody className="divide-y divide-slate-100">
-                      {products.map((product) => <tr key={product.id}><td className="p-2 font-medium text-slate-800">{product.name}</td><td className="p-2 text-slate-500">{product.unit}</td><td className="p-2"><Input type="number" min="0" value={priceDrafts[product.id] ?? product.sellingPrice} onChange={(e) => setPriceDrafts({ ...priceDrafts, [product.id]: Number(e.target.value) || 0 })} className="ml-auto h-9 max-w-36 text-right" /></td></tr>)}
+                      {products.flatMap((product) => unitsForPricing(product).map((unit) => {
+                        const key = priceDraftKey(product.id, unit.name);
+                        return <tr key={key}><td className="p-2 font-medium text-slate-800">{product.name}{product.productType === 'combo' && <span className="ml-1 text-[10px] font-normal text-amber-600">Combo</span>}</td><td className="p-2 text-slate-500">{unit.name} <span className="text-[11px] text-slate-400">· ×{unit.factor}</span></td><td className="p-2"><Input type="number" min="0" value={priceDrafts[key] ?? fallbackUnitPrice(product, unit, priceLists.find((list) => list.id === selectedPriceListId))} onChange={(e) => setPriceDrafts({ ...priceDrafts, [key]: Number(e.target.value) || 0 })} className="ml-auto h-9 max-w-36 text-right" /></td></tr>;
+                      }))}
                     </tbody></table>
                   </div>
                 </div>
                 <div className="grid gap-5 md:grid-cols-2">
                   <div className="rounded-lg border border-slate-200 p-3">
-                    <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold text-slate-900">Đơn vị quy đổi</h3><Button variant="outline" className="h-8 px-2 text-xs" onClick={() => setUnitDrafts([...unitDrafts, { name: '', factor: 1, barcode: '' }])}><Plus className="mr-1 h-3 w-3" />Thêm</Button></div>
+                    <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold text-slate-900">Biến thể / đơn vị bán</h3><Button variant="outline" className="h-8 px-2 text-xs" onClick={() => setUnitDrafts([...unitDrafts, { name: '', factor: 1, barcode: '' }])}><Plus className="mr-1 h-3 w-3" />Thêm đơn vị</Button></div>
                     <div className="space-y-2">{unitDrafts.map((unit, index) => <div key={`${unit.name}-${index}`} className="grid grid-cols-[1fr_70px_1fr_auto] gap-2"><Input value={unit.name} placeholder="Tên đơn vị" onChange={(e) => setUnitDrafts(unitDrafts.map((row, i) => i === index ? { ...row, name: e.target.value } : row))} className="h-9 text-xs" /><Input type="number" min="0.01" value={unit.factor} onChange={(e) => setUnitDrafts(unitDrafts.map((row, i) => i === index ? { ...row, factor: Number(e.target.value) || 1 } : row))} className="h-9 text-xs" /><Input value={unit.barcode} placeholder="Mã vạch" onChange={(e) => setUnitDrafts(unitDrafts.map((row, i) => i === index ? { ...row, barcode: e.target.value } : row))} className="h-9 text-xs" /><button onClick={() => setUnitDrafts(unitDrafts.filter((_, i) => i !== index))} className="text-rose-500"><Trash2 className="h-4 w-4" /></button></div>)}</div>
-                    <p className="mt-2 text-xs text-slate-500">Ví dụ: 1 Hộp = 20 {products.find((p) => p.id === pricingProductId)?.unit || 'đơn vị cơ sở'}.</p>
+                    <p className="mt-2 text-xs text-slate-500">Ví dụ: 1 Hộp = 20 {products.find((p) => p.id === pricingProductId)?.unit || 'đơn vị cơ sở'}. Khi nhập/bán theo Hộp, tồn kho vẫn quy đổi về đơn vị cơ sở.</p>
                   </div>
                   <div className="rounded-lg border border-slate-200 p-3">
-                    <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold text-slate-900">Thành phần combo</h3><Button variant="outline" className="h-8 px-2 text-xs" onClick={() => setComponentDrafts([...componentDrafts, { componentProductId: products.find((p) => p.productType !== 'combo' && p.id !== pricingProductId)?.id || '', quantity: 1 }])}><Plus className="mr-1 h-3 w-3" />Thêm</Button></div>
+                    <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold text-slate-900">Gói combo</h3><Button variant="outline" className="h-8 px-2 text-xs" onClick={() => setComponentDrafts([...componentDrafts, { componentProductId: products.find((p) => p.productType !== 'combo' && p.id !== pricingProductId)?.id || '', quantity: 1 }])}><Plus className="mr-1 h-3 w-3" />Thêm sản phẩm</Button></div>
                     <div className="space-y-2">{componentDrafts.map((component, index) => <div key={`${component.componentProductId}-${index}`} className="grid grid-cols-[1fr_70px_auto] gap-2"><select value={component.componentProductId} onChange={(e) => setComponentDrafts(componentDrafts.map((row, i) => i === index ? { ...row, componentProductId: e.target.value } : row))} className="h-9 rounded-md border border-slate-200 px-2 text-xs">{products.filter((p) => p.productType !== 'combo' && p.id !== pricingProductId).map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</select><Input type="number" min="0.01" value={component.quantity} onChange={(e) => setComponentDrafts(componentDrafts.map((row, i) => i === index ? { ...row, quantity: Number(e.target.value) || 1 } : row))} className="h-9 text-xs" /><button onClick={() => setComponentDrafts(componentDrafts.filter((_, i) => i !== index))} className="text-rose-500"><Trash2 className="h-4 w-4" /></button></div>)}</div>
-                    {products.find((p) => p.id === pricingProductId)?.productType !== 'combo' && <p className="mt-2 text-xs text-slate-500">Chuyển loại sản phẩm sang Combo để sử dụng thành phần.</p>}
+                    {products.find((p) => p.id === pricingProductId)?.productType !== 'combo' && <p className="mt-2 text-xs text-slate-500">Chuyển loại sản phẩm sang Combo để tạo một sản phẩm gói và chọn các sản phẩm thành phần bên trong.</p>}
+                    {products.find((p) => p.id === pricingProductId)?.productType === 'combo' && <p className="mt-2 text-xs text-slate-500">Giá combo tự cộng theo bảng giá hiện tại của các sản phẩm thành phần; khi bán, tồn kho sẽ trừ ở từng thành phần.</p>}
                   </div>
                 </div>
                 {pricingMessage && <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{pricingMessage}</p>}

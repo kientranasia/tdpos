@@ -143,7 +143,9 @@ export const priceLists = sqliteTable('price_lists', {
   id: text('id').primaryKey(),
   tenantId: text('tenant_id').notNull().references(() => tenants.id),
   name: text('name').notNull(),
-  customerType: text('customer_type', { enum: ['all', 'retail', 'loyal'] }).notNull().default('all'),
+  // Keeps the legacy retail/loyal mappings while allowing tenants to define
+  // named price groups such as agency, wholesale, or healthcare.
+  customerType: text('customer_type').notNull().default('all'),
   isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
   active: integer('active', { mode: 'boolean' }).notNull().default(true),
   createdAt: text('created_at').notNull(),
