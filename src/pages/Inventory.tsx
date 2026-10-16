@@ -19,7 +19,7 @@ type ImportPreviewRow = {
 };
 
 export default function Inventory() {
-  const { products, addProduct, updateProduct, deleteProduct, activeTenant, categories, addCategory } = useApp();
+  const { products, addProduct, updateProduct, deleteProduct, activeTenant, categories, addCategory, refreshProducts } = useApp();
   const [searchTerm, setSearchTerm] = useState('');
   const [showProductModal, setShowProductModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -54,12 +54,15 @@ export default function Inventory() {
   const [pricingProductId, setPricingProductId] = useState('');
   const [unitDrafts, setUnitDrafts] = useState<Array<{ name: string; factor: number; barcode: string }>>([]);
   const [componentDrafts, setComponentDrafts] = useState<Array<{ componentProductId: string; quantity: number }>>([]);
+  const [productVariantDrafts, setProductVariantDrafts] = useState<Array<{ name: string; factor: number; barcode: string }>>([]);
+  const [productComponentDrafts, setProductComponentDrafts] = useState<Array<{ componentProductId: string; quantity: number }>>([]);
+  const [productPriceDrafts, setProductPriceDrafts] = useState<Record<string, number>>({});
   const [newPriceList, setNewPriceList] = useState({ name: '', customerType: 'all' });
   const [pricingMessage, setPricingMessage] = useState('');
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const unitOptions = useMemo(() => {
-    const defaults = ['Cái', 'Chai', 'Thùng', 'Hộp', 'Gói', 'Kg', 'Lít'];
+    const defaults = ['Cái', 'Chai', 'Thùng', 'Hộp', 'Gói', 'Bộ', 'Kg', 'Lít'];
     const dynamicUnits = products.map((p) => p.unit).filter(Boolean);
     return Array.from(new Set([...defaults, ...customUnits, ...dynamicUnits]));
   }, [customUnits, products]);
@@ -133,6 +136,40 @@ export default function Inventory() {
       productType: 'standard'
     });
     setEditingProduct(null);
+    setProductVariantDrafts([]);
+    setProductComponentDrafts([]);
+    setProductPriceDrafts({});
+  };
+
+  const comboBasePriceForList = (list: any, components = productComponentDrafts) => components.reduce((total, component) => {
+    const componentProduct = products.find((item) => item.id === component.componentProductId);
+    if (!componentProduct) return total;
+    const savedPrice = list?.items?.find((item: any) => item.productId === componentProduct.id && item.unitName === componentProduct.unit);
+    return total + (Number(component.quantity) || 0) * Number(savedPrice?.price ?? componentProduct.sellingPrice ?? 0);
+  }, 0);
+
+  const productFormBasePrice = (list: any, components = productComponentDrafts) => productForm.productType === 'combo'
+    ? comboBasePriceForList(list, components)
+    : Number(productPriceDrafts[list?.id] ?? productForm.sellingPrice ?? 0);
+
+  const loadProductPriceDrafts = (lists: any[], product: Product | null = null) => {
+    setProductPriceDrafts(Object.fromEntries(lists.map((list: any) => {
+      const saved = product ? list.items?.find((item: any) => item.productId === product.id && item.unitName === product.unit) : undefined;
+      return [list.id, Number(saved?.price ?? product?.sellingPrice ?? 0)];
+    })));
+  };
+
+  const openCreateProduct = async () => {
+    resetProductForm();
+    setFormError('');
+    try {
+      const lists = await priceListsApi.list(true);
+      setPriceLists(lists);
+      loadProductPriceDrafts(lists);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Không thể tải bảng giá.');
+    }
+    setShowProductModal(true);
   };
 
   const handleSaveProduct = async () => {
@@ -146,24 +183,74 @@ export default function Inventory() {
       return;
     }
 
+    const variants = productVariantDrafts
+      .map((variant) => ({ name: variant.name.trim(), factor: Number(variant.factor), barcode: variant.barcode.trim() }))
+      .filter((variant) => variant.name);
+    if (productForm.productType === 'standard') {
+      if (variants.some((variant) => variant.name === productForm.unit.trim())) {
+        setFormError('Tên biến thể phải khác đơn vị cơ sở.');
+        return;
+      }
+      if (variants.some((variant) => !Number.isFinite(variant.factor) || variant.factor <= 0)) {
+        setFormError('Tỷ suất quy đổi của biến thể phải lớn hơn 0.');
+        return;
+      }
+      if (new Set(variants.map((variant) => variant.name.toLowerCase())).size !== variants.length) {
+        setFormError('Tên các biến thể không được trùng nhau.');
+        return;
+      }
+    }
+
+    const components = productComponentDrafts
+      .map((component) => ({ componentProductId: component.componentProductId, quantity: Number(component.quantity) }))
+      .filter((component) => component.componentProductId);
+    if (productForm.productType === 'combo') {
+      if (!components.length) {
+        setFormError('Combo cần có ít nhất một sản phẩm thành phần.');
+        return;
+      }
+      if (components.some((component) => !Number.isFinite(component.quantity) || component.quantity <= 0)) {
+        setFormError('Số lượng sản phẩm thành phần phải lớn hơn 0.');
+        return;
+      }
+      if (new Set(components.map((component) => component.componentProductId)).size !== components.length) {
+        setFormError('Mỗi sản phẩm chỉ được thêm một lần vào combo.');
+        return;
+      }
+    }
+
     setSavingProduct(true);
+    const productId = editingProduct?.id || uuid();
+    let currentPriceLists = priceLists;
+    if (!currentPriceLists.length) {
+      try {
+        currentPriceLists = await priceListsApi.list(true);
+      } catch (err) {
+        setSavingProduct(false);
+        setFormError(err instanceof Error ? err.message : 'Không thể tải bảng giá.');
+        return;
+      }
+    }
+    if (!priceLists.length) setPriceLists(currentPriceLists);
+    const defaultList = currentPriceLists.find((list: any) => list.isDefault) || currentPriceLists[0];
+    const defaultSellingPrice = productFormBasePrice(defaultList, components);
     const payload = {
       ...productForm,
       category: productForm.category.trim(),
       unit: productForm.unit.trim(),
-      purchasePrice: Number(productForm.purchasePrice) || 0,
-      sellingPrice: Number(productForm.sellingPrice) || 0,
+      purchasePrice: productForm.productType === 'combo' ? 0 : Number(productForm.purchasePrice) || 0,
+      sellingPrice: defaultSellingPrice,
       taxRate: Number(productForm.taxRate) || 0,
-      stock: Number(productForm.stock) || 0,
+      stock: productForm.productType === 'combo' ? 0 : Number(productForm.stock) || 0,
       lowStockThreshold: Number(productForm.lowStockThreshold) || 0,
       productType: productForm.productType,
     };
     let success = false;
     if (editingProduct) {
-      success = await updateProduct(editingProduct.id, payload);
+      success = await updateProduct(productId, payload);
     } else {
       const product: Product = {
-        id: uuid(),
+        id: productId,
         tenantId: activeTenant.id,
         trackStock: true,
         status: 'active',
@@ -171,15 +258,35 @@ export default function Inventory() {
       };
       success = await addProduct(product);
     }
-    setSavingProduct(false);
-
-    if (success) {
-      setShowProductModal(false);
-      resetProductForm();
+    if (!success) {
+      setSavingProduct(false);
+      setFormError('Không thể lưu sản phẩm. Vui lòng kiểm tra ảnh hoặc kết nối API.');
       return;
     }
 
-    setFormError('Không thể lưu sản phẩm. Vui lòng kiểm tra ảnh hoặc kết nối API.');
+    try {
+      await productUnitsApi.save(productId, productForm.productType === 'standard' ? variants : []);
+      await productComponentsApi.save(productId, productForm.productType === 'combo' ? components : []);
+
+      for (const list of currentPriceLists) {
+        const basePrice = productFormBasePrice(list, components);
+        const rows = [
+          { productId, unitName: productForm.unit.trim(), unitFactor: 1, price: basePrice },
+          ...(productForm.productType === 'standard'
+            ? variants.map((variant) => ({ productId, unitName: variant.name, unitFactor: variant.factor, price: basePrice * variant.factor }))
+            : []),
+        ];
+        const existingItems = (list.items || []).filter((item: any) => item.productId !== productId);
+        await priceListsApi.saveItems(list.id, [...existingItems, ...rows]);
+      }
+      await refreshProducts();
+      setSavingProduct(false);
+      setShowProductModal(false);
+      resetProductForm();
+    } catch (err) {
+      setSavingProduct(false);
+      setFormError(err instanceof Error ? err.message : 'Sản phẩm đã lưu nhưng chưa lưu được biến thể, combo hoặc bảng giá.');
+    }
   };
 
   const handleUpdateStock = async () => {
@@ -244,8 +351,9 @@ export default function Inventory() {
     }
   };
 
-  const openEditProduct = (product: Product) => {
+  const openEditProduct = async (product: Product) => {
     setEditingProduct(product);
+    setFormError('');
     setProductForm({
       name: product.name,
       sku: product.sku,
@@ -254,11 +362,27 @@ export default function Inventory() {
       unit: product.unit,
       purchasePrice: product.purchasePrice,
       sellingPrice: product.sellingPrice,
+      taxRate: product.taxRate || 0,
       stock: product.stock,
       lowStockThreshold: product.lowStockThreshold,
       imageUrl: product.imageUrl || '',
       productType: product.productType || 'standard'
     });
+    try {
+      const [lists, units, components] = await Promise.all([
+        priceListsApi.list(true),
+        productUnitsApi.list(product.id),
+        productComponentsApi.list(product.id),
+      ]);
+      setPriceLists(lists);
+      loadProductPriceDrafts(lists, product);
+      setProductVariantDrafts(units.filter((unit: any) => unit.name !== product.unit || Number(unit.factor) !== 1).map((unit: any) => ({ name: unit.name, factor: Number(unit.factor) || 1, barcode: unit.barcode || '' })));
+      setProductComponentDrafts(components.map((component: any) => ({ componentProductId: component.componentProductId, quantity: Number(component.quantity) })));
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Không thể tải cấu hình sản phẩm.');
+      setProductVariantDrafts([]);
+      setProductComponentDrafts([]);
+    }
     setShowProductModal(true);
   };
 
@@ -1051,7 +1175,11 @@ export default function Inventory() {
                     <label className="text-xs font-semibold text-slate-500 ml-1">Loại hàng hóa</label>
                     <select
                       value={productForm.productType}
-                      onChange={e => setProductForm({ ...productForm, productType: e.target.value as 'standard' | 'combo' })}
+                      onChange={e => {
+                        const productType = e.target.value as 'standard' | 'combo';
+                        setProductForm({ ...productForm, productType, ...(productType === 'combo' ? { purchasePrice: 0, stock: 0, unit: 'Bộ' } : {}) });
+                        if (productType === 'combo') setProductVariantDrafts([]);
+                      }}
                       className="w-full h-11 px-4 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm"
                     >
                       <option value="standard">Sản phẩm thường</option>
@@ -1068,28 +1196,100 @@ export default function Inventory() {
                          type="number"
                          value={productForm.purchasePrice}
                          onChange={e => setProductForm({...productForm, purchasePrice: Number(e.target.value)})}
+                         disabled={productForm.productType === 'combo'}
                          className="h-11 pr-9 rounded-lg bg-sky-50/30 border-none shadow-inner font-semibold text-sky-700 tabular-nums"
                        />
                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-semibold text-sky-700">đ</span>
                     </div>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold text-slate-500 ml-1">Giá bán</label>
-                    <div className="relative">
-                       <Input 
-                         type="number"
-                         value={productForm.sellingPrice}
-                         onChange={e => setProductForm({...productForm, sellingPrice: Number(e.target.value)})}
-                         className="h-11 pr-9 rounded-lg bg-sky-50/30 border-none shadow-inner font-semibold text-sky-700 tabular-nums"
-                       />
-                       <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-semibold text-sky-700">đ</span>
-                    </div>
+                    {productForm.productType === 'combo' && <p className="text-[11px] text-slate-500">Combo không nhập kho trực tiếp nên không có giá nhập.</p>}
                   </div>
                   <div className="space-y-2">
                     <label className="text-xs font-semibold text-slate-500 ml-1">Thuế suất (%)</label>
                     <Input type="number" min="0" max="100" value={productForm.taxRate} onChange={e => setProductForm({...productForm, taxRate: Number(e.target.value)})} className="h-11 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 tabular-nums" />
                   </div>
                </div>
+
+               <div className="rounded-lg border border-sky-100 bg-sky-50/40 p-4 space-y-3">
+                 <div className="flex items-start justify-between gap-3">
+                   <div>
+                     <h3 className="text-sm font-semibold text-slate-900">Giá bán theo bảng giá</h3>
+                     <p className="mt-1 text-xs leading-5 text-slate-500">
+                       Nhập giá tại đơn vị cơ sở <b>{productForm.unit || '—'}</b>. Giá biến thể sẽ tự tính theo tỷ suất quy đổi.
+                     </p>
+                   </div>
+                   <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[11px] font-medium text-sky-700">Đơn vị cơ sở</span>
+                 </div>
+                 {priceLists.length === 0 && <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">Chưa có bảng giá. Hệ thống sẽ dùng giá cơ bản hiện có và tạo bảng giá mặc định khi lưu.</p>}
+                 <div className="grid gap-2 md:grid-cols-2">
+                   {priceLists.map((list: any) => {
+                     const calculated = productForm.productType === 'combo' ? comboBasePriceForList(list) : undefined;
+                     return <div key={list.id} className="rounded-md border border-white bg-white p-3">
+                       <div className="mb-2 flex items-center justify-between gap-2">
+                         <span className="text-xs font-semibold text-slate-700">{list.name}</span>
+                         {list.isDefault && <span className="text-[10px] font-medium text-emerald-600">Mặc định</span>}
+                       </div>
+                       <div className="relative">
+                         <Input
+                           type="number"
+                           min="0"
+                           value={productForm.productType === 'combo' ? calculated : (productPriceDrafts[list.id] ?? 0)}
+                           onChange={(e) => setProductPriceDrafts({ ...productPriceDrafts, [list.id]: Number(e.target.value) || 0 })}
+                           disabled={productForm.productType === 'combo'}
+                           className="h-10 pr-9 text-sm font-semibold tabular-nums"
+                         />
+                         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">đ</span>
+                       </div>
+                     </div>;
+                   })}
+                 </div>
+                 {productForm.productType === 'combo' && <p className="text-xs text-slate-500">Giá combo = tổng giá các sản phẩm thành phần theo từng bảng giá.</p>}
+               </div>
+
+               {productForm.productType === 'standard' ? (
+                 <div className="rounded-lg border border-slate-200 p-4 space-y-3">
+                   <div className="flex items-start justify-between gap-3">
+                     <div>
+                       <h3 className="text-sm font-semibold text-slate-900">Biến thể đơn vị bán</h3>
+                       <p className="mt-1 text-xs leading-5 text-slate-500">Đơn vị cơ sở: <b>{productForm.unit || '—'}</b> ×1. Ví dụ: 1 Hộp = 20 Cây.</p>
+                     </div>
+                     <Button variant="outline" className="h-8 shrink-0 px-2 text-xs" onClick={() => setProductVariantDrafts([...productVariantDrafts, { name: '', factor: 1, barcode: '' }])}>
+                       <Plus className="mr-1 h-3 w-3" />Thêm biến thể
+                     </Button>
+                   </div>
+                   {productVariantDrafts.length === 0 && <p className="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-500">Chưa có biến thể. Sản phẩm sẽ bán theo {productForm.unit || 'đơn vị cơ sở'}.</p>}
+                   <div className="space-y-2">
+                     {productVariantDrafts.map((variant, index) => <div key={`${variant.name}-${index}`} className="grid gap-2 md:grid-cols-[1fr_110px_1fr_auto]">
+                       <Input value={variant.name} placeholder="Tên biến thể, ví dụ Hộp" onChange={(e) => setProductVariantDrafts(productVariantDrafts.map((row, i) => i === index ? { ...row, name: e.target.value } : row))} className="h-9 text-xs" />
+                       <div className="relative"><Input type="number" min="0.01" value={variant.factor} onChange={(e) => setProductVariantDrafts(productVariantDrafts.map((row, i) => i === index ? { ...row, factor: Number(e.target.value) || 0 } : row))} className="h-9 pr-10 text-xs" /><span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">× cơ sở</span></div>
+                       <Input value={variant.barcode} placeholder="Mã vạch riêng (nếu có)" onChange={(e) => setProductVariantDrafts(productVariantDrafts.map((row, i) => i === index ? { ...row, barcode: e.target.value } : row))} className="h-9 text-xs" />
+                       <button type="button" onClick={() => setProductVariantDrafts(productVariantDrafts.filter((_, i) => i !== index))} className="flex h-9 items-center justify-center text-rose-500"><Trash2 className="h-4 w-4" /></button>
+                     </div>)}
+                   </div>
+                 </div>
+               ) : (
+                 <div className="rounded-lg border border-amber-200 bg-amber-50/40 p-4 space-y-3">
+                   <div className="flex items-start justify-between gap-3">
+                     <div>
+                       <h3 className="text-sm font-semibold text-slate-900">Sản phẩm thành phần của combo</h3>
+                       <p className="mt-1 text-xs leading-5 text-slate-500">Chỉ chọn sản phẩm thường đang có trên hệ thống. Khi bán combo, tồn kho sẽ trừ ở từng thành phần.</p>
+                     </div>
+                     <Button variant="outline" className="h-8 shrink-0 border-amber-200 px-2 text-xs" onClick={() => setProductComponentDrafts([...productComponentDrafts, { componentProductId: products.find((p) => p.productType !== 'combo' && p.id !== editingProduct?.id)?.id || '', quantity: 1 }])}>
+                       <Plus className="mr-1 h-3 w-3" />Thêm sản phẩm
+                     </Button>
+                   </div>
+                   {productComponentDrafts.length === 0 && <p className="rounded-md bg-white/70 px-3 py-2 text-xs text-amber-700">Hãy thêm sách, vật tư hoặc sản phẩm đơn vào gói combo.</p>}
+                   <div className="space-y-2">
+                     {productComponentDrafts.map((component, index) => <div key={`${component.componentProductId}-${index}`} className="grid gap-2 md:grid-cols-[1fr_110px_auto]">
+                       <select value={component.componentProductId} onChange={(e) => setProductComponentDrafts(productComponentDrafts.map((row, i) => i === index ? { ...row, componentProductId: e.target.value } : row))} className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs">
+                         <option value="">Chọn sản phẩm</option>
+                         {products.filter((p) => p.productType !== 'combo' && p.id !== editingProduct?.id).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.unit}</option>)}
+                       </select>
+                       <Input type="number" min="0.01" value={component.quantity} onChange={(e) => setProductComponentDrafts(productComponentDrafts.map((row, i) => i === index ? { ...row, quantity: Number(e.target.value) || 0 } : row))} className="h-9 text-xs" placeholder="Số lượng" />
+                       <button type="button" onClick={() => setProductComponentDrafts(productComponentDrafts.filter((_, i) => i !== index))} className="flex h-9 items-center justify-center text-rose-500"><Trash2 className="h-4 w-4" /></button>
+                     </div>)}
+                   </div>
+                 </div>
+               )}
 
                {!editingProduct && (
                  <div className="space-y-2">
@@ -1098,8 +1298,10 @@ export default function Inventory() {
                        type="number"
                        value={productForm.stock}
                        onChange={e => setProductForm({...productForm, stock: Number(e.target.value)})}
+                       disabled={productForm.productType === 'combo'}
                        className="h-11 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm"
                     />
+                    {productForm.productType === 'combo' && <p className="text-[11px] text-slate-500">Combo không có tồn riêng; tồn khả dụng được tính từ các thành phần.</p>}
                  </div>
                )}
             </div>
@@ -1382,10 +1584,7 @@ export default function Inventory() {
               <span className="hidden sm:inline">Bảng giá & combo</span>
             </Button>
             <Button
-              onClick={() => {
-                  resetProductForm();
-                  setShowProductModal(true);
-              }}
+              onClick={openCreateProduct}
               className="h-9 lg:h-10 px-4 rounded-lg gap-2 font-semibold bg-sky-600 hover:bg-sky-700 shadow-sm transition-all text-white shrink-0 text-sm"
             >
               <Plus className="h-4 w-4 sm:h-5 sm:w-5" />

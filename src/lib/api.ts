@@ -2,7 +2,12 @@ const DEFAULT_DEV_API_BASE =
   typeof window !== 'undefined'
     ? `${window.location.protocol}//${window.location.hostname}:3101`
     : 'http://localhost:3101';
-const API_BASE = import.meta.env.VITE_API_URL || DEFAULT_DEV_API_BASE;
+const configuredApiBase = import.meta.env.VITE_API_URL as string | undefined;
+const configuredApiUsesLoopback = Boolean(configuredApiBase && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(configuredApiBase.replace(/\/+$/, '')));
+const browserUsesLanHost = typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location.hostname);
+const API_BASE = configuredApiUsesLoopback && browserUsesLanHost
+  ? DEFAULT_DEV_API_BASE
+  : (configuredApiBase || DEFAULT_DEV_API_BASE);
 const NORMALIZED_API_BASE = API_BASE.replace(/\/+$/, '');
 const API_ROOT = NORMALIZED_API_BASE.endsWith('/api')
   ? NORMALIZED_API_BASE

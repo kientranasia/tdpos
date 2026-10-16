@@ -13,18 +13,21 @@ type BarcodeScannerModalProps = {
 
 const getCameraError = (error: unknown) => {
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-    return 'Camera điện thoại cần mở trang bằng HTTPS. Nếu đang chạy nội bộ, hãy dùng localhost hoặc bật HTTPS cho địa chỉ mở trên điện thoại.';
+    return `Camera điện thoại cần HTTPS hoặc localhost. Địa chỉ hiện tại: ${window.location.origin}. Nếu đang mở qua IP nội bộ trên điện thoại, hãy dùng hostname có chứng chỉ HTTPS.`;
   }
 
   const name = error instanceof DOMException ? error.name : '';
   if (name === 'NotAllowedError' || name === 'SecurityError') {
-    return 'Bạn chưa cấp quyền camera. Hãy cho phép camera trong trình duyệt rồi bấm thử lại.';
+    return 'Trình duyệt đang chặn camera. Hãy cấp quyền Camera cho trang này rồi bấm “Bật camera lại”. Nếu trang nằm trong iframe, máy chủ cần cho phép camera qua Permissions-Policy.';
   }
   if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
     return 'Không tìm thấy camera trên thiết bị này.';
   }
   if (name === 'NotReadableError' || name === 'TrackStartError') {
     return 'Camera đang được ứng dụng khác sử dụng. Hãy đóng ứng dụng đó rồi thử lại.';
+  }
+  if (name === 'OverconstrainedError') {
+    return 'Camera không hỗ trợ cấu hình hiện tại. Hãy thử lại để dùng camera mặc định của thiết bị.';
   }
   return 'Không mở được camera. Hãy kiểm tra quyền truy cập rồi thử lại hoặc dùng máy quét mã vạch.';
 };
@@ -38,10 +41,11 @@ export function BarcodeScannerModal({
 }: BarcodeScannerModalProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const controlsRef = useRef<IScannerControls | null>(null);
+  const startScannerRef = useRef<(() => void) | null>(null);
   const onCloseRef = useRef(onClose);
   const onDetectedRef = useRef(onDetected);
   const [error, setError] = useState('');
-  const [retryKey, setRetryKey] = useState(0);
+  const [starting, setStarting] = useState(false);
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -53,14 +57,17 @@ export function BarcodeScannerModal({
 
     let cancelled = false;
     let controls: IScannerControls | null = null;
+    let stream: MediaStream | null = null;
     const video = videoRef.current;
 
     const startScanner = async () => {
       setError('');
+      setStarting(true);
       if (!video) return;
 
       if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
         setError(getCameraError(null));
+        setStarting(false);
         return;
       }
 
@@ -76,46 +83,63 @@ export function BarcodeScannerModal({
       ];
 
       try {
-        controls = await reader.decodeFromConstraints(
-          {
-            audio: false,
-            video: {
-              facingMode: { ideal: 'environment' },
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-            },
+        // Request the stream explicitly so permission is triggered by the
+        // user's click on "Bật camera lại" on Safari/WebView as well.
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
           },
-          video,
-          (result) => {
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        controls = await reader.decodeFromStream(stream, video, (result, _decodeError, scanControls) => {
             if (cancelled || !result) return;
             const code = result.getText().trim();
             if (!code) return;
 
             cancelled = true;
+            scanControls.stop();
             controls?.stop();
             controlsRef.current?.stop();
             onDetectedRef.current(code);
             onCloseRef.current();
-          },
-        );
+          });
 
         if (cancelled) controls.stop();
         else controlsRef.current = controls;
+        setStarting(false);
       } catch (scannerError) {
-        if (!cancelled) setError(getCameraError(scannerError));
+        if (!cancelled) {
+          stream?.getTracks().forEach((track) => track.stop());
+          setError(getCameraError(scannerError));
+          setStarting(false);
+        }
       }
     };
 
+    startScannerRef.current = () => {
+      controls?.stop();
+      stream?.getTracks().forEach((track) => track.stop());
+      void startScanner();
+    };
     void startScanner();
 
     return () => {
       cancelled = true;
+      startScannerRef.current = null;
       controls?.stop();
       controlsRef.current?.stop();
       controlsRef.current = null;
+      stream?.getTracks().forEach((track) => track.stop());
       if (video) video.srcObject = null;
     };
-  }, [open, retryKey]);
+  }, [open]);
 
   if (!open) return null;
 
@@ -163,10 +187,11 @@ export function BarcodeScannerModal({
                   type="button"
                   variant="outline"
                   className="border-white/30 bg-white/10 text-white hover:bg-white/20 hover:text-white"
-                  onClick={() => setRetryKey((value) => value + 1)}
+                  disabled={starting}
+                  onClick={() => startScannerRef.current?.()}
                 >
                   <RefreshCw className="mr-2 h-4 w-4" />
-                  Thử mở camera lại
+                  {starting ? 'Đang mở camera...' : 'Bật camera lại'}
                 </Button>
               </div>
             )}

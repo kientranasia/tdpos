@@ -14,11 +14,17 @@ interface POSCartItemProps {
 }
 
 export const POSCartItem = ({ item, onUpdateQuantity, onRemove, onUpdateDiscount, units, onChangeUnit }: POSCartItemProps) => {
+  const baseUnit = units?.find((unit) => Number(unit.factor) === 1)?.name || 'đơn vị cơ sở';
+  const selectedUnit = units?.find((unit) => unit.name === item.unitName);
+  const variantLabel = selectedUnit && selectedUnit.name !== baseUnit
+    ? ` · ${selectedUnit.name} ${selectedUnit.factor} ${baseUnit}`
+    : '';
+
   return (
     <div className="rounded-md border border-slate-200 bg-white px-2.5 py-2 hover:border-sky-200 transition-all group" id={`cart-item-${item.productId}`}>
       <div className="flex items-center gap-2">
         <div className="font-medium text-slate-900 flex-1 min-w-0 leading-tight text-xs">
-          <p className="truncate">{item.productName}</p>
+          <p className="truncate">{item.productName}{variantLabel}</p>
           <div className="text-[11px] text-slate-500 mt-1 leading-none">{formatCurrency(item.price)} / {item.unitName || 'đơn vị'}</div>
         </div>
         <button 
