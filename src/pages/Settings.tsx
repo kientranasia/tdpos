@@ -3,11 +3,13 @@ import { useApp } from '../context/AppContext';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
-import { backupsApi, licenseApi, permissionsApi, systemApi, usersApi } from '../lib/api';
+import { backupsApi, licenseApi, permissionsApi, rolesApi, systemApi, usersApi } from '../lib/api';
 import { User } from '../types';
-import { Save, Settings2, ShieldCheck, Store, Users } from 'lucide-react';
+import { Plus, Save, Settings2, ShieldCheck, Store, Trash2, Users } from 'lucide-react';
+import AppPageHeader from '../components/layout/AppPageHeader';
 
 type SettingsTab = 'profile' | 'system' | 'invoice' | 'users';
+type RoleProfile = { code: string; name: string; description?: string; builtIn?: boolean; permissionCount?: number };
 
 export default function Settings() {
   const { activeTenant, currentUser, updateTenant } = useApp();
@@ -67,6 +69,10 @@ export default function Settings() {
   const [operationMessage, setOperationMessage] = useState('');
   const [permissionUser, setPermissionUser] = useState<User | null>(null);
   const [permissionRows, setPermissionRows] = useState<any[]>([]);
+  const [roles, setRoles] = useState<RoleProfile[]>([]);
+  const [rolePermissionRows, setRolePermissionRows] = useState<any[]>([]);
+  const [editingRoleCode, setEditingRoleCode] = useState('');
+  const [roleForm, setRoleForm] = useState({ code: '', name: '', description: '' });
 
   const isOwner = currentUser?.role === 'owner';
   const canCreateMoreUsers = true;
@@ -115,6 +121,19 @@ export default function Settings() {
   useEffect(() => {
     loadTenantUsers();
   }, [isOwner, activeTenant?.id]);
+
+  const loadRoles = async () => {
+    if (!isOwner) return;
+    try {
+      setRoles(await rolesApi.list());
+    } catch (err) {
+      setUserError(err instanceof Error ? err.message : 'Không thể tải danh sách vai trò.');
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'users') void loadRoles();
+  }, [activeTab, isOwner]);
 
   useEffect(() => {
     if (activeTab !== 'system') return;
@@ -168,6 +187,62 @@ export default function Settings() {
       setUserError('Đã lưu phân quyền.');
     } catch (err) { setUserError(err instanceof Error ? err.message : 'Không thể lưu phân quyền.'); }
   };
+
+  const openRoleEditor = async (role?: RoleProfile) => {
+    setUserError('');
+    if (!role) {
+      setEditingRoleCode('');
+      setRoleForm({ code: '', name: '', description: '' });
+      setRolePermissionRows(await permissionsApi.list());
+      return;
+    }
+    setEditingRoleCode(role.code);
+    setRoleForm({ code: role.code, name: role.name, description: role.description || '' });
+    try {
+      setRolePermissionRows(await rolesApi.getPermissions(role.code));
+    } catch (err) {
+      setUserError(err instanceof Error ? err.message : 'Không thể tải quyền của vai trò.');
+    }
+  };
+
+  const saveRole = async () => {
+    setUserError('');
+    try {
+      const grants = rolePermissionRows.map((permission) => ({ code: permission.code, allowed: Boolean(permission.allowed) }));
+      if (editingRoleCode) {
+        await rolesApi.update(editingRoleCode, { name: roleForm.name, description: roleForm.description });
+        await rolesApi.savePermissions(editingRoleCode, grants);
+      } else {
+        await rolesApi.create({ ...roleForm, permissions: grants });
+      }
+      setRoleForm({ code: '', name: '', description: '' });
+      setEditingRoleCode('');
+      setRolePermissionRows([]);
+      await loadRoles();
+      await loadTenantUsers();
+    } catch (err) {
+      setUserError(err instanceof Error ? err.message : 'Không thể lưu vai trò.');
+    }
+  };
+
+  const deleteRole = async (role: RoleProfile) => {
+    if (role.builtIn || !window.confirm(`Xóa vai trò ${role.name}?`)) return;
+    try {
+      await rolesApi.delete(role.code);
+      setEditingRoleCode('');
+      setRolePermissionRows([]);
+      await loadRoles();
+    } catch (err) {
+      setUserError(err instanceof Error ? err.message : 'Không thể xóa vai trò.');
+    }
+  };
+
+  const roleOptions: RoleProfile[] = roles.length ? roles : [
+    { code: 'cashier', name: 'Nhân viên bán hàng', builtIn: true },
+    { code: 'manager', name: 'Quản lý', builtIn: true },
+    { code: 'warehouse', name: 'Nhân viên kho', builtIn: true },
+    { code: 'accountant', name: 'Kế toán', builtIn: true },
+  ];
 
   const handleSave = async () => {
     setError('');
@@ -270,24 +345,10 @@ export default function Settings() {
 
   return (
     <div className="flex h-full flex-col bg-slate-100/60">
-      <div className="sticky top-0 z-30 border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
-          <div className="hidden items-center gap-4 lg:flex">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-lg">
-              <Settings2 className="h-8 w-8" />
-            </div>
-            <div>
-              <h1 className="text-page-title">Cài đặt hệ thống</h1>
-      <p className="text-page-subtitle">Quản trị hộ kinh doanh, nhân viên và chính sách vận hành.</p>
-            </div>
-          </div>
-
-          <Button onClick={handleSave} disabled={isSaving} className="h-11 px-5 text-base font-semibold">
+      <AppPageHeader icon={Settings2} accentClassName="bg-slate-900" title="Cài đặt hệ thống" subtitle="Quản trị hộ kinh doanh, nhân viên và chính sách vận hành." actions={<Button onClick={handleSave} disabled={isSaving} className="h-9 px-4 text-sm font-semibold">
             <Save className="mr-2 h-4 w-4" />
             {isSaving ? 'Đang lưu...' : 'Lưu thay đổi'}
-          </Button>
-        </div>
-      </div>
+          </Button>} />
 
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-7xl space-y-6 px-4 py-4 sm:px-6 sm:py-6 lg:px-8 lg:py-8">
@@ -403,6 +464,37 @@ export default function Settings() {
             <h2 className="text-base font-semibold">Nhân viên & phân quyền</h2>
           </div>
 
+          {isOwner && (
+            <div className="space-y-3 rounded-lg border border-slate-200 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div><p className="text-sm font-medium text-slate-900">Nhóm quyền / vai trò</p><p className="text-xs text-slate-500">Tạo vai trò riêng rồi bật từng nhóm tính năng cho nhân viên.</p></div>
+                <Button size="sm" variant="outline" onClick={() => void openRoleEditor()}><Plus className="mr-1 h-3.5 w-3.5" />Tạo vai trò</Button>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-[minmax(190px,0.8fr)_minmax(0,1.6fr)]">
+                <div className="space-y-1">
+                  {roles.map((role) => <div key={role.code} className={`flex items-center gap-1 rounded-md border px-2 py-1.5 ${editingRoleCode === role.code ? 'border-sky-300 bg-sky-50' : 'border-slate-100'}`}>
+                    <button type="button" className="min-w-0 flex-1 text-left" onClick={() => void openRoleEditor(role)}><span className="block truncate text-xs font-medium text-slate-800">{role.name}</span><span className="block truncate font-mono text-[10px] text-slate-400">{role.code} · {role.permissionCount || 0} quyền</span></button>
+                    {!role.builtIn && <button type="button" aria-label={`Xóa ${role.name}`} title="Xóa vai trò" onClick={() => void deleteRole(role)} className="rounded p-1 text-rose-500 hover:bg-rose-50 hover:text-rose-700"><Trash2 className="h-3.5 w-3.5" /></button>}
+                  </div>)}
+                  {!roles.length && <p className="text-xs text-slate-400">Đang tải vai trò...</p>}
+                </div>
+                {rolePermissionRows.length > 0 && (
+                  <div className="space-y-3 rounded-md bg-slate-50 p-3">
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <Input value={roleForm.code} disabled={Boolean(editingRoleCode)} onChange={(e) => setRoleForm((prev) => ({ ...prev, code: e.target.value }))} placeholder="Mã vai trò (vd: sales_lead)" />
+                      <Input value={roleForm.name} onChange={(e) => setRoleForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Tên vai trò" />
+                      <Input value={roleForm.description} onChange={(e) => setRoleForm((prev) => ({ ...prev, description: e.target.value }))} placeholder="Mô tả ngắn" />
+                    </div>
+                    <div className="grid gap-1 sm:grid-cols-2">
+                      {rolePermissionRows.map((permission) => <label key={permission.code} className="flex items-center gap-2 rounded border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700"><input type="checkbox" checked={Boolean(permission.allowed)} disabled={roles.find((role) => role.code === editingRoleCode)?.builtIn} onChange={(e) => setRolePermissionRows((prev) => prev.map((row) => row.code === permission.code ? { ...row, allowed: e.target.checked } : row))} /><span>{permission.label}</span><span className="ml-auto font-mono text-[10px] text-slate-400">{permission.code}</span></label>)}
+                    </div>
+                    <div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => { setEditingRoleCode(''); setRolePermissionRows([]); }}>Đóng</Button><Button size="sm" onClick={() => void saveRole()} disabled={Boolean(roles.find((role) => role.code === editingRoleCode)?.builtIn) || !roleForm.name.trim() || !roleForm.code.trim()}> <Save className="mr-1 h-3.5 w-3.5" />Lưu vai trò</Button></div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {!isOwner && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
               Chỉ quản trị mới có quyền quản lý nhân viên và phân quyền.
@@ -422,9 +514,7 @@ export default function Settings() {
                 <Input value={userForm.phone} onChange={(e) => setUserForm((prev) => ({ ...prev, phone: e.target.value }))} placeholder="Số điện thoại" />
                 <Input type="password" value={userForm.password} onChange={(e) => setUserForm((prev) => ({ ...prev, password: e.target.value }))} placeholder="Mật khẩu" />
                 <select className="h-10 rounded-md border border-gray-300 px-3 text-sm" value={userForm.role} onChange={(e) => setUserForm((prev) => ({ ...prev, role: e.target.value }))}>
-                  <option value="cashier">Nhân viên bán hàng</option>
-                  <option value="manager">Quản lý</option>
-                  <option value="warehouse">Nhân viên kho</option>
+                  {roleOptions.filter((role) => role.code !== 'owner').map((role) => <option key={role.code} value={role.code}>{role.name}</option>)}
                 </select>
                 <Button onClick={handleCreateUser} disabled={!canCreateMoreUsers} className="h-10 text-sm font-medium">
                   Thêm nhân viên
@@ -481,9 +571,7 @@ export default function Settings() {
                 <Input value={editingForm.name} onChange={(e) => setEditingForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Tên user" />
                 <Input value={editingForm.phone} onChange={(e) => setEditingForm((prev) => ({ ...prev, phone: e.target.value }))} placeholder="Số điện thoại" />
                 <select className="h-10 rounded-md border border-gray-300 px-3 text-sm" value={editingForm.role} onChange={(e) => setEditingForm((prev) => ({ ...prev, role: e.target.value }))}>
-                  <option value="cashier">Nhân viên bán hàng</option>
-                  <option value="manager">Quản lý</option>
-                  <option value="warehouse">Nhân viên kho</option>
+                  {roleOptions.map((role) => <option key={role.code} value={role.code}>{role.name}</option>)}
                 </select>
                 <select className="h-10 rounded-md border border-gray-300 px-3 text-sm" value={editingForm.status} onChange={(e) => setEditingForm((prev) => ({ ...prev, status: e.target.value }))}>
                   <option value="active">active</option>

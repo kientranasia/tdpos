@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { LayoutDashboard, Users, CreditCard, ShieldCheck, Search, ExternalLink, RefreshCw, TrendingUp, BarChart3, Target, Store } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
-import { formatCurrency } from '../lib/utils';
+import { formatCurrency, normalizeSearchText } from '../lib/utils';
 import { adminApi } from '../lib/api';
 
 type AdminTab = 'overview' | 'tenants' | 'subscriptions' | 'packages' | 'users' | 'audit';
@@ -358,22 +358,22 @@ export default function AdminPanel() {
   };
 
   const filteredTenants = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
+    const term = normalizeSearchText(searchTerm);
     if (!term) return tenants;
     return tenants.filter((tenant) =>
-      tenant.name?.toLowerCase().includes(term) ||
-      tenant.id?.toLowerCase().includes(term) ||
-      tenant.email?.toLowerCase().includes(term) ||
-      tenant.phone?.includes(term)
+      normalizeSearchText(tenant.name).includes(term) ||
+      normalizeSearchText(tenant.id).includes(term) ||
+      normalizeSearchText(tenant.email).includes(term) ||
+      normalizeSearchText(tenant.phone).includes(term)
     );
   }, [searchTerm, tenants]);
 
   const filteredSubscriptions = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
+    const term = normalizeSearchText(searchTerm);
     if (!term) return subscriptions;
     return subscriptions.filter((sub) =>
-      sub.tenantName?.toLowerCase().includes(term) ||
-      sub.tenantId?.toLowerCase().includes(term)
+      normalizeSearchText(sub.tenantName).includes(term) ||
+      normalizeSearchText(sub.tenantId).includes(term)
     );
   }, [searchTerm, subscriptions]);
 
@@ -381,24 +381,24 @@ export default function AdminPanel() {
     const usersByTenant = usersTenantFilter === 'all'
       ? globalUsers
       : globalUsers.filter((user) => user.tenantId === usersTenantFilter);
-    const term = searchTerm.trim().toLowerCase();
+    const term = normalizeSearchText(searchTerm);
     if (!term) return usersByTenant;
     return usersByTenant.filter((user) =>
-      user.name?.toLowerCase().includes(term) ||
-      user.email?.toLowerCase().includes(term) ||
-      user.tenantName?.toLowerCase().includes(term) ||
-      user.role?.toLowerCase().includes(term)
+      normalizeSearchText(user.name).includes(term) ||
+      normalizeSearchText(user.email).includes(term) ||
+      normalizeSearchText(user.tenantName).includes(term) ||
+      normalizeSearchText(user.role).includes(term)
     );
   }, [globalUsers, usersTenantFilter, searchTerm]);
 
   const filteredAuditLogs = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
+    const term = normalizeSearchText(searchTerm);
     if (!term) return auditLogs;
     return auditLogs.filter((log) =>
-      log.action?.toLowerCase().includes(term) ||
-      log.entityType?.toLowerCase().includes(term) ||
-      log.entityId?.toLowerCase().includes(term) ||
-      log.tenantId?.toLowerCase().includes(term)
+      normalizeSearchText(log.action).includes(term) ||
+      normalizeSearchText(log.entityType).includes(term) ||
+      normalizeSearchText(log.entityId).includes(term) ||
+      normalizeSearchText(log.tenantId).includes(term)
     );
   }, [searchTerm, auditLogs]);
 

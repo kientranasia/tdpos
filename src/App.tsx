@@ -22,6 +22,7 @@ import Cashbook from './pages/Cashbook';
 import Purchases from './pages/Purchases';
 import Suppliers from './pages/Suppliers';
 import Partners from './pages/Partners';
+import SupplierDetail from './pages/SupplierDetail';
 import Reports from './pages/Reports';
 
 export default function App() {
@@ -46,6 +47,7 @@ export default function App() {
             <Route path="reports" element={<Reports />} />
             <Route path="purchases" element={<Purchases />} />
             <Route path="suppliers" element={<Partners />} />
+            <Route path="suppliers/:id" element={<SupplierDetail />} />
             <Route path="invoices" element={<Invoices />} />
             <Route path="settings" element={<Settings />} />
             <Route path="subscription" element={<Navigate to="/app/settings" replace />} />

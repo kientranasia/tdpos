@@ -5,7 +5,7 @@ import { v4 as uuid } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
-import { formatCurrency } from '../lib/utils';
+import { formatCurrency, normalizeSearchText } from '../lib/utils';
 
 type CustomerTypeFilter = 'all' | 'retail' | 'loyal';
 type CustomerSortKey = 'vip' | 'spending_desc' | 'debt_desc' | 'name_asc';
@@ -40,13 +40,13 @@ export default function Customers() {
   }, [invoices]);
 
   const filteredCustomers = useMemo(() => {
-    const keyword = searchTerm.trim().toLowerCase();
+    const keyword = normalizeSearchText(searchTerm);
     const filtered = customers.filter((customer) => {
       const matchKeyword =
         !keyword ||
-        customer.name.toLowerCase().includes(keyword) ||
-        customer.phone.toLowerCase().includes(keyword) ||
-        customer.address.toLowerCase().includes(keyword);
+        normalizeSearchText(customer.name).includes(keyword) ||
+        normalizeSearchText(customer.phone).includes(keyword) ||
+        normalizeSearchText(customer.address).includes(keyword);
       const matchType = typeFilter === 'all' || customer.type === typeFilter;
       return matchKeyword && matchType;
     });
@@ -122,14 +122,14 @@ export default function Customers() {
 
   return (
     <div className="flex h-full flex-col bg-slate-50 animate-in fade-in duration-500 overflow-hidden">
-      <div className="p-3 lg:p-8 bg-white border-b sticky top-0 z-40 flex flex-col lg:flex-row gap-2 lg:gap-6 items-start lg:items-center justify-between shadow-sm shrink-0">
+      <div className="p-3 lg:p-4 bg-white border-b sticky top-0 z-40 flex flex-col lg:flex-row gap-2 lg:gap-4 items-start lg:items-center justify-between shadow-sm shrink-0">
         <div className="hidden lg:flex items-center gap-5">
-          <div className="h-9 w-9 sm:h-12 sm:w-12 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-lg shadow-sky-900/20 transform -rotate-3 shrink-0">
-            <Users className="h-5 w-5 sm:h-6 sm:w-6" />
+          <div className="h-9 w-9 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-sm shrink-0">
+            <Users className="h-4 w-4" />
           </div>
           <div>
-            <h1 className="text-page-title">Khách hàng</h1>
-            <p className="text-page-subtitle mt-1">{customers.length} khách trong hệ thống</p>
+            <h1 className="text-base font-semibold leading-tight text-slate-900">Khách hàng</h1>
+            <p className="text-[11px] leading-tight text-slate-500 mt-0.5">{customers.length} khách trong hệ thống</p>
           </div>
         </div>
 
@@ -137,7 +137,7 @@ export default function Customers() {
           <div className="relative group w-full lg:w-80">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-sky-600 transition-colors" />
             <Input
-              className="h-10 rounded-lg border-none bg-slate-100/70 shadow-inner focus:ring-2 focus:ring-sky-500/20 transition-all font-semibold text-sm placeholder:text-slate-400 pl-11 lg:h-11"
+              className="h-9 rounded-lg border-none bg-slate-100/70 shadow-inner focus:ring-2 focus:ring-sky-500/20 transition-all font-medium text-sm placeholder:text-slate-400 pl-10 lg:h-10"
               placeholder="Tìm theo tên, số điện thoại, địa chỉ"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -147,13 +147,13 @@ export default function Customers() {
             <select
               value={typeFilter}
               onChange={(e) => setTypeFilter(e.target.value as CustomerTypeFilter)}
-              className="h-10 w-full rounded-lg border-none bg-slate-100/70 shadow-inner px-3 text-sm text-slate-700 lg:h-11"
+              className="h-9 w-full rounded-lg border-none bg-slate-100/70 shadow-inner px-3 text-sm text-slate-700 lg:h-10"
             >
               <option value="all">Tất cả</option>
               <option value="retail">Khách lẻ</option>
               <option value="loyal">Khách thân thiết</option>
             </select>
-            <Button className="h-10 px-3 rounded-lg gap-2 font-semibold bg-sky-600 hover:bg-sky-700 shadow-lg shadow-sky-900/20 transition-all text-white text-sm lg:h-11 lg:px-4" onClick={() => setIsOpenCreateModal(true)}>
+            <Button className="h-9 px-3 rounded-lg gap-2 font-semibold bg-sky-600 hover:bg-sky-700 shadow-sm transition-all text-white text-sm lg:h-10 lg:px-4" onClick={() => setIsOpenCreateModal(true)}>
               <Plus className="h-4 w-4" />
               <span className="hidden sm:inline">Thêm khách</span>
             </Button>

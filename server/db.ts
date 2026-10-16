@@ -209,6 +209,26 @@ sqlite.exec(`
     UNIQUE(user_id, permission_code)
   );
 
+  CREATE TABLE IF NOT EXISTS role_profiles (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(tenant_id, code)
+  );
+
+  CREATE TABLE IF NOT EXISTS role_profile_permissions (
+    id TEXT PRIMARY KEY,
+    role_profile_id TEXT NOT NULL REFERENCES role_profiles(id) ON DELETE CASCADE,
+    permission_code TEXT NOT NULL REFERENCES permissions(code),
+    allowed INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL,
+    UNIQUE(role_profile_id, permission_code)
+  );
+
   CREATE TABLE IF NOT EXISTS suppliers (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL REFERENCES tenants(id),
@@ -493,6 +513,33 @@ sqlite.exec(`
     total REAL NOT NULL
   );
 `);
+
+// Keep supplier identifiers compact and readable while preserving existing supplier links.
+const supplierRows = sqlite.prepare('SELECT id, tenant_id, code FROM suppliers ORDER BY rowid').all() as Array<{ id: string; tenant_id: string; code: string }>;
+const supplierCounters = new Map<string, number>();
+const supplierUsedCodes = new Map<string, Set<string>>();
+for (const supplier of supplierRows) {
+  const tenantCodes = supplierUsedCodes.get(supplier.tenant_id) || new Set<string>();
+  supplierUsedCodes.set(supplier.tenant_id, tenantCodes);
+  const shortMatch = String(supplier.code || '').match(/^NCC(\d{3})$/i);
+  if (shortMatch) {
+    tenantCodes.add(String(supplier.code).toUpperCase());
+    supplierCounters.set(supplier.tenant_id, Math.max(supplierCounters.get(supplier.tenant_id) || 0, Number(shortMatch[1])));
+  }
+}
+for (const supplier of supplierRows) {
+  if (/^NCC\d{3}$/i.test(String(supplier.code || ''))) continue;
+  const tenantCodes = supplierUsedCodes.get(supplier.tenant_id) || new Set<string>();
+  let sequence = (supplierCounters.get(supplier.tenant_id) || 0) + 1;
+  let code = `NCC${String(sequence).padStart(3, '0')}`;
+  while (tenantCodes.has(code)) {
+    sequence += 1;
+    code = `NCC${String(sequence).padStart(3, '0')}`;
+  }
+  sqlite.prepare('UPDATE suppliers SET code = ? WHERE id = ?').run(code, supplier.id);
+  tenantCodes.add(code);
+  supplierCounters.set(supplier.tenant_id, sequence);
+}
 
 const permissionDefinitions = [
   ['dashboard.view', 'dashboard', 'view', 'Xem tổng quan'],

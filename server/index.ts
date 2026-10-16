@@ -20,6 +20,30 @@ const app = express();
 const PORT = process.env.API_PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-for-dev-only';
 
+const normalizeSearchText = (value: unknown) => String(value ?? '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/đ/g, 'd')
+  .replace(/Đ/g, 'D')
+  .toLowerCase()
+  .trim();
+
+const nextSupplierCode = (tenantId: string) => {
+  const rows = sqlite.prepare('SELECT code FROM suppliers WHERE tenant_id = ?').all(tenantId) as Array<{ code: string }>;
+  const usedCodes = new Set(rows.map((row) => String(row.code || '').toUpperCase()));
+  const highest = rows.reduce((result, row) => {
+    const match = String(row.code || '').match(/^NCC(\d{3})$/i);
+    return match ? Math.max(result, Number(match[1])) : result;
+  }, 0);
+  let sequence = highest + 1;
+  let code = `NCC${String(sequence).padStart(3, '0')}`;
+  while (usedCodes.has(code)) {
+    sequence += 1;
+    code = `NCC${String(sequence).padStart(3, '0')}`;
+  }
+  return code;
+};
+
 const withTenantAccess = (tenant: any) => {
   if (!tenant) return null;
   return {
@@ -61,6 +85,12 @@ const authenticateUser = (req: Request, res: Response, next: NextFunction) => {
 };
 
 const hasRole = (userRole: string, roles: string[]) => roles.includes(userRole);
+const builtInRoles = ['owner', 'manager', 'cashier', 'warehouse', 'accountant'];
+const isBuiltInRole = (role: string) => builtInRoles.includes(role);
+
+const roleProfileFor = (tenantId: string, code: string) => db.select().from(schema.roleProfiles)
+  .where(and(eq(schema.roleProfiles.tenantId, tenantId), eq(schema.roleProfiles.code, code))).get();
+
 const ensureRole = (req: Request, res: Response, roles: string[]) => {
   if (!req.user || !hasRole(req.user.role, roles)) {
     res.status(403).json({ error: 'Forbidden' });
@@ -78,6 +108,13 @@ const hasPermission = (req: Request, code: string) => {
       eq(schema.userPermissions.permissionCode, code),
     )).get();
   if (override) return override.allowed;
+  if (!isBuiltInRole(req.user.role)) {
+    const profile = roleProfileFor(req.user.tenantId, req.user.role);
+    if (!profile) return false;
+    const roleGrant = db.select().from(schema.roleProfilePermissions)
+      .where(and(eq(schema.roleProfilePermissions.roleProfileId, profile.id), eq(schema.roleProfilePermissions.permissionCode, code))).get();
+    return Boolean(roleGrant?.allowed);
+  }
   const roleGrant = db.select().from(schema.rolePermissions)
     .where(and(eq(schema.rolePermissions.role, req.user.role), eq(schema.rolePermissions.permissionCode, code))).get();
   return Boolean(roleGrant?.allowed);
@@ -430,14 +467,151 @@ app.post('/api/license/refresh', async (req, res) => {
 app.get('/api/permissions', (req, res) => {
   try {
     const grants = db.select().from(schema.permissions).all();
-    const roleGrants = db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, req.user.role)).all();
+    const profile = isBuiltInRole(req.user.role) ? null : roleProfileFor(req.user.tenantId, req.user.role);
+    const roleGrants = isBuiltInRole(req.user.role)
+      ? db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, req.user.role)).all()
+      : profile ? db.select().from(schema.roleProfilePermissions).where(eq(schema.roleProfilePermissions.roleProfileId, profile.id)).all() : [];
     const userGrants = db.select().from(schema.userPermissions).where(and(eq(schema.userPermissions.tenantId, req.user.tenantId), eq(schema.userPermissions.userId, req.user.id))).all();
-    const roleMap = new Map(roleGrants.map((grant) => [grant.permissionCode, grant.allowed]));
-    const userMap = new Map(userGrants.map((grant) => [grant.permissionCode, grant.allowed]));
+    const roleMap = new Map<string, boolean>(roleGrants.map((grant) => [String(grant.permissionCode), Boolean(grant.allowed)] as [string, boolean]));
+    const userMap = new Map<string, boolean>(userGrants.map((grant) => [String(grant.permissionCode), Boolean(grant.allowed)] as [string, boolean]));
     res.json(grants.map((permission) => ({ ...permission, allowed: req.user.role === 'owner' ? true : userMap.has(permission.code) ? userMap.get(permission.code) : Boolean(roleMap.get(permission.code)) })));
   } catch (err) {
     console.error('GET /api/permissions error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+const rolePermissionRows = (role: string, tenantId: string) => {
+  if (isBuiltInRole(role)) {
+    return db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, role)).all();
+  }
+  const profile = roleProfileFor(tenantId, role);
+  return profile ? db.select().from(schema.roleProfilePermissions).where(eq(schema.roleProfilePermissions.roleProfileId, profile.id)).all() : [];
+};
+
+app.get('/api/roles', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    const permissionCount = new Map<string, number>();
+    for (const role of builtInRoles) permissionCount.set(role, db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, role)).all().filter((grant) => grant.allowed).length);
+    const builtIns = [
+      { code: 'owner', name: 'Chủ cửa hàng', description: 'Toàn quyền trong cửa hàng.', builtIn: true },
+      { code: 'manager', name: 'Quản lý', description: 'Điều hành bán hàng, kho và báo cáo.', builtIn: true },
+      { code: 'cashier', name: 'Bán hàng', description: 'Lên đơn và chăm sóc khách tại quầy.', builtIn: true },
+      { code: 'warehouse', name: 'Kho', description: 'Quản lý mặt hàng và nhập hàng.', builtIn: true },
+      { code: 'accountant', name: 'Kế toán', description: 'Theo dõi công nợ, sổ quỹ và báo cáo.', builtIn: true },
+    ].map((role) => ({ ...role, permissionCount: permissionCount.get(role.code) || 0 }));
+    const custom = db.select().from(schema.roleProfiles).where(eq(schema.roleProfiles.tenantId, req.user.tenantId)).all().map((role) => ({
+      code: role.code,
+      name: role.name,
+      description: role.description,
+      builtIn: false,
+      permissionCount: db.select().from(schema.roleProfilePermissions).where(and(eq(schema.roleProfilePermissions.roleProfileId, role.id), eq(schema.roleProfilePermissions.allowed, true))).all().length,
+      createdAt: role.createdAt,
+      updatedAt: role.updatedAt,
+    }));
+    res.json([...builtIns, ...custom]);
+  } catch (err) {
+    console.error('GET /api/roles error:', err);
+    res.status(500).json({ error: 'Không thể tải danh sách vai trò' });
+  }
+});
+
+app.get('/api/roles/:code/permissions', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    const grants = rolePermissionRows(req.params.code, req.user.tenantId);
+    const grantMap = new Map<string, boolean>(grants.map((grant) => [String(grant.permissionCode), Boolean(grant.allowed)] as [string, boolean]));
+    res.json(db.select().from(schema.permissions).all().map((permission) => ({ ...permission, allowed: Boolean(grantMap.get(permission.code)) })));
+  } catch (err) {
+    console.error('GET /api/roles/:code/permissions error:', err);
+    res.status(500).json({ error: 'Không thể tải quyền của vai trò' });
+  }
+});
+
+app.post('/api/roles', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    const code = String(req.body?.code || '').trim().toLowerCase();
+    const name = String(req.body?.name || '').trim();
+    const description = String(req.body?.description || '').trim();
+    if (!/^[a-z][a-z0-9_-]{1,31}$/.test(code) || isBuiltInRole(code)) return res.status(400).json({ error: 'Mã vai trò không hợp lệ hoặc đã được hệ thống sử dụng' });
+    if (!name) return res.status(400).json({ error: 'Tên vai trò là bắt buộc' });
+    if (roleProfileFor(req.user.tenantId, code)) return res.status(400).json({ error: 'Mã vai trò đã tồn tại' });
+    const now = new Date().toISOString();
+    const profile = { id: uuid(), tenantId: req.user.tenantId, code, name, description, createdAt: now, updatedAt: now };
+    const entries = Array.isArray(req.body?.permissions) ? req.body.permissions : [];
+    const knownCodes = new Set(db.select({ code: schema.permissions.code }).from(schema.permissions).all().map((permission) => permission.code));
+    db.transaction((tx) => {
+      tx.insert(schema.roleProfiles).values(profile).run();
+      for (const entry of entries) {
+        if (typeof entry?.code !== 'string' || !knownCodes.has(entry.code) || typeof entry?.allowed !== 'boolean') continue;
+        tx.insert(schema.roleProfilePermissions).values({ id: uuid(), roleProfileId: profile.id, permissionCode: entry.code, allowed: entry.allowed, updatedAt: now }).run();
+      }
+    });
+    res.status(201).json({ ...profile, builtIn: false });
+  } catch (err) {
+    console.error('POST /api/roles error:', err);
+    res.status(500).json({ error: 'Không thể tạo vai trò' });
+  }
+});
+
+app.patch('/api/roles/:code', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    if (isBuiltInRole(req.params.code)) return res.status(400).json({ error: 'Không sửa vai trò mặc định' });
+    const profile = roleProfileFor(req.user.tenantId, req.params.code);
+    if (!profile) return res.status(404).json({ error: 'Không tìm thấy vai trò' });
+    const now = new Date().toISOString();
+    const updates: any = { updatedAt: now };
+    if (req.body?.name !== undefined) updates.name = String(req.body.name).trim();
+    if (req.body?.description !== undefined) updates.description = String(req.body.description).trim();
+    if (!updates.name) return res.status(400).json({ error: 'Tên vai trò là bắt buộc' });
+    db.update(schema.roleProfiles).set(updates).where(eq(schema.roleProfiles.id, profile.id)).run();
+    res.json({ ...profile, ...updates, builtIn: false });
+  } catch (err) {
+    console.error('PATCH /api/roles/:code error:', err);
+    res.status(500).json({ error: 'Không thể cập nhật vai trò' });
+  }
+});
+
+app.put('/api/roles/:code/permissions', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    if (isBuiltInRole(req.params.code)) return res.status(400).json({ error: 'Không sửa quyền vai trò mặc định' });
+    const profile = roleProfileFor(req.user.tenantId, req.params.code);
+    if (!profile) return res.status(404).json({ error: 'Không tìm thấy vai trò' });
+    const entries = Array.isArray(req.body?.permissions) ? req.body.permissions : [];
+    const knownCodes = new Set(db.select({ code: schema.permissions.code }).from(schema.permissions).all().map((permission) => permission.code));
+    const now = new Date().toISOString();
+    db.transaction((tx) => {
+      tx.delete(schema.roleProfilePermissions).where(eq(schema.roleProfilePermissions.roleProfileId, profile.id)).run();
+      for (const entry of entries) {
+        if (typeof entry?.code !== 'string' || !knownCodes.has(entry.code) || typeof entry?.allowed !== 'boolean') continue;
+        tx.insert(schema.roleProfilePermissions).values({ id: uuid(), roleProfileId: profile.id, permissionCode: entry.code, allowed: entry.allowed, updatedAt: now }).run();
+      }
+      tx.update(schema.roleProfiles).set({ updatedAt: now }).where(eq(schema.roleProfiles.id, profile.id)).run();
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('PUT /api/roles/:code/permissions error:', err);
+    res.status(500).json({ error: 'Không thể lưu quyền vai trò' });
+  }
+});
+
+app.delete('/api/roles/:code', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    if (isBuiltInRole(req.params.code)) return res.status(400).json({ error: 'Không xóa vai trò mặc định' });
+    const profile = roleProfileFor(req.user.tenantId, req.params.code);
+    if (!profile) return res.status(404).json({ error: 'Không tìm thấy vai trò' });
+    const assigned = db.select().from(schema.users).where(and(eq(schema.users.tenantId, req.user.tenantId), eq(schema.users.role, req.params.code as any))).get();
+    if (assigned) return res.status(400).json({ error: 'Không thể xóa vai trò đang được sử dụng' });
+    db.delete(schema.roleProfiles).where(eq(schema.roleProfiles.id, profile.id)).run();
+    res.json({ success: true });
+  } catch (err) {
+    console.error('DELETE /api/roles/:code error:', err);
+    res.status(500).json({ error: 'Không thể xóa vai trò' });
   }
 });
 
@@ -447,10 +621,10 @@ app.get('/api/users/:id/permissions', (req, res) => {
     const user = db.select().from(schema.users).where(and(eq(schema.users.id, req.params.id), eq(schema.users.tenantId, req.user.tenantId))).get();
     if (!user) return res.status(404).json({ error: 'User not found' });
     const permissions = db.select().from(schema.permissions).all();
-    const roleGrants = db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, user.role)).all();
+    const roleGrants = rolePermissionRows(user.role, req.user.tenantId);
     const userGrants = db.select().from(schema.userPermissions).where(and(eq(schema.userPermissions.tenantId, req.user.tenantId), eq(schema.userPermissions.userId, user.id))).all();
-    const roleMap = new Map(roleGrants.map((grant) => [grant.permissionCode, grant.allowed]));
-    const userMap = new Map(userGrants.map((grant) => [grant.permissionCode, grant.allowed]));
+    const roleMap = new Map<string, boolean>(roleGrants.map((grant) => [String(grant.permissionCode), Boolean(grant.allowed)] as [string, boolean]));
+    const userMap = new Map<string, boolean>(userGrants.map((grant) => [String(grant.permissionCode), Boolean(grant.allowed)] as [string, boolean]));
     res.json(permissions.map((permission) => ({ ...permission, allowed: userMap.has(permission.code) ? userMap.get(permission.code) : Boolean(roleMap.get(permission.code)), overridden: userMap.has(permission.code) })));
   } catch (err) {
     console.error('GET /api/users/:id/permissions error:', err);
@@ -594,9 +768,8 @@ app.post('/api/users', async (req, res) => {
       return res.status(400).json({ error: 'name, email, password, role are required' });
     }
 
-    const allowedRoles = ['manager', 'cashier', 'warehouse'];
-    if (!allowedRoles.includes(role)) {
-      return res.status(400).json({ error: 'Vai trò không hợp lệ. Chọn quản lý, bán hàng hoặc kho.' });
+    if (role === 'owner' || (!isBuiltInRole(role) && !roleProfileFor(req.user.tenantId, role))) {
+      return res.status(400).json({ error: 'Vai trò không hợp lệ hoặc chưa được tạo trong cửa hàng.' });
     }
 
     const existing = db.select().from(schema.users).where(eq(schema.users.email, email)).get();
@@ -632,19 +805,18 @@ app.patch('/api/users/:id', async (req, res) => {
     if (!existing) return res.status(404).json({ error: 'User not found' });
 
     const updates: any = {};
-    const allowedRoles = ['manager', 'cashier', 'warehouse', 'owner'];
-
     if (req.body.name !== undefined) updates.name = req.body.name;
     if (req.body.phone !== undefined) updates.phone = req.body.phone;
     if (req.body.status !== undefined) updates.status = req.body.status === 'inactive' ? 'inactive' : 'active';
     if (req.body.role !== undefined) {
-      if (!allowedRoles.includes(req.body.role)) {
-        return res.status(400).json({ error: 'Invalid role' });
+      const nextRole = String(req.body.role);
+      if (nextRole !== 'owner' && !isBuiltInRole(nextRole) && !roleProfileFor(req.user.tenantId, nextRole)) {
+        return res.status(400).json({ error: 'Vai trò không hợp lệ hoặc chưa được tạo trong cửa hàng.' });
       }
-      if (existing.id === req.user.id && req.body.role !== 'owner') {
+      if (existing.id === req.user.id && nextRole !== 'owner') {
         return res.status(400).json({ error: 'Owner cannot downgrade own role' });
       }
-      updates.role = req.body.role;
+      updates.role = nextRole;
     }
     if (req.body.password) {
       updates.password = await bcrypt.hash(req.body.password, 10);
@@ -889,10 +1061,10 @@ app.get('/api/products', (req, res) => {
       allProducts = allProducts.filter(p => p.category === category);
     }
     if (search) {
-      const searchStr = (search as string).toLowerCase();
+      const searchStr = normalizeSearchText(search);
       allProducts = allProducts.filter(p =>
-        p.name.toLowerCase().includes(searchStr) ||
-        p.sku.toLowerCase().includes(searchStr)
+        normalizeSearchText(p.name).includes(searchStr) ||
+        normalizeSearchText(p.sku).includes(searchStr)
       );
     }
 
@@ -1102,12 +1274,46 @@ const defaultAccountForPayment = (tenantId: string, paymentMethod: string) => {
   }).run();
   return db.select().from(schema.cashAccounts).where(and(eq(schema.cashAccounts.tenantId, tenantId), eq(schema.cashAccounts.type, type), eq(schema.cashAccounts.active, 1))).get()?.id || null;
 };
+
+const paymentAccountType = (paymentMethod: string) => (
+  paymentMethod === 'transfer' ? 'bank' : paymentMethod === 'wallet' ? 'wallet' : 'cash'
+);
+
+const resolvePaymentAccount = (tenantId: string, paymentMethod: string, accountId?: string | null) => {
+  if (paymentMethod === 'debt') return null;
+  const expectedType = paymentAccountType(paymentMethod);
+  if (accountId) {
+    const account = db.select().from(schema.cashAccounts).where(and(
+      eq(schema.cashAccounts.id, accountId),
+      eq(schema.cashAccounts.tenantId, tenantId),
+      eq(schema.cashAccounts.active, 1),
+    )).get();
+    if (account?.type === expectedType) return account.id;
+  }
+  return defaultAccountForPayment(tenantId, paymentMethod);
+};
+
+const backfillSalesCashbookAccounts = () => {
+  const entries = db.select().from(schema.cashbookEntries).where(eq(schema.cashbookEntries.category, 'Bán hàng')).all();
+  for (const entry of entries) {
+    if (entry.accountId || !entry.referenceId) continue;
+    const invoice = db.select().from(schema.invoices).where(and(
+      eq(schema.invoices.id, entry.referenceId),
+      eq(schema.invoices.tenantId, entry.tenantId),
+    )).get();
+    if (!invoice || invoice.paymentMethod === 'debt') continue;
+    const accountId = resolvePaymentAccount(entry.tenantId, invoice.paymentMethod, invoice.accountId);
+    if (accountId) db.update(schema.cashbookEntries).set({ accountId }).where(eq(schema.cashbookEntries.id, entry.id)).run();
+  }
+};
+
+backfillSalesCashbookAccounts();
 app.get('/api/suppliers', (req, res) => {
   try {
     let rows = db.select().from(schema.suppliers)
       .where(eq(schema.suppliers.tenantId, req.user.tenantId)).all();
-    const search = String(req.query.search || '').trim().toLowerCase();
-    if (search) rows = rows.filter((row) => `${row.code} ${row.name} ${row.phone}`.toLowerCase().includes(search));
+    const search = normalizeSearchText(req.query.search);
+    if (search) rows = rows.filter((row) => normalizeSearchText(`${row.code} ${row.name} ${row.phone}`).includes(search));
     res.json(rows);
   } catch (err) {
     console.error('GET /api/suppliers error:', err);
@@ -1120,7 +1326,7 @@ app.post('/api/suppliers', (req, res) => {
     if (!ensurePermission(req, res, 'partners.create')) return;
     const { code, name, phone = '', taxCode = null, address = '', note = '' } = req.body || {};
     if (!name) return res.status(400).json({ error: 'Supplier name is required' });
-    const supplier = { id: uuid(), tenantId: req.user.tenantId, code: code || `NCC-${Date.now()}`, name, phone, taxCode, address, note, currentPayable: 0, active: true };
+    const supplier = { id: uuid(), tenantId: req.user.tenantId, code: code || nextSupplierCode(req.user.tenantId), name, phone, taxCode, address, note, currentPayable: 0, active: true };
     db.insert(schema.suppliers).values(supplier).run();
     res.status(201).json(supplier);
   } catch (err) {
@@ -1146,7 +1352,18 @@ app.patch('/api/suppliers/:id', (req, res) => {
 app.get('/api/purchases', (req, res) => {
   try {
     const rows = db.select().from(schema.purchases).where(eq(schema.purchases.tenantId, req.user.tenantId)).orderBy(desc(schema.purchases.createdAt)).all();
-    res.json(rows.map((purchase) => ({ ...purchase, supplier: db.select().from(schema.suppliers).where(eq(schema.suppliers.id, purchase.supplierId)).get() || null })));
+    const tenantUsers = db.select().from(schema.users).where(eq(schema.users.tenantId, req.user.tenantId)).all();
+    const userNameById = new Map(tenantUsers.map((user) => [user.id, user.name]));
+    res.json(rows.map((purchase) => {
+      const items = db.select({ quantity: schema.purchaseItems.quantity }).from(schema.purchaseItems).where(eq(schema.purchaseItems.purchaseId, purchase.id)).all();
+      return {
+        ...purchase,
+        supplier: db.select().from(schema.suppliers).where(eq(schema.suppliers.id, purchase.supplierId)).get() || null,
+        createdByName: userNameById.get(purchase.createdBy) || null,
+        itemCount: items.length,
+        totalQuantity: items.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+      };
+    }));
   } catch (err) {
     console.error('GET /api/purchases error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1158,7 +1375,8 @@ app.get('/api/purchases/:id', (req, res) => {
     const purchase = db.select().from(schema.purchases).where(and(eq(schema.purchases.id, req.params.id), eq(schema.purchases.tenantId, req.user.tenantId))).get();
     if (!purchase) return res.status(404).json({ error: 'Purchase not found' });
     const items = db.select().from(schema.purchaseItems).where(eq(schema.purchaseItems.purchaseId, purchase.id)).all();
-    res.json({ ...purchase, items, supplier: db.select().from(schema.suppliers).where(eq(schema.suppliers.id, purchase.supplierId)).get() || null });
+    const creator = db.select({ name: schema.users.name }).from(schema.users).where(and(eq(schema.users.id, purchase.createdBy), eq(schema.users.tenantId, req.user.tenantId))).get();
+    res.json({ ...purchase, items, createdByName: creator?.name || null, supplier: db.select().from(schema.suppliers).where(eq(schema.suppliers.id, purchase.supplierId)).get() || null });
   } catch (err) {
     console.error('GET /api/purchases/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1375,10 +1593,10 @@ app.get('/api/customers', (req, res) => {
       .where(eq(schema.customers.tenantId, req.user.tenantId)).all();
 
     if (search) {
-      const searchStr = (search as string).toLowerCase();
+      const searchStr = normalizeSearchText(search);
       allCustomers = allCustomers.filter(c =>
-        c.name.toLowerCase().includes(searchStr) ||
-        c.phone.includes(searchStr)
+        normalizeSearchText(c.name).includes(searchStr) ||
+        normalizeSearchText(c.phone).includes(searchStr)
       );
     }
 
@@ -1678,7 +1896,7 @@ app.post('/api/invoices', (req, res) => {
       workflowStatus,
       paymentStatus,
       status: invoiceData.status || (paymentStatus === 'paid' ? 'completed' : paymentStatus === 'partial' ? 'partial' : 'unpaid'),
-      accountId: invoiceData.accountId || (Number(invoiceData.paidAmount) > 0 ? defaultAccountForPayment(req.user.tenantId, invoiceData.paymentMethod) : null),
+      accountId: Number(invoiceData.paidAmount) > 0 ? resolvePaymentAccount(req.user.tenantId, invoiceData.paymentMethod, invoiceData.accountId) : null,
       version: 1,
     };
 
@@ -1863,10 +2081,13 @@ const postDraftInvoice = (req: Request, invoiceId: string, confirmedItems: any[]
     if (customer) db.update(schema.customers).set({ totalDebt: customer.totalDebt + adjustedDebtAmount }).where(eq(schema.customers.id, customer.id)).run();
     db.insert(schema.debtLedger).values({ id: uuid(), tenantId: req.user.tenantId, customerId: invoice.customerId, invoiceId, amount: adjustedDebtAmount, type: 'increase', note: 'Mua hàng nợ', createdAt: now, createdBy: req.user.id }).run();
   }
+  const resolvedAccountId = adjustedPaidAmount > 0 && invoice.paymentMethod !== 'debt'
+    ? resolvePaymentAccount(req.user.tenantId, invoice.paymentMethod, invoice.accountId)
+    : null;
   if (adjustedPaidAmount > 0 && invoice.paymentMethod !== 'debt' && !db.select().from(schema.cashbookEntries).where(eq(schema.cashbookEntries.referenceId, invoiceId)).get()) {
-    db.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'income', amount: adjustedPaidAmount, category: 'Bán hàng', note: `Thu từ hóa đơn ${invoiceId}`, referenceId: invoiceId, accountId: invoice.accountId || defaultAccountForPayment(req.user.tenantId, invoice.paymentMethod), createdAt: now, createdBy: req.user.id }).run();
+    db.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'income', amount: adjustedPaidAmount, category: 'Bán hàng', note: `Thu từ hóa đơn ${invoiceId}`, referenceId: invoiceId, accountId: resolvedAccountId, createdAt: now, createdBy: req.user.id }).run();
   }
-  return db.update(schema.invoices).set({ totalAmount: confirmedTotal, finalAmount: adjustedFinalAmount, paidAmount: adjustedPaidAmount, debtAmount: adjustedDebtAmount, status: adjustedLegacyStatus, workflowStatus: 'closed', paymentStatus: adjustedPaymentStatus, closedBy: req.user.id, closedAt: now, version: invoice.version + 1 }).where(eq(schema.invoices.id, invoiceId)).returning().get();
+  return db.update(schema.invoices).set({ totalAmount: confirmedTotal, finalAmount: adjustedFinalAmount, paidAmount: adjustedPaidAmount, debtAmount: adjustedDebtAmount, accountId: resolvedAccountId, status: adjustedLegacyStatus, workflowStatus: 'closed', paymentStatus: adjustedPaymentStatus, closedBy: req.user.id, closedAt: now, version: invoice.version + 1 }).where(eq(schema.invoices.id, invoiceId)).returning().get();
 };
 
 app.patch('/api/invoices/:id', (req, res) => {
@@ -1949,7 +2170,12 @@ app.get('/api/invoices/:id/returnable', (req, res) => {
     if (!invoice) return res.status(404).json({ error: 'Không tìm thấy hóa đơn' });
     const items = db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoice.id)).all();
     const returns = db.select().from(schema.salesReturnItems).where(inArray(schema.salesReturnItems.invoiceItemId, items.map((item) => item.id))).all();
-    res.json({ invoice, items: items.map((item) => ({ ...item, returnedQuantity: returns.filter((row) => row.invoiceItemId === item.id).reduce((sum, row) => sum + Number(row.quantity), 0), returnedBaseQuantity: returns.filter((row) => row.invoiceItemId === item.id).reduce((sum, row) => sum + Number(row.baseQuantity), 0) })) });
+    res.json({ invoice, items: items.map((item) => {
+      const soldQuantity = Number(item.confirmedQuantity || item.quantity);
+      const returnedQuantity = returns.filter((row) => row.invoiceItemId === item.id).reduce((sum, row) => sum + Number(row.quantity), 0);
+      const returnedBaseQuantity = returns.filter((row) => row.invoiceItemId === item.id).reduce((sum, row) => sum + Number(row.baseQuantity), 0);
+      return { ...item, soldQuantity, returnedQuantity, returnedBaseQuantity, returnableQuantity: Math.max(0, soldQuantity - returnedQuantity) };
+    }) });
   } catch (err) { res.status(500).json({ error: 'Không thể tải dòng hàng có thể trả' }); }
 });
 
@@ -1987,7 +2213,15 @@ app.post('/api/invoices/:id/returns', (req, res) => {
     const totalAmount = normalized.reduce((sum, item) => sum + item.total, 0);
     const debtReduction = Math.min(Math.max(0, Number(invoice.debtAmount) || 0), totalAmount);
     const refundAmount = Math.max(0, totalAmount - debtReduction);
-    const refundAccountId = refundAmount > 0 ? (req.body?.refundAccountId || invoice.accountId || defaultAccountForPayment(req.user.tenantId, invoice.paymentMethod)) : null;
+    const requestedRefundAccountId = req.body?.refundAccountId || invoice.accountId || null;
+    const refundAccount = requestedRefundAccountId
+      ? db.select().from(schema.cashAccounts).where(and(
+        eq(schema.cashAccounts.id, String(requestedRefundAccountId)),
+        eq(schema.cashAccounts.tenantId, req.user.tenantId),
+        eq(schema.cashAccounts.active, 1),
+      )).get()
+      : null;
+    const refundAccountId = refundAmount > 0 ? (refundAccount?.id || defaultAccountForPayment(req.user.tenantId, invoice.paymentMethod)) : null;
     if (refundAmount > 0 && !refundAccountId) return res.status(400).json({ error: 'Cần chọn tài khoản hoàn tiền' });
     const returnId = uuid();
     const timestamp = new Date().toISOString();

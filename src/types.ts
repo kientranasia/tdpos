@@ -70,7 +70,7 @@ export interface User {
   name: string;
   email: string;
   phone?: string;
-  role: 'owner' | 'manager' | 'cashier' | 'warehouse' | 'accountant';
+  role: string;
   tenantId: string;
   status: 'active' | 'inactive';
 }

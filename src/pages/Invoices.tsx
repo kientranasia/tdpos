@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, ArrowUpDown, Calendar, ChevronDown, ChevronRight, Printer, Receipt, RotateCcw, Search, ShoppingCart, SlidersHorizontal, User, Wallet, X } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
-import { formatCurrency } from '../lib/utils';
+import { formatCurrency, normalizeSearchText } from '../lib/utils';
 import { cashAccountsApi, debtLedgerApi, invoiceItemsApi, invoicesApi } from '../lib/api';
 import { DebtLedger, Invoice, InvoiceItem } from '../types';
 
 export default function Invoices() {
   const { invoices, customers, products, refreshInvoices } = useApp();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'partial' | 'unpaid'>('all');
   const [pendingStatusFilter, setPendingStatusFilter] = useState<'all' | 'completed' | 'partial' | 'unpaid'>('all');
@@ -31,6 +32,8 @@ export default function Invoices() {
   const [returnAccountId, setReturnAccountId] = useState('');
   const [returnAccounts, setReturnAccounts] = useState<any[]>([]);
   const [returnMessage, setReturnMessage] = useState('');
+  const [salesReturns, setSalesReturns] = useState<any[]>([]);
+  const [loadingSalesReturns, setLoadingSalesReturns] = useState(false);
 
   const customerNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -55,7 +58,7 @@ export default function Invoices() {
   };
 
   const baseInvoices = useMemo(() => {
-    const keyword = searchTerm.trim().toLowerCase();
+    const keyword = normalizeSearchText(searchTerm);
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
@@ -77,7 +80,7 @@ export default function Invoices() {
       .filter((inv) => {
         if (!keyword) return true;
         const customerName = inv.customerId ? customerNameById.get(inv.customerId) || '' : 'khách vãng lai';
-        return inv.id.toLowerCase().includes(keyword) || customerName.toLowerCase().includes(keyword);
+        return normalizeSearchText(inv.id).includes(keyword) || normalizeSearchText(customerName).includes(keyword);
       })
       .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
   }, [customerNameById, invoices, searchTerm, timeFilter]);
@@ -88,8 +91,22 @@ export default function Invoices() {
   }, [baseInvoices, statusFilter]);
 
   const selectedInvoice = useMemo(
-    () => filteredInvoices.find((inv) => inv.id === selectedInvoiceId) || null,
-    [filteredInvoices, selectedInvoiceId]
+    () => invoices.find((inv) => inv.id === selectedInvoiceId) || filteredInvoices.find((inv) => inv.id === selectedInvoiceId) || null,
+    [filteredInvoices, invoices, selectedInvoiceId]
+  );
+
+  const returnSummaryByInvoice = useMemo(() => {
+    const map = new Map<string, { count: number; total: number }>();
+    salesReturns.forEach((item) => {
+      const current = map.get(item.invoiceId) || { count: 0, total: 0 };
+      map.set(item.invoiceId, { count: current.count + 1, total: current.total + Number(item.totalAmount || 0) });
+    });
+    return map;
+  }, [salesReturns]);
+
+  const selectedInvoiceReturns = useMemo(
+    () => salesReturns.filter((item) => item.invoiceId === selectedInvoiceId),
+    [salesReturns, selectedInvoiceId]
   );
 
   const statusCounts = useMemo(() => {
@@ -102,8 +119,8 @@ export default function Invoices() {
 
   const invoiceOverview = useMemo(() => {
     const totalRevenue = filteredInvoices.reduce((sum, inv) => sum + inv.finalAmount, 0);
-    const unpaidCount = filteredInvoices.filter((inv) => inv.status === 'unpaid').length;
-    const partialCount = filteredInvoices.filter((inv) => inv.status === 'partial').length;
+    const unpaidCount = filteredInvoices.filter((inv) => effectiveStatusOf(inv) === 'unpaid').length;
+    const partialCount = filteredInvoices.filter((inv) => effectiveStatusOf(inv) === 'partial').length;
     const debtTotal = filteredInvoices.reduce((sum, inv) => sum + (inv.debtAmount || 0), 0);
     return { totalRevenue, unpaidCount, partialCount, debtTotal };
   }, [filteredInvoices]);
@@ -153,9 +170,20 @@ export default function Invoices() {
   const openReturnModal = async (invoice: Invoice) => {
     try {
       const [data, accounts] = await Promise.all([invoicesApi.returnable(invoice.id), cashAccountsApi.list()]);
-      setReturnLines(data.items.map((item: any) => ({ invoiceItemId: item.id, productName: item.productName, quantity: 0, maxQuantity: Math.max(0, Number(item.quantity) - Number(item.returnedQuantity || 0)), price: Number(item.price) })));
+      setReturnLines(data.items.map((item: any) => ({ invoiceItemId: item.id, productName: item.productName, quantity: 0, maxQuantity: Math.max(0, Number(item.returnableQuantity ?? (Number(item.soldQuantity ?? item.quantity) - Number(item.returnedQuantity || 0)))), price: Number(item.price) })));
       setReturnAccounts(accounts); setReturnAccountId(invoice.accountId || accounts.find((account: any) => account.type === 'cash')?.id || accounts[0]?.id || ''); setReturnMessage(''); setShowReturnModal(true);
     } catch (error) { setReturnMessage(error instanceof Error ? error.message : 'Không thể tải hàng hóa có thể trả.'); }
+  };
+
+  const loadSalesReturns = async () => {
+    setLoadingSalesReturns(true);
+    try {
+      setSalesReturns(await invoicesApi.returns());
+    } catch {
+      setSalesReturns([]);
+    } finally {
+      setLoadingSalesReturns(false);
+    }
   };
 
   const submitReturn = async () => {
@@ -165,9 +193,11 @@ export default function Invoices() {
     try {
       const result = await invoicesApi.createReturn(selectedInvoice.id, { items, refundAccountId: returnAccountId || null });
       setReturnMessage(`Đã trả hàng. Giảm công nợ ${formatCurrency(Number(result.debtReduction || 0))}, hoàn tiền ${formatCurrency(Number(result.refundAmount || 0))}.`);
-      setShowReturnModal(false); await refreshInvoices();
+      setShowReturnModal(false); await Promise.all([refreshInvoices(), loadSalesReturns()]);
     } catch (error) { setReturnMessage(error instanceof Error ? error.message : 'Không thể tạo phiếu trả khách hàng.'); }
   };
+
+  const canSubmitReturn = returnLines.some((line) => line.maxQuantity > 0 && line.quantity > 0);
 
   const dayLabel = (value: string) => new Date(value).toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
   const timeFilterLabel = {
@@ -186,6 +216,13 @@ export default function Invoices() {
   }[statusFilter];
 
   useEffect(() => {
+    const invoiceId = searchParams.get('invoiceId');
+    if (invoiceId && invoices.some((invoice) => invoice.id === invoiceId)) {
+      setSelectedInvoiceId(invoiceId);
+    }
+  }, [invoices, searchParams]);
+
+  useEffect(() => {
     const loadDebtPayments = async () => {
       try {
         const entries = await debtLedgerApi.list();
@@ -195,6 +232,10 @@ export default function Invoices() {
       }
     };
     loadDebtPayments();
+  }, []);
+
+  useEffect(() => {
+    void loadSalesReturns();
   }, []);
 
   useEffect(() => {
@@ -235,7 +276,7 @@ export default function Invoices() {
     popup.document.write(`
       <html>
         <head><title>Invoice ${invoice.id}</title></head>
-        <body style="font-family: Arial, sans-serif; padding: 20px; color:#0f172a">
+        <body style="font-family: system-ui, -apple-system, sans-serif; padding: 20px; color:#0f172a">
           <h2 style="margin:0 0 8px">Hóa đơn #${invoice.id}</h2>
           <p style="margin:4px 0">Khách hàng: ${customerName}</p>
           <p style="margin:4px 0">Thời gian: ${new Date(invoice.createdAt).toLocaleString('vi-VN')}</p>
@@ -316,6 +357,7 @@ export default function Invoices() {
           <div className="rounded-lg bg-white border border-slate-200 divide-y divide-slate-100">
             {filteredInvoices.map((inv, index) => {
               const customerName = inv.customerId ? customerNameById.get(inv.customerId) || 'Khách vãng lai' : 'Khách vãng lai';
+              const returnSummary = returnSummaryByInvoice.get(inv.id);
               const prev = filteredInvoices[index - 1];
               const showDateGroup = !prev || new Date(prev.createdAt).toDateString() !== new Date(inv.createdAt).toDateString();
               return (
@@ -333,6 +375,7 @@ export default function Invoices() {
                         <p className="text-[14px] text-slate-600 mt-1 truncate">
                           {inv.customerId ? 'Khách hàng có hồ sơ' : 'Khách vãng lai'}
                         </p>
+                        {returnSummary && <p className="mt-1 text-[12px] font-medium text-orange-700">Đã trả {formatCurrency(returnSummary.total)} · {returnSummary.count} phiếu</p>}
                       </div>
                       <div className="text-right shrink-0">
                         <p className="text-[18px] font-semibold text-slate-900 tabular-nums">{formatCurrency(inv.finalAmount)}</p>
@@ -398,52 +441,78 @@ export default function Invoices() {
       </div>
 
       <div className="hidden lg:block flex-1 overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-5 p-4 md:gap-6 md:p-6">
-      <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <div className="rounded-lg border border-slate-200 bg-white p-4">
-          <p className="text-xs text-slate-500">Doanh thu theo bộ lọc</p>
-          <p className="mt-1 text-lg font-semibold text-sky-700 tabular-nums">{formatCurrency(invoiceOverview.totalRevenue)}</p>
+      <div className="mx-auto flex w-full max-w-[1360px] flex-col gap-2 p-2 md:gap-3 md:p-3">
+        <section className="grid grid-cols-2 gap-1.5 md:grid-cols-4">
+        <div className="rounded-md border border-slate-200 bg-white px-2 py-1.5">
+          <p className="text-[11px] text-slate-500">Doanh thu theo bộ lọc</p>
+          <p className="mt-0.5 text-base font-semibold text-sky-700 tabular-nums">{formatCurrency(invoiceOverview.totalRevenue)}</p>
         </div>
-        <div className="rounded-lg border border-slate-200 bg-white p-4">
-          <p className="text-xs text-slate-500">Đơn chưa thanh toán</p>
-          <p className="mt-1 text-lg font-semibold text-amber-700 tabular-nums">{invoiceOverview.unpaidCount}</p>
+        <div className="rounded-md border border-slate-200 bg-white px-2 py-1.5">
+          <p className="text-[11px] text-slate-500">Đơn chưa thanh toán</p>
+          <p className="mt-0.5 text-base font-semibold text-amber-700 tabular-nums">{invoiceOverview.unpaidCount}</p>
         </div>
-        <div className="rounded-lg border border-slate-200 bg-white p-4">
-          <p className="text-xs text-slate-500">Đơn thanh toán một phần</p>
-          <p className="mt-1 text-lg font-semibold text-orange-700 tabular-nums">{invoiceOverview.partialCount}</p>
+        <div className="rounded-md border border-slate-200 bg-white px-2 py-1.5">
+          <p className="text-[11px] text-slate-500">Đơn thanh toán một phần</p>
+          <p className="mt-0.5 text-base font-semibold text-orange-700 tabular-nums">{invoiceOverview.partialCount}</p>
         </div>
-        <div className="rounded-lg border border-slate-200 bg-white p-4">
-          <p className="text-xs text-slate-500">Tổng công nợ còn lại</p>
-          <p className="mt-1 text-lg font-semibold text-rose-700 tabular-nums">{formatCurrency(invoiceOverview.debtTotal)}</p>
+        <div className="rounded-md border border-slate-200 bg-white px-2 py-1.5">
+          <p className="text-[11px] text-slate-500">Tổng công nợ còn lại</p>
+          <p className="mt-0.5 text-base font-semibold text-rose-700 tabular-nums">{formatCurrency(invoiceOverview.debtTotal)}</p>
         </div>
       </section>
 
-      <section className="rounded-lg border border-slate-200 bg-white p-3">
-        <div className="flex flex-wrap gap-2">
+      <section className="rounded-md border border-slate-200 bg-white p-1.5">
+        <div className="flex flex-wrap gap-1.5">
           <button
             onClick={() => setStatusFilter('all')}
-            className={`h-9 rounded-lg px-3 text-sm ${statusFilter === 'all' ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-600'}`}
+            className={`h-8 rounded-md px-2.5 text-xs ${statusFilter === 'all' ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-600'}`}
           >
             Tất cả
           </button>
           <button
             onClick={() => setStatusFilter('completed')}
-            className={`h-9 rounded-lg px-3 text-sm ${statusFilter === 'completed' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}
+            className={`h-8 rounded-md px-2.5 text-xs ${statusFilter === 'completed' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}
           >
             Đã thanh toán
           </button>
           <button
             onClick={() => setStatusFilter('partial')}
-            className={`h-9 rounded-lg px-3 text-sm ${statusFilter === 'partial' ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-600'}`}
+            className={`h-8 rounded-md px-2.5 text-xs ${statusFilter === 'partial' ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-600'}`}
           >
             Thanh toán một phần
           </button>
           <button
             onClick={() => setStatusFilter('unpaid')}
-            className={`h-9 rounded-lg px-3 text-sm ${statusFilter === 'unpaid' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}
+            className={`h-8 rounded-md px-2.5 text-xs ${statusFilter === 'unpaid' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}
           >
             Chưa thanh toán
           </button>
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-slate-200 bg-white">
+        <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-900">Phiếu trả hàng khách hàng</h2>
+            <p className="mt-0.5 text-xs text-slate-500">Mỗi lần trả được lưu thành một phiếu riêng và liên kết về hóa đơn gốc.</p>
+          </div>
+          <span className="text-xs text-slate-500">{salesReturns.length} phiếu</span>
+        </div>
+        <div className="divide-y divide-slate-100">
+          {loadingSalesReturns ? <p className="p-6 text-sm text-slate-500">Đang tải lịch sử trả hàng...</p> : salesReturns.slice(0, 20).map((returnSlip) => {
+            const invoice = invoices.find((item) => item.id === returnSlip.invoiceId);
+            const customerName = invoice?.customerId ? customerNameById.get(invoice.customerId) || 'Khách vãng lai' : 'Khách vãng lai';
+            return (
+              <button key={returnSlip.id} type="button" onClick={() => setSelectedInvoiceId(returnSlip.invoiceId)} className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-900">{returnSlip.documentNo || returnSlip.id}</p>
+                  <p className="mt-0.5 truncate text-xs text-slate-500">Hóa đơn #{returnSlip.invoiceId} · {customerName} · {new Date(returnSlip.createdAt).toLocaleString('vi-VN')}</p>
+                </div>
+                <span className="shrink-0 text-sm font-semibold text-orange-700">-{formatCurrency(Number(returnSlip.totalAmount || 0))}</span>
+              </button>
+            );
+          })}
+          {!loadingSalesReturns && salesReturns.length === 0 && <p className="p-6 text-sm text-slate-500">Chưa có phiếu trả hàng.</p>}
         </div>
       </section>
 
@@ -456,25 +525,20 @@ export default function Invoices() {
           <p className="text-right">Thao tác</p>
         </div>
         <div className="divide-y divide-slate-100">
-          {filteredInvoices.map((inv, index) => {
+          {filteredInvoices.map((inv) => {
             const customerName = inv.customerId ? customerNameById.get(inv.customerId) || 'Khách vãng lai' : 'Khách vãng lai';
-            const prev = filteredInvoices[index - 1];
-            const showDateGroup = !prev || new Date(prev.createdAt).toDateString() !== new Date(inv.createdAt).toDateString();
-            const meta = statusMeta(inv.status);
+            const returnSummary = returnSummaryByInvoice.get(inv.id);
+            const meta = statusMeta(effectiveStatusOf(inv));
             return (
               <div key={inv.id}>
-                {showDateGroup && (
-                  <div className="border-b border-slate-100 bg-slate-50 px-4 py-2 text-xs font-medium text-slate-500">
-                    {dayLabel(inv.createdAt)}
-                  </div>
-                )}
-              <div className="p-4 md:grid md:grid-cols-[1.2fr_1fr_1fr_1fr_auto] md:items-center md:gap-3">
+              <div className="p-3 md:grid md:grid-cols-[1.2fr_1fr_1fr_1fr_auto] md:items-center md:gap-3">
                 <div className="mb-2 md:mb-0">
-                  <p className="text-sm font-semibold text-slate-900">#{inv.id}</p>
+                  <button type="button" className="text-left text-sm font-semibold text-sky-700 hover:underline" onClick={() => setSelectedInvoiceId(inv.id)}>#{inv.documentNo || inv.id}</button>
                   <span className={`status-chip mt-1 ${meta.tone}`}>{meta.label}</span>
                   <span className={`status-chip mt-1 ml-1 ${workflowMeta(inv.workflowStatus).tone}`}>{workflowMeta(inv.workflowStatus).label}</span>
+                  {returnSummary && <p className="mt-1 text-xs font-medium text-orange-700">Đã trả {formatCurrency(returnSummary.total)} · {returnSummary.count} phiếu</p>}
                 </div>
-                <p className="mb-2 text-sm text-slate-800 md:mb-0">{customerName}</p>
+                {inv.customerId ? <button type="button" className="mb-2 text-left text-sm text-sky-700 hover:underline md:mb-0" onClick={() => navigate(`/app/customers/${inv.customerId}`)}>{customerName}</button> : <p className="mb-2 text-sm text-slate-800 md:mb-0">{customerName}</p>}
                 <div className="mb-2 flex items-center gap-1 text-sm text-slate-600 md:mb-0">
                   <Calendar className="h-4 w-4 text-slate-400" />
                   {new Date(inv.createdAt).toLocaleString('vi-VN')}
@@ -494,6 +558,7 @@ export default function Invoices() {
                       {inv.workflowStatus === 'draft' ? 'Kiểm bill' : inv.workflowStatus === 'checked' ? 'Lấy hàng' : 'Chốt bill'}
                     </Button>
                   )}
+                  {inv.workflowStatus === 'closed' && <Button variant="outline" className="h-8 px-2 text-xs" onClick={() => { setSelectedInvoiceId(inv.id); void openReturnModal(inv); }}><RotateCcw className="mr-1 h-3.5 w-3.5" />Trả hàng</Button>}
                   <Button variant="ghost" size="icon" onClick={() => printInvoice(inv.id)}>
                     <Printer className="h-4 w-4" />
                   </Button>
@@ -664,8 +729,8 @@ export default function Invoices() {
                               )}
                             </div>
                             <div className="min-w-0">
-                              <p className="truncate text-sm font-medium text-slate-900">{item.productName}</p>
-                              <p className="text-xs text-slate-500">{product?.sku || item.productId}</p>
+                              <button type="button" className="block max-w-full truncate text-left text-sm font-medium text-slate-900 hover:text-sky-700 hover:underline" onClick={() => navigate(`/app/inventory?productId=${encodeURIComponent(item.productId)}`)}>{item.productName}</button>
+                              <button type="button" className="block text-xs text-slate-500 hover:text-sky-700 hover:underline" onClick={() => navigate(`/app/inventory?productId=${encodeURIComponent(item.productId)}`)}>{product?.sku || item.productId}</button>
                               <p className="text-xs text-slate-600">{formatCurrency(item.price)} x {item.quantity}</p>
                             </div>
                           </div>
@@ -679,11 +744,11 @@ export default function Invoices() {
 
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Khách hàng</span>
-                <span className="font-medium text-slate-900">
-                  {selectedInvoice.customerId
-                    ? customerNameById.get(selectedInvoice.customerId) || 'Khách vãng lai'
-                    : 'Khách vãng lai'}
-                </span>
+                {selectedInvoice.customerId ? (
+                  <button type="button" className="font-medium text-sky-700 hover:underline" onClick={() => navigate(`/app/customers/${selectedInvoice.customerId}`)}>
+                    {customerNameById.get(selectedInvoice.customerId) || 'Khách vãng lai'}
+                  </button>
+                ) : <span className="font-medium text-slate-900">Khách vãng lai</span>}
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Nhân sự tạo đơn</span>
@@ -692,7 +757,7 @@ export default function Invoices() {
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Trạng thái</span>
                 <div className="flex gap-1">
-                  <span className={`status-chip ${statusMeta(selectedInvoice.status).tone}`}>{statusMeta(selectedInvoice.status).label}</span>
+                  <span className={`status-chip ${statusMeta(effectiveStatusOf(selectedInvoice)).tone}`}>{statusMeta(effectiveStatusOf(selectedInvoice)).label}</span>
                   <span className={`status-chip ${workflowMeta(selectedInvoice.workflowStatus).tone}`}>{workflowMeta(selectedInvoice.workflowStatus).label}</span>
                 </div>
               </div>
@@ -708,6 +773,17 @@ export default function Invoices() {
                 <span className="text-slate-500">Công nợ</span>
                 <span className="font-medium text-amber-700">{formatCurrency(selectedInvoice.debtAmount)}</span>
               </div>
+              {selectedInvoiceReturns.length > 0 && (
+                <div className="mt-3 rounded-md bg-orange-50 px-3 py-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-medium text-orange-900">Đã trả hàng</span>
+                    <span className="font-semibold text-orange-700">{formatCurrency(selectedInvoiceReturns.reduce((sum, item) => sum + Number(item.totalAmount || 0), 0))}</span>
+                  </div>
+                  <div className="mt-2 space-y-1 border-t border-orange-100 pt-2">
+                    {selectedInvoiceReturns.map((returnSlip) => <button key={returnSlip.id} type="button" onClick={() => setShowReturnModal(false)} className="flex w-full items-center justify-between text-left text-xs text-orange-800 hover:underline"><span>{returnSlip.documentNo || returnSlip.id}</span><span>{new Date(returnSlip.createdAt).toLocaleDateString('vi-VN')} · {formatCurrency(Number(returnSlip.totalAmount || 0))}</span></button>)}
+                  </div>
+                </div>
+              )}
             </div>
 
             {lifecycleError && <p className="mt-3 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700">{lifecycleError}</p>}
@@ -744,7 +820,7 @@ export default function Invoices() {
               <button onClick={() => setSelectedInvoiceId(null)} className="text-slate-500"><ArrowLeft className="h-5 w-5" /></button>
               <div className="min-w-0">
                 <p className="text-base font-semibold text-slate-900">{selectedInvoice.id}</p>
-                <p className="text-xs text-slate-500">{new Date(selectedInvoice.createdAt).toLocaleString('vi-VN')} · {statusMeta(selectedInvoice.status).label}</p>
+                <p className="text-xs text-slate-500">{new Date(selectedInvoice.createdAt).toLocaleString('vi-VN')} · {statusMeta(effectiveStatusOf(selectedInvoice)).label}</p>
               </div>
               <button onClick={() => setShowInvoiceActions(true)} className="text-slate-500 px-2 text-xl leading-none">•••</button>
             </div>
@@ -768,8 +844,8 @@ export default function Invoices() {
                           {product?.imageUrl ? <img src={product.imageUrl} alt={item.productName} className="h-full w-full object-cover" /> : <div className="h-full w-full flex items-center justify-center text-xs text-slate-400">SP</div>}
                         </div>
                         <div className="min-w-0">
-                          <p className="text-[17px] font-medium text-slate-900 line-clamp-2">{item.productName}</p>
-                          <p className="text-[13px] text-slate-500">{product?.sku || item.productId}</p>
+                          <button type="button" className="block text-left text-[17px] font-medium text-slate-900 line-clamp-2 hover:text-sky-700 hover:underline" onClick={() => navigate(`/app/inventory?productId=${encodeURIComponent(item.productId)}`)}>{item.productName}</button>
+                          <button type="button" className="block text-[13px] text-slate-500 hover:text-sky-700 hover:underline" onClick={() => navigate(`/app/inventory?productId=${encodeURIComponent(item.productId)}`)}>{product?.sku || item.productId}</button>
                           <p className="text-[14px] text-slate-700">{formatCurrency(item.price)} x {item.quantity}</p>
                         </div>
                       </div>
@@ -784,6 +860,7 @@ export default function Invoices() {
                 <div className="p-4 flex justify-between"><span>Khách cần trả</span><span>{formatCurrency(selectedInvoice.finalAmount)}</span></div>
                 <div className="p-4 flex justify-between"><span>Khách đã trả</span><span className="text-sky-700">{formatCurrency(selectedInvoice.paidAmount)}</span></div>
               </div>
+              {selectedInvoiceReturns.length > 0 && <div className="rounded-lg border border-orange-100 bg-orange-50 p-4"><div className="flex items-center justify-between"><span className="font-medium text-orange-900">Đã trả hàng</span><span className="font-semibold text-orange-700">{formatCurrency(selectedInvoiceReturns.reduce((sum, item) => sum + Number(item.totalAmount || 0), 0))}</span></div><div className="mt-2 space-y-1 border-t border-orange-100 pt-2">{selectedInvoiceReturns.map((returnSlip) => <p key={returnSlip.id} className="flex justify-between text-xs text-orange-800"><span>{returnSlip.documentNo || returnSlip.id}</span><span>{formatCurrency(Number(returnSlip.totalAmount || 0))}</span></p>)}</div></div>}
               <div className="rounded-lg border border-slate-200 bg-white p-4">
                 <div className="flex items-center justify-between">
                   <p className="text-xs uppercase text-slate-400">Ghi chú</p>
@@ -811,11 +888,13 @@ export default function Invoices() {
       {showReturnModal && selectedInvoice && (
         <div className="fixed inset-0 z-[180] flex items-center justify-center bg-slate-900/60 p-4">
           <div className="w-full max-w-2xl space-y-4 rounded-lg bg-white p-5 shadow-2xl">
-            <div className="flex items-center justify-between"><div><h2 className="font-semibold text-slate-900">Trả hàng khách hàng</h2><p className="text-xs text-slate-500">Hóa đơn #{selectedInvoice.id} · Công nợ được giảm trước, phần còn lại hoàn tiền</p></div><button onClick={() => setShowReturnModal(false)}><X className="h-5 w-5 text-slate-400" /></button></div>
-            <div className="space-y-2">{returnLines.map((line, index) => <div key={line.invoiceItemId} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded-md border border-slate-100 p-3"><div><p className="font-medium text-slate-900">{line.productName}</p><p className="text-xs text-slate-500">Đã bán tối đa có thể trả: {line.maxQuantity}</p></div><Input type="number" min="0" max={line.maxQuantity} value={line.quantity || ''} disabled={line.maxQuantity <= 0} onChange={(e) => setReturnLines(returnLines.map((row, i) => i === index ? { ...row, quantity: Math.min(row.maxQuantity, Number(e.target.value) || 0) } : row))} className="h-9 w-24" /><span className="text-sm text-slate-600">{formatCurrency(line.quantity * line.price)}</span></div>)}</div>
+            <div className="flex items-center justify-between"><div><h2 className="font-semibold text-slate-900">Tạo phiếu trả hàng</h2><p className="text-xs text-slate-500">Hóa đơn #{selectedInvoice.id} · Chọn từng món và số lượng cần trả</p></div><button onClick={() => setShowReturnModal(false)}><X className="h-5 w-5 text-slate-400" /></button></div>
+            <div className="rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-800">Phiếu trả hàng được liên kết với hóa đơn gốc, cập nhật lại tồn kho và ghi nhận hoàn tiền trong sổ quỹ.</div>
+            <div className="space-y-2">{returnLines.map((line, index) => <div key={line.invoiceItemId} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded-md border border-slate-100 p-3"><div><p className="font-medium text-slate-900">{line.productName}</p><p className="text-xs text-slate-500">Còn có thể trả: {line.maxQuantity}</p></div><Input type="number" min="0" max={line.maxQuantity} value={line.quantity || ''} disabled={line.maxQuantity <= 0} onChange={(e) => setReturnLines(returnLines.map((row, i) => i === index ? { ...row, quantity: Math.min(row.maxQuantity, Number(e.target.value) || 0) } : row))} className="h-9 w-24" /><span className="text-sm text-slate-600">{formatCurrency(line.quantity * line.price)}</span></div>)}</div>
+            {!canSubmitReturn && <p className="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-500">Hóa đơn này không còn số lượng có thể trả.</p>}
             <label className="block text-sm text-slate-600">Tài khoản hoàn tiền<select value={returnAccountId} onChange={(e) => setReturnAccountId(e.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-200 px-3"><option value="">Tự động</option>{returnAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
             {returnMessage && <p className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-700">{returnMessage}</p>}
-            <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setShowReturnModal(false)}>Hủy</Button><Button onClick={() => void submitReturn()}><RotateCcw className="mr-2 h-4 w-4" />Xác nhận trả hàng</Button></div>
+            <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setShowReturnModal(false)}>Hủy</Button><Button disabled={!canSubmitReturn} onClick={() => void submitReturn()}><RotateCcw className="mr-2 h-4 w-4" />Xác nhận trả hàng</Button></div>
           </div>
         </div>
       )}

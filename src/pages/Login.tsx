@@ -3,11 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
-import { authApi } from '../lib/api';
+import { authApi, permissionsApi } from '../lib/api';
 import BrandMark from '../components/BrandMark';
 
 export default function Login({ isRegister = false }: { isRegister?: boolean }) {
-  const { setActiveTenant, setCurrentUser } = useApp();
+  const { setActiveTenant, setCurrentUser, setPermissions } = useApp();
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -29,6 +29,8 @@ export default function Login({ isRegister = false }: { isRegister?: boolean }) 
       authApi.saveSession(session.token);
       setActiveTenant(session.tenant);
       setCurrentUser(session.user);
+      const permissionRows = await permissionsApi.list().catch(() => []);
+      setPermissions(permissionRows.filter((permission: any) => permission.allowed).map((permission: any) => permission.code));
       navigate(session.tenant?.status === 'pending_setup' ? '/onboarding' : '/app/dashboard');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Không thể đăng nhập. Vui lòng thử lại.');

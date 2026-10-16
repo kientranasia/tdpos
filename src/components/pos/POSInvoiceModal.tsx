@@ -14,6 +14,7 @@ interface POSInvoiceModalProps {
   paymentMethod: string;
   currentInvoiceItems: InvoiceItem[];
   currentInvoice: Invoice | null;
+  currentUserName?: string | null;
   onExportImage: () => void;
   onPrint: () => void;
 }
@@ -24,7 +25,8 @@ const InvoiceContent = forwardRef(({
   selectedCustomer, 
   paymentMethod, 
   currentInvoiceItems, 
-  currentInvoice 
+  currentInvoice,
+  currentUserName
 }: Omit<POSInvoiceModalProps, 'isOpen' | 'onClose' | 'onExportImage' | 'onPrint'>, ref: ForwardedRef<HTMLDivElement>) => (
   <div ref={ref} className={`bg-white rounded-lg border border-slate-100 shadow-sm print:border-none print:shadow-none min-h-fit ${activeTenant?.settings?.invoice?.printSize === 'receipt_80mm' ? 'mx-auto w-[302px] p-4' : 'p-8'}`}>
     {(() => {
@@ -65,7 +67,7 @@ const InvoiceContent = forwardRef(({
       {showOperator && (
         <div className="flex justify-between items-center">
           <span className="text-slate-500 text-xs">Thu ngân:</span>
-          <span className="text-slate-900 font-semibold text-sm">{currentInvoice?.createdByName || currentInvoice?.createdBy || 'N/A'}</span>
+          <span className="text-slate-900 font-semibold text-sm">{currentUserName || currentInvoice?.createdByName || currentInvoice?.createdBy || 'N/A'}</span>
         </div>
       )}
       <div className="flex justify-between items-center">
@@ -76,21 +78,21 @@ const InvoiceContent = forwardRef(({
       </div>
     </div>
 
-    <div className="space-y-2 mb-6">
-      <div className="grid grid-cols-12 text-[11px] font-semibold text-slate-600 pb-2 border-b border-slate-200">
-        <div className="col-span-6">Sản phẩm</div>
-        <div className="col-span-2 text-center">SL</div>
-        <div className="col-span-2 text-right">Đơn giá</div>
-        <div className="col-span-2 text-right">Thành tiền</div>
+    <div className="mb-4 space-y-1">
+      <div className="grid grid-cols-[minmax(0,1fr)_20px_72px_78px] gap-1 border-b border-slate-200 pb-1 text-left text-[9px] font-semibold leading-tight text-slate-600">
+        <div>Sản phẩm</div>
+        <div>SL</div>
+        <div>Đơn giá</div>
+        <div>Thành tiền</div>
       </div>
       {currentInvoiceItems.map(item => (
-        <div key={item.id} className="grid grid-cols-12 text-[12px] items-start py-1.5 border-b border-dashed border-slate-100">
-          <div className="col-span-6 pr-2">
-            <div className="font-semibold text-slate-900 leading-tight break-words">{item.productName}</div>
+        <div key={item.id} className="grid grid-cols-[minmax(0,1fr)_20px_72px_78px] items-start gap-1 border-b border-dashed border-slate-100 py-1 text-left text-[9px] leading-tight">
+          <div className="min-w-0 pr-1">
+            <div className="break-words font-semibold text-slate-900">{item.productName}</div>
           </div>
-          <div className="col-span-2 text-center font-semibold text-slate-900">{item.quantity}</div>
-          <div className="col-span-2 text-right text-slate-700">{formatCurrency(item.price)}</div>
-          <div className="col-span-2 text-right font-semibold text-slate-900">{formatCurrency(item.total)}</div>
+          <div className="font-semibold tabular-nums text-slate-900">{item.quantity}</div>
+          <div className="whitespace-nowrap tabular-nums text-slate-700">{formatCurrency(item.price)}</div>
+          <div className="whitespace-nowrap font-semibold tabular-nums text-slate-900">{formatCurrency(item.total)}</div>
         </div>
       ))}
     </div>
@@ -139,6 +141,7 @@ export const POSInvoiceModal = forwardRef(({
   paymentMethod, 
   currentInvoiceItems, 
   currentInvoice,
+  currentUserName,
   onExportImage,
   onPrint
 }: POSInvoiceModalProps, ref: ForwardedRef<HTMLDivElement>) => {
@@ -168,6 +171,7 @@ export const POSInvoiceModal = forwardRef(({
             paymentMethod={paymentMethod}
             currentInvoiceItems={currentInvoiceItems}
             currentInvoice={currentInvoice}
+            currentUserName={currentUserName}
           />
         </div>
 

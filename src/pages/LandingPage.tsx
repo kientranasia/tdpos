@@ -15,14 +15,14 @@ type LauncherItem = {
 const quickActions: LauncherItem[] = [
   { label: 'Bán hàng', description: 'Tạo bill mới tại quầy', path: '/app/pos', icon: ShoppingCart, tone: 'bg-sky-50 text-sky-700 border-sky-100', surface: 'bg-white' },
   { label: 'Thêm khách hàng', description: 'Tạo hồ sơ khách mới', path: '/app/customers?create=1', icon: Plus, tone: 'bg-emerald-50 text-emerald-700 border-emerald-100', surface: 'bg-white' },
-  { label: 'Nhập hàng', description: 'Tạo phiếu nhập kho', path: '/app/purchases', icon: ClipboardList, tone: 'bg-amber-50 text-amber-700 border-amber-100', surface: 'bg-white' },
+  { label: 'Đơn nhập hàng', description: 'Tạo phiếu nhập kho', path: '/app/purchases', icon: ClipboardList, tone: 'bg-amber-50 text-amber-700 border-amber-100', surface: 'bg-white' },
   { label: 'Thu nợ', description: 'Ghi nhận khách thanh toán', path: '/app/debt', icon: Wallet, tone: 'bg-rose-50 text-rose-700 border-rose-100', surface: 'bg-white' },
 ];
 
 const modules: LauncherItem[] = [
   { label: 'Chứng từ bán hàng', description: 'Tra cứu, in và thu nợ theo bill', path: '/app/invoices', icon: Receipt, tone: 'bg-violet-100 text-violet-700 border-violet-200', surface: 'bg-violet-100/48' },
   { label: 'Hàng hóa & kho', description: 'Tồn kho, giá bán và điều chỉnh', path: '/app/inventory', icon: Package, tone: 'bg-indigo-100 text-indigo-700 border-indigo-200', surface: 'bg-indigo-100/48' },
-  { label: 'Đối tác', description: 'Khách hàng và nhà cung cấp', path: '/app/customers', icon: Users, tone: 'bg-cyan-100 text-cyan-700 border-cyan-200', surface: 'bg-cyan-100/48' },
+  { label: 'Khách hàng', description: 'Quản lý hồ sơ và công nợ khách', path: '/app/customers', icon: Users, tone: 'bg-cyan-100 text-cyan-700 border-cyan-200', surface: 'bg-cyan-100/48' },
   { label: 'Công nợ', description: 'Phải thu và phải trả', path: '/app/debt', icon: Wallet, tone: 'bg-orange-100 text-orange-700 border-orange-200', surface: 'bg-orange-100/48' },
   { label: 'Thu / Chi', description: 'Theo dõi dòng tiền', path: '/app/cashbook', icon: BookText, tone: 'bg-teal-100 text-teal-700 border-teal-200', surface: 'bg-teal-100/48' },
   { label: 'Báo cáo', description: 'Doanh thu, tồn kho, công nợ', path: '/app/reports', icon: BarChart3, tone: 'bg-blue-100 text-blue-700 border-blue-200', surface: 'bg-blue-100/48' },

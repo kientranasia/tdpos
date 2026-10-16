@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { ArrowDownCircle, ArrowUpCircle, BookText, Download, Plus } from 'lucide-react';
 import { cashAccountsApi, cashbookApi } from '../lib/api';
 import { CashbookEntry } from '../types';
@@ -8,6 +9,7 @@ import { Input } from '../components/ui/Input';
 import AppPageHeader from '../components/layout/AppPageHeader';
 
 export default function Cashbook() {
+  const navigate = useNavigate();
   const [entries, setEntries] = useState<CashbookEntry[]>([]);
   const [accounts, setAccounts] = useState<any[]>([]);
   const [accountFilter, setAccountFilter] = useState('all');
@@ -89,6 +91,23 @@ export default function Cashbook() {
     URL.revokeObjectURL(link.href);
   };
 
+  const openReference = (entry: CashbookEntry) => {
+    if (!entry.referenceId) return;
+    if (entry.category === 'Bán hàng') {
+      navigate(`/app/invoices?invoiceId=${encodeURIComponent(entry.referenceId)}`);
+      return;
+    }
+    if (entry.category?.includes('Nhập hàng')) {
+      navigate(`/app/purchases?purchaseId=${encodeURIComponent(entry.referenceId)}`);
+      return;
+    }
+    if (entry.category?.includes('NCC')) {
+      navigate('/app/suppliers');
+      return;
+    }
+    navigate('/app/debt');
+  };
+
   return (
     <div className="flex h-full flex-col bg-slate-50 overflow-hidden">
       <AppPageHeader icon={BookText} accentClassName="bg-emerald-600" title="Sổ quỹ" subtitle="Thu - Chi và số dư quỹ hiện tại" actions={<div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2">
@@ -100,8 +119,8 @@ export default function Cashbook() {
           </Button>
         </div>} />
 
-      <div className="flex-1 overflow-y-auto p-4 lg:p-8 space-y-4">
-        <section className="rounded-lg border border-slate-200 bg-white p-3 grid grid-cols-1 md:grid-cols-4 gap-2">
+      <div className="flex-1 overflow-y-auto space-y-2 p-2 md:space-y-3 md:p-3 lg:p-4">
+        <section className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 bg-white p-2 md:grid-cols-4 md:p-3">
           <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
           <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
           <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as any)} className="h-10 rounded-md border border-gray-300 bg-white px-3 text-sm">
@@ -113,23 +132,23 @@ export default function Cashbook() {
           <Button variant="outline" onClick={() => { setFromDate(''); setToDate(''); setTypeFilter('all'); }} className="h-10">Reset lọc</Button>
         </section>
 
-        <section className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          <div className="rounded-lg border border-slate-200 bg-white p-4">
+        <section className="grid grid-cols-1 gap-2 md:grid-cols-3">
+          <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
             <p className="text-xs text-slate-500">Tổng thu</p>
             <p className="mt-1 text-lg font-semibold text-emerald-700">{formatCurrency(totals.income)}</p>
           </div>
-          <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
             <p className="text-xs text-slate-500">Tổng chi</p>
             <p className="mt-1 text-lg font-semibold text-rose-700">{formatCurrency(totals.expense)}</p>
           </div>
-          <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
             <p className="text-xs text-slate-500">Số dư quỹ</p>
             <p className={`mt-1 text-lg font-semibold ${totals.balance >= 0 ? 'text-slate-900' : 'text-rose-700'}`}>{formatCurrency(totals.balance)}</p>
           </div>
         </section>
 
         <section className="rounded-lg border border-slate-200 bg-white overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-100 text-sm font-semibold text-slate-700">Lịch sử giao dịch</div>
+          <div className="border-b border-slate-100 px-3 py-2 text-sm font-semibold text-slate-700">Lịch sử giao dịch</div>
           {loading ? (
             <p className="p-4 text-sm text-slate-500">Đang tải...</p>
           ) : entries.length === 0 ? (
@@ -137,10 +156,11 @@ export default function Cashbook() {
           ) : (
             <div className="divide-y divide-slate-100">
               {entries.map((entry) => (
-                <div key={entry.id} className="px-4 py-3 flex items-center justify-between gap-3">
+                <div key={entry.id} className="flex items-center justify-between gap-3 px-3 py-2">
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-slate-900">{entry.category || 'Khác'}</p>
-                    <p className="text-xs text-slate-500 truncate">{accounts.find((account) => account.id === entry.accountId)?.name || 'Chưa phân bổ'} · {entry.note || 'Không ghi chú'} · {new Date(entry.createdAt).toLocaleString('vi-VN')}</p>
+                    <p className="truncate text-xs text-slate-500">{accounts.find((account) => account.id === entry.accountId)?.name || 'Chưa phân bổ'} · {entry.note || 'Không ghi chú'} · {new Date(entry.createdAt).toLocaleString('vi-VN')}</p>
+                    {entry.referenceId && <button type="button" onClick={() => openReference(entry)} className="mt-0.5 text-[11px] text-sky-700 hover:underline">Mở chứng từ liên quan · {entry.referenceId}</button>}
                   </div>
                   <div className={`text-sm font-semibold tabular-nums ${entry.type === 'income' ? 'text-emerald-700' : 'text-rose-700'}`}>
                     {entry.type === 'income' ? '+' : '-'}{formatCurrency(entry.amount)}

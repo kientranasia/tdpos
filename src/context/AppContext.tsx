@@ -7,6 +7,7 @@ import {
   invoicesApi,
   categoriesApi,
   authApi,
+  permissionsApi,
 } from '../lib/api';
 
 interface AppContextType {
@@ -16,9 +17,11 @@ interface AppContextType {
   categories: Category[];
   customers: Customer[];
   invoices: Invoice[];
+  permissions: string[] | null;
   loading: boolean;
   setActiveTenant: (tenant: Tenant | null) => void;
   setCurrentUser: (user: User | null) => void;
+  setPermissions: (permissions: string[] | null) => void;
   updateTenant: (tenantUpdates: Partial<Tenant>) => void;
   addInvoice: (invoice: Invoice, items?: any[]) => void;
   addProduct: (product: Product) => Promise<boolean>;
@@ -27,7 +30,7 @@ interface AppContextType {
   deleteProduct: (productId: string) => Promise<boolean>;
   updateCustomer: (customerId: string, updates: Partial<Customer>) => Promise<boolean>;
   updateProductStock: (productId: string, quantity: number) => void;
-  addCustomer: (customer: Customer) => void;
+  addCustomer: (customer: Customer) => Promise<boolean>;
   updateCustomerDebt: (customerId: string, amount: number, type: 'increase' | 'decrease') => void;
   refreshProducts: () => Promise<void>;
   refreshCustomers: () => Promise<void>;
@@ -43,6 +46,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [categories, setCategories] = useState<Category[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [permissions, setPermissions] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(true);
   const lastLoadedTenantIdRef = useRef<string | null>(null);
 
@@ -58,6 +62,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setCategories([]);
           setCustomers([]);
           setInvoices([]);
+          setPermissions(null);
           return;
         }
 
@@ -65,6 +70,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const tenant = session.tenant || null;
         const user = session.user || null;
         setActiveTenant(tenant);
+        const permissionRows = await permissionsApi.list().catch(() => []);
+        setPermissions(permissionRows.filter((permission: any) => permission.allowed).map((permission: any) => permission.code));
         setCurrentUser(user);
 
         if (tenant?.accessBlocked) {
@@ -72,6 +79,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setCategories([]);
           setCustomers([]);
           setInvoices([]);
+          setPermissions([]);
           return;
         }
 
@@ -106,6 +114,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setCategories([]);
       setCustomers([]);
       setInvoices([]);
+      setPermissions(null);
       return;
     }
 
@@ -115,6 +124,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setCategories([]);
       setCustomers([]);
       setInvoices([]);
+      setPermissions([]);
       return;
     }
 
@@ -267,13 +277,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addCustomer = useCallback(async (customer: Customer) => {
-    setCustomers(prev => [...prev, customer]);
+    const previousCustomers = customers;
+    setCustomers(prev => [customer, ...prev.filter((item) => item.id !== customer.id)]);
     try {
-      await customersApi.create(customer);
+      const created = await customersApi.create(customer);
+      setCustomers(prev => [created, ...prev.filter((item) => item.id !== created.id)]);
+      return true;
     } catch (err) {
       console.error('Failed to create customer:', err);
+      setCustomers(previousCustomers);
+      return false;
     }
-  }, []);
+  }, [customers]);
 
   const updateCustomer = useCallback(async (customerId: string, updates: Partial<Customer>) => {
     const prevCustomers = customers;
@@ -313,9 +328,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       categories,
       customers,
       invoices,
+      permissions,
       loading,
       setActiveTenant,
       setCurrentUser,
+      setPermissions,
       updateTenant,
       addInvoice,
       addProduct,

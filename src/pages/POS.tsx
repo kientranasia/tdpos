@@ -1,8 +1,8 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Product, Customer, PaymentMethod, InvoiceItem, Invoice } from '../types';
-import { formatCurrency } from '../lib/utils';
-import { Search, X, CheckCircle, ShoppingCart, Wallet, TrendingUp, Package, Printer, ChevronRight, AlertCircle, Plus, MapPin, Phone, User, UserPlus, ScanLine, Camera, SlidersHorizontal, ArrowLeft } from 'lucide-react';
+import { formatCurrency, normalizeSearchText } from '../lib/utils';
+import { Search, X, CheckCircle, ShoppingCart, Wallet, TrendingUp, Package, Printer, ChevronRight, AlertCircle, MapPin, Phone, User, UserPlus, ScanLine, Camera, SlidersHorizontal } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { toPng } from 'html-to-image';
@@ -16,6 +16,7 @@ import { POSInvoiceModal } from '../components/pos/POSInvoiceModal';
 import { BarcodeScannerModal } from '../components/barcode/BarcodeScannerModal';
 
 type CartLine = InvoiceItem & { maxStock: number; discountPercent?: number };
+type SaleUnit = { name: string; factor: number; barcode?: string | null };
 type OrderDraft = {
   id: string;
   name: string;
@@ -28,6 +29,24 @@ type OrderDraft = {
   createdAt: string;
 };
 
+const formatCompactCurrency = (amount: number) => {
+  const value = Number(amount) || 0;
+  const absolute = Math.abs(value);
+  if (absolute >= 1_000_000) {
+    const millions = value / 1_000_000;
+    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}tr`;
+  }
+  if (absolute >= 1_000) {
+    const thousands = value / 1_000;
+    return `${Number.isInteger(thousands) ? thousands : thousands.toFixed(1)}k`;
+  }
+  return `${value}đ`;
+};
+
+const accountTypeForPayment = (paymentMethod: PaymentMethod) => (
+  paymentMethod === 'transfer' ? 'bank' : paymentMethod === 'wallet' ? 'wallet' : 'cash'
+);
+
 export default function POS() {
   const { products, customers, activeTenant, currentUser, addInvoice, addCustomer, categories: appCategories } = useApp();
   
@@ -35,6 +54,7 @@ export default function POS() {
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
   const [showCustomerResults, setShowCustomerResults] = useState(false);
   const [showCustomerPicker, setShowCustomerPicker] = useState(false);
+  const [showOrderContext, setShowOrderContext] = useState(false);
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [newCustomer, setNewCustomer] = useState({ name: '', phone: '', address: '' });
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
@@ -61,8 +81,8 @@ export default function POS() {
   const [lastAddedProductId, setLastAddedProductId] = useState<string | null>(null);
   const [cartPulse, setCartPulse] = useState(false);
   const [showScannerModal, setShowScannerModal] = useState(false);
+  const [variantProduct, setVariantProduct] = useState<Product | null>(null);
   const [scanHint, setScanHint] = useState('');
-  const [showSalesInfoModal, setShowSalesInfoModal] = useState(false);
   const [showMobileFilters, setShowMobileFilters] = useState(false);
   const [showOrderItemsSheet, setShowOrderItemsSheet] = useState(false);
   const [isDelivery, setIsDelivery] = useState(false);
@@ -78,11 +98,22 @@ export default function POS() {
   }, []);
 
   useEffect(() => {
+    if (paymentMethod === 'debt') {
+      setSelectedAccountId('');
+      return;
+    }
+    const expectedType = accountTypeForPayment(paymentMethod);
+    const selected = cashAccounts.find((account: any) => account.id === selectedAccountId);
+    if (selected?.type === expectedType) return;
+    setSelectedAccountId(cashAccounts.find((account: any) => account.type === expectedType)?.id || '');
+  }, [cashAccounts, paymentMethod, selectedAccountId]);
+
+  useEffect(() => {
     const matching = priceLists.find((list: any) => list.customerType === selectedCustomer?.type) || priceLists.find((list: any) => list.isDefault) || priceLists[0];
     if (matching) setSelectedPriceListId(matching.id);
   }, [selectedCustomer?.type, priceLists]);
 
-  const productUnits = (product: Product) => product.units?.length ? product.units : [{ name: product.unit, factor: 1 }];
+  const productUnits = (product: Product): SaleUnit[] => product.units?.length ? product.units : [{ name: product.unit, factor: 1, barcode: product.barcode }];
   const resolvePrice = (product: Product, unitName = product.unit, unitFactor = 1, seen = new Set<string>()): number => {
     if (product.productType === 'combo') {
       if (seen.has(product.id)) return 0;
@@ -99,7 +130,10 @@ export default function POS() {
   };
 
   const displayPrice = (product: Product) => resolvePrice(product, product.unit, 1);
-  const maxQuantityForUnit = (product: Product, factor: number) => Math.max(0, Math.floor(Number(product.availableStock ?? product.stock) / Math.max(1, factor)));
+  const maxQuantityForUnit = (product: Product, factor: number) => {
+    const safeFactor = Number.isFinite(factor) && factor > 0 ? factor : 1;
+    return Math.max(0, Math.floor(Number(product.availableStock ?? product.stock) / safeFactor));
+  };
   const totalForLine = (price: number, quantity: number, discountPercent = 0) => {
     const rawTotal = price * quantity;
     return Math.max(0, rawTotal - (rawTotal * Math.min(100, Math.max(0, Number(discountPercent) || 0))) / 100);
@@ -155,13 +189,14 @@ export default function POS() {
   }, [appCategories]);
 
   const filteredProducts = useMemo(() => {
-    const keyword = searchTerm.trim().toLowerCase();
+    const keyword = normalizeSearchText(searchTerm);
     return products.filter(p => {
       const matchSearch =
         !keyword ||
-        p.name.toLowerCase().includes(keyword) ||
-        p.sku.toLowerCase().includes(keyword) ||
-        (p.barcode || '').toLowerCase().includes(keyword);
+        normalizeSearchText(p.name).includes(keyword) ||
+        normalizeSearchText(p.sku).includes(keyword) ||
+        normalizeSearchText(p.barcode).includes(keyword) ||
+        productUnits(p).some((unit) => normalizeSearchText(unit.barcode).includes(keyword));
       const matchCategory = selectedCategory === 'All' || p.category === selectedCategory;
       return matchSearch && matchCategory;
     });
@@ -198,11 +233,8 @@ export default function POS() {
   }, [filteredProducts, mobileSortKey, mobileStockFilter, priceLists, selectedPriceListId]);
 
   const filteredCustomers = useMemo(() => {
-    if (!customerSearchTerm) return [];
-    return customers.filter(c => 
-      c.name.toLowerCase().includes(customerSearchTerm.toLowerCase()) || 
-      c.phone.includes(customerSearchTerm)
-    ).slice(0, 5);
+    const query = normalizeSearchText(customerSearchTerm);
+    return customers.filter(c => !query || normalizeSearchText(c.name).includes(query) || normalizeSearchText(c.phone).includes(query)).slice(0, 5);
   }, [customers, customerSearchTerm]);
 
   const inventorySummary = useMemo(() => {
@@ -211,14 +243,16 @@ export default function POS() {
     return { total: products.length, inStockCount, lowStockCount };
   }, [products]);
 
-  const findProductByScanCode = (rawCode: string) => {
-    const code = rawCode.trim().toLowerCase();
+  const findProductByScanCode = (rawCode: string): { product: Product; unit: SaleUnit } | null => {
+    const code = normalizeSearchText(rawCode);
     if (!code) return null;
-    return (
-      products.find((p) => (p.barcode || '').trim().toLowerCase() === code) ||
-      products.find((p) => p.sku.trim().toLowerCase() === code) ||
-      null
-    );
+    const product = products.find((p) => normalizeSearchText(p.barcode) === code || normalizeSearchText(p.sku) === code);
+    if (product) return { product, unit: productUnits(product)[0] };
+    for (const candidate of products) {
+      const unit = productUnits(candidate).find((row) => normalizeSearchText(row.barcode) === code);
+      if (unit) return { product: candidate, unit };
+    }
+    return null;
   };
 
   const handleScannedCode = (code: string) => {
@@ -228,26 +262,26 @@ export default function POS() {
       setScanHint(`Không tìm thấy mã: ${code}`);
       return;
     }
-    addToCart(matched);
-    setSearchTerm(matched.name);
-    setScanHint(`Đã thêm: ${matched.name}`);
+    addToCart(matched.product, matched.unit);
+    setSearchTerm(matched.product.name);
+    setScanHint(`Đã thêm: ${matched.product.name} · ${matched.unit.name}`);
   };
 
-  const addToCart = (product: Product) => {
-    const maxStock = Number(product.availableStock ?? product.stock);
+  const addToCart = (product: Product, selectedUnit?: SaleUnit) => {
+    const unit = selectedUnit || productUnits(product)[0];
+    const unitFactor = Number(unit.factor) || 1;
+    const maxStock = maxQuantityForUnit(product, unitFactor);
     if (maxStock <= 0) return;
-    const units = productUnits(product);
-    const unit = units[0];
-    const price = resolvePrice(product, unit.name, Number(unit.factor) || 1);
+    const price = resolvePrice(product, unit.name, unitFactor);
 
     let wasAdded = false;
     setCart(prev => {
-      const existing = prev.find(item => item.productId === product.id);
+      const existing = prev.find(item => item.productId === product.id && item.unitName === unit.name);
       if (existing) {
         if (existing.quantity >= existing.maxStock) return prev;
         wasAdded = true;
         return prev.map(item => 
-          item.productId === product.id 
+          item.id === existing.id
             ? { ...item, quantity: item.quantity + 1, total: totalForLine(item.price, item.quantity + 1, item.discountPercent) }
             : item
         );
@@ -264,7 +298,7 @@ export default function POS() {
         total: price,
         maxStock,
         unitName: unit.name,
-        unitFactor: Number(unit.factor) || 1,
+        unitFactor,
         priceListId: selectedPriceListId || undefined,
         priceListName: priceLists.find((list: any) => list.id === selectedPriceListId)?.name,
         discountPercent: 0,
@@ -283,23 +317,43 @@ export default function POS() {
     }
   };
 
-  const updateLineUnit = (productId: string, unitName: string) => {
-    const product = products.find((item) => item.id === productId);
+  const chooseProductForSale = (product: Product) => {
+    const units = productUnits(product);
+    if (units.length > 1) {
+      setVariantProduct(product);
+      return;
+    }
+    addToCart(product, units[0]);
+  };
+
+  const updateLineUnit = (lineId: string, unitName: string) => {
+    const line = cart.find((item) => item.id === lineId);
+    const product = line ? products.find((item) => item.id === line.productId) : null;
     const unit = product ? productUnits(product).find((row) => row.name === unitName) : null;
     if (!product || !unit) return;
     const price = resolvePrice(product, unit.name, Number(unit.factor) || 1);
     const unitFactor = Number(unit.factor) || 1;
     const maxStock = maxQuantityForUnit(product, unitFactor);
-    setCart((prev) => prev.map((item) => {
-      if (item.productId !== productId) return item;
-      const quantity = Math.min(item.quantity, maxStock);
-      return { ...item, unitName: unit.name, unitFactor, quantity, maxStock, price, total: totalForLine(price, quantity, item.discountPercent) };
-    }).filter((item) => item.quantity > 0));
+    setCart((prev) => {
+      const current = prev.find((item) => item.id === lineId);
+      if (!current) return prev;
+      const duplicate = prev.find((item) => item.id !== lineId && item.productId === product.id && item.unitName === unit.name);
+      if (duplicate) {
+        const quantity = Math.min(duplicate.quantity + current.quantity, maxStock);
+        return prev.filter((item) => item.id !== lineId).map((item) => item.id === duplicate.id
+          ? { ...item, quantity, maxStock, price, unitFactor, total: totalForLine(price, quantity, item.discountPercent) }
+          : item).filter((item) => item.quantity > 0);
+      }
+      const quantity = Math.min(current.quantity, maxStock);
+      return prev.map((item) => item.id === lineId
+        ? { ...item, unitName: unit.name, unitFactor, quantity, maxStock, price, total: totalForLine(price, quantity, item.discountPercent) }
+        : item).filter((item) => item.quantity > 0);
+    });
   };
 
-  const updateQuantity = (productId: string, delta: number) => {
+  const updateQuantity = (lineId: string, delta: number) => {
     setCart(prev => prev.map(item => {
-      if (item.productId === productId) {
+      if (item.id === lineId) {
         const newQ = item.quantity + delta;
         if (newQ <= 0) return item; 
         if (newQ > item.maxStock) return item;
@@ -309,8 +363,8 @@ export default function POS() {
     }).filter(item => item.quantity > 0));
   };
 
-  const removeFromCart = (productId: string) => {
-    setCart(prev => prev.filter(item => item.productId !== productId));
+  const removeFromCart = (lineId: string) => {
+    setCart(prev => prev.filter(item => item.id !== lineId));
   };
 
   const totalAmount = cart.reduce((sum, item) => sum + item.total, 0);
@@ -323,9 +377,9 @@ export default function POS() {
   }, [orderDiscountType, orderDiscountValue, totalAmount]);
   const finalAmount = Math.max(0, totalAmount - orderDiscountAmount + taxAmount);
 
-  const updateLineDiscount = (productId: string, discountPercent: number) => {
+  const updateLineDiscount = (lineId: string, discountPercent: number) => {
     setCart((prev) => prev.map((item) => {
-      if (item.productId !== productId) return item;
+      if (item.id !== lineId) return item;
       const pct = Math.min(100, Math.max(0, Number(discountPercent) || 0));
       return { ...item, discountPercent: pct, total: totalForLine(item.price, item.quantity, pct) };
     }));
@@ -489,12 +543,30 @@ export default function POS() {
     setCustomerSearchTerm(customer?.name || '');
     setShowCustomerResults(false);
     setShowCustomerPicker(false);
+    setShowOrderContext(false);
   };
 
   const handleExportImage = () => {
-    if (invoiceRef.current === null) return;
-    
-    toPng(invoiceRef.current, { cacheBust: true })
+    const invoiceNode = invoiceRef.current;
+    if (invoiceNode === null) return;
+
+    const width = Math.ceil(invoiceNode.scrollWidth || invoiceNode.getBoundingClientRect().width);
+    const height = Math.ceil(invoiceNode.scrollHeight || invoiceNode.getBoundingClientRect().height);
+    toPng(invoiceNode, {
+      cacheBust: true,
+      backgroundColor: '#ffffff',
+      width,
+      height,
+      pixelRatio: 2,
+      style: {
+        width: `${width}px`,
+        height: `${height}px`,
+        margin: '0',
+        borderRadius: '0',
+        boxShadow: 'none',
+        overflow: 'visible',
+      },
+    })
       .then((dataUrl) => {
         download(dataUrl, `HoaDon_${lastInvoiceId}.png`);
       })
@@ -504,7 +576,47 @@ export default function POS() {
   };
 
   const handlePrint = () => {
-    window.print();
+    const invoiceNode = invoiceRef.current;
+    if (invoiceNode === null) return;
+
+    const printFrame = document.createElement('iframe');
+    printFrame.setAttribute('title', 'Bản in hóa đơn');
+    printFrame.style.position = 'fixed';
+    printFrame.style.right = '-10000px';
+    printFrame.style.bottom = '0';
+    printFrame.style.width = '1px';
+    printFrame.style.height = '1px';
+    printFrame.style.border = '0';
+    document.body.appendChild(printFrame);
+
+    const frameDocument = printFrame.contentDocument;
+    if (!frameDocument) {
+      printFrame.remove();
+      return;
+    }
+
+    const copiedStyles = Array.from(document.head.querySelectorAll('style, link[rel="stylesheet"]'))
+      .map((style) => style.outerHTML)
+      .join('');
+    frameDocument.open();
+    frameDocument.write(`<!doctype html><html><head><meta charset="utf-8">${copiedStyles}<style>
+      @page { margin: 0; }
+      html, body { margin: 0; padding: 0; background: #fff; }
+      body { display: flex; align-items: flex-start; justify-content: center; }
+      #printable-invoice { margin: 0 !important; border: 0 !important; box-shadow: none !important; }
+    </style></head><body>${invoiceNode.outerHTML}</body></html>`);
+    frameDocument.close();
+
+    let printed = false;
+    const printInvoice = () => {
+      if (printed) return;
+      printed = true;
+      printFrame.contentWindow?.focus();
+      printFrame.contentWindow?.print();
+      window.setTimeout(() => printFrame.remove(), 500);
+    };
+    printFrame.onload = printInvoice;
+    window.setTimeout(printInvoice, 250);
   };
 
   const closeScannerModal = () => {
@@ -579,6 +691,7 @@ export default function POS() {
           paymentMethod={paymentMethod}
           currentInvoiceItems={currentInvoiceItems}
           currentInvoice={currentInvoice}
+          currentUserName={currentUser?.name}
           onExportImage={handleExportImage}
           onPrint={handlePrint}
         />
@@ -655,7 +768,6 @@ export default function POS() {
                   {[
                     { key: 'cash', label: 'Tiền mặt' },
                     { key: 'transfer', label: 'Chuyển khoản' },
-                    { key: 'wallet', label: 'Ví điện tử' },
                     { key: 'debt', label: 'Ghi nợ' }
                   ].map((method) => (
                     <button
@@ -677,7 +789,7 @@ export default function POS() {
                 <label className="block text-sm text-slate-600">Tài khoản nhận tiền
                   <select value={selectedAccountId} onChange={(e) => setSelectedAccountId(e.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3">
                     <option value="">Tự động theo phương thức</option>
-                    {cashAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+                    {cashAccounts.filter((account) => account.type === accountTypeForPayment(paymentMethod)).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
                   </select>
                 </label>
               )}
@@ -698,10 +810,15 @@ export default function POS() {
         </div>
 
         {showOrderItemsSheet && (
-          <div className="fixed inset-0 z-[120] bg-slate-900/40 lg:hidden" onClick={() => setShowOrderItemsSheet(false)}>
-            <div className="absolute bottom-0 left-0 right-0 rounded-t-3xl bg-white p-4 max-h-[70vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-              <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-slate-200" />
-              <h3 className="text-lg font-semibold text-slate-900 mb-3">Hàng hóa trong đơn</h3>
+          <div className="fixed inset-0 z-[120] flex items-end justify-center bg-slate-900/40 p-3 sm:items-center sm:p-4" onClick={() => setShowOrderItemsSheet(false)}>
+            <div className="max-h-[70vh] w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white p-4 shadow-2xl sm:rounded-xl" onClick={(e) => e.stopPropagation()}>
+              <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-slate-200 sm:hidden" />
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <h3 className="text-base font-semibold text-slate-900">Hàng hóa trong đơn</h3>
+                <button type="button" onClick={() => setShowOrderItemsSheet(false)} className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Đóng danh sách hàng hóa">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
               <div className="space-y-3">
                 {cart.map((item) => (
                   <div key={item.id} className="flex items-center justify-between border-b border-slate-100 pb-3">
@@ -733,7 +850,7 @@ export default function POS() {
   }
 
   return (
-    <div className="erp-compact flex flex-col h-full lg:flex-row bg-slate-50 overflow-y-auto lg:overflow-hidden font-sans relative">
+    <div className="erp-compact flex min-h-0 flex-col h-full lg:flex-row lg:items-start bg-slate-50 overflow-y-auto lg:overflow-hidden font-sans relative">
       <BarcodeScannerModal
         open={showScannerModal}
         title="Quét mã để thêm vào giỏ"
@@ -745,28 +862,60 @@ export default function POS() {
         }}
       />
 
+      {variantProduct && (
+        <div className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/35 p-3 backdrop-blur-[2px] sm:items-center" onMouseDown={() => setVariantProduct(null)}>
+          <div role="dialog" aria-modal="true" aria-label={`Chọn quy cách bán ${variantProduct.name}`} className="w-full max-w-md overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="flex items-start justify-between border-b border-slate-100 px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">Sản phẩm có biến thể</p>
+                <h2 className="mt-0.5 truncate text-sm font-semibold text-slate-900">{variantProduct.name}</h2>
+                <p className="mt-0.5 text-xs text-slate-500">Chọn quy cách muốn bán</p>
+              </div>
+              <button type="button" aria-label="Đóng chọn biến thể" onClick={() => setVariantProduct(null)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="max-h-[min(55vh,360px)] space-y-2 overflow-y-auto p-3">
+              {productUnits(variantProduct).map((unit) => {
+                const factor = Number(unit.factor) || 1;
+                const available = maxQuantityForUnit(variantProduct, factor);
+                const price = resolvePrice(variantProduct, unit.name, factor);
+                const disabled = available <= 0;
+                return (
+                  <button key={unit.name} type="button" disabled={disabled} onClick={() => { addToCart(variantProduct, unit); setVariantProduct(null); }} className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition ${disabled ? 'cursor-not-allowed border-slate-100 bg-slate-50 opacity-50' : 'border-slate-200 bg-white hover:border-sky-400 hover:bg-sky-50'}`}>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-slate-800">{unit.name}</span>
+                      <span className="mt-0.5 block text-[11px] text-slate-500">1 {unit.name} = {factor} {variantProduct.unit} · {disabled ? 'Hết hàng' : `Còn ${available}`}</span>
+                    </span>
+                    <span className="shrink-0 text-xs font-semibold tabular-nums text-sky-700">{formatCompactCurrency(price)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Product List Section */}
-      <div className="w-full lg:flex-1 flex flex-col min-h-0 border-b lg:border-b-0 lg:border-r border-slate-200/50 bg-slate-50 relative shrink-0">
-        <div className="p-3 sm:p-4 space-y-3 bg-white sticky top-0 z-40 border-b border-slate-200 shadow-sm shrink-0">
-          <div className="hidden lg:flex items-center justify-between gap-4 pb-1">
-            <div className="flex items-center gap-4">
-              <div className="flex h-9 w-9 items-center justify-center rounded-md bg-sky-600 text-white">
-                <ShoppingCart className="h-4 w-4" />
+      <div className="w-full lg:flex-1 lg:self-start flex flex-col min-h-0 border-b lg:border-b-0 lg:border-r border-slate-200/50 bg-white relative shrink-0">
+        <div className="p-3 sm:p-4 lg:p-2 space-y-3 lg:space-y-1.5 bg-white sticky top-0 z-40 border-b border-slate-200 shadow-sm shrink-0">
+          <div className="hidden lg:flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-8 w-8 items-center justify-center rounded-md bg-sky-600 text-white">
+                <ShoppingCart className="h-3.5 w-3.5" />
               </div>
               <div>
-                <h1 className="text-base font-semibold text-slate-900">Tạo chứng từ bán hàng</h1>
-                <p className="text-[11px] text-slate-500">Tìm hàng, kiểm tra tồn và thêm vào đơn</p>
+                <h1 className="text-sm font-semibold text-slate-900">Tạo chứng từ bán hàng</h1>
+                <p className="text-[10px] text-slate-500">Tìm hàng, kiểm tra tồn và thêm vào đơn</p>
               </div>
             </div>
-            <div className="flex items-center gap-1.5 text-[11px]">
-              <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-1 text-slate-600">
-                <Package className="h-4 w-4" />
+            <div className="flex items-center gap-1 text-[10px]">
+              <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 text-slate-600">
+                <Package className="h-3.5 w-3.5" />
                 {inventorySummary.total} SP
               </span>
-              <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-emerald-700">
+              <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-emerald-700">
                 Còn hàng: {inventorySummary.inStockCount}
               </span>
-              <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-amber-700">
+              <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-1.5 py-0.5 text-amber-700">
                 Sắp hết: {inventorySummary.lowStockCount}
               </span>
             </div>
@@ -774,33 +923,25 @@ export default function POS() {
 
           <div className="flex gap-2">
             <div className="relative group flex-1">
-              <Search className="absolute left-5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-sky-600 transition-colors" />
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-300 group-focus-within:text-sky-600 transition-colors" />
               <Input 
-                className="h-10 sm:h-11 pl-12 rounded-lg border border-slate-200 bg-white focus:ring-4 focus:ring-sky-500/10 transition-all font-medium text-sm placeholder:text-slate-400" 
+                className="h-10 sm:h-11 lg:h-8 pl-9 rounded-lg border border-slate-200 bg-white focus:ring-4 focus:ring-sky-500/10 transition-all font-medium text-sm lg:text-xs placeholder:text-slate-400"
                 placeholder="Quét mã hoặc tìm sản phẩm" 
                 value={searchTerm}
                 onChange={e => setSearchTerm(e.target.value)}
               />
             </div>
             <Button
-              onClick={() => setShowSalesInfoModal(true)}
-              variant="outline"
-              className="h-10 sm:h-11 px-3 sm:px-4 rounded-lg border-slate-200 bg-white text-slate-700"
-              title="Thông tin bán hàng"
-            >
-              <Plus className="h-5 w-5" />
-            </Button>
-            <Button
               onClick={() => {
                 setScanHint('');
                 setShowScannerModal(true);
               }}
               variant="outline"
-              className="h-10 sm:h-11 px-3 sm:px-4 rounded-lg border-slate-200 bg-white text-slate-700"
+              className="h-10 sm:h-11 lg:h-8 px-3 sm:px-4 lg:px-2 rounded-lg border-slate-200 bg-white text-slate-700"
               title="Quét bằng camera"
             >
-              <Camera className="h-4 w-4 sm:h-5 sm:w-5" />
-              <ScanLine className="h-4 w-4 sm:h-5 sm:w-5 ml-1" />
+              <Camera className="h-4 w-4 sm:h-5 sm:w-5 lg:h-3.5 lg:w-3.5" />
+              <ScanLine className="h-4 w-4 sm:h-5 sm:w-5 lg:h-3.5 lg:w-3.5 ml-1 lg:ml-0.5" />
             </Button>
           </div>
           {scanHint && <p className="text-xs text-sky-700">{scanHint}</p>}
@@ -824,7 +965,7 @@ export default function POS() {
               <button
                 key={cat}
                 onClick={() => setSelectedCategory(cat)}
-                className={`h-8 sm:h-9 px-4 sm:px-5 rounded-lg font-medium whitespace-nowrap transition-all text-xs shadow-sm shrink-0 ${
+                className={`h-8 sm:h-9 lg:h-7 px-4 sm:px-5 lg:px-3 rounded-lg font-medium whitespace-nowrap transition-all text-xs lg:text-[11px] shadow-sm shrink-0 ${
                   selectedCategory === cat 
                   ? 'bg-sky-600 text-white shadow-md' 
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -836,7 +977,7 @@ export default function POS() {
           </div>
         </div>
         
-        <div className="flex-1 lg:overflow-y-auto p-3 pb-28 sm:p-4 sm:pb-28 lg:pb-4">
+        <div className="flex-1 min-h-0 lg:overflow-y-auto p-3 pb-28 sm:p-4 sm:pb-28 lg:p-2 lg:pb-2">
           <div className="mb-2 lg:hidden">
             <button
               onClick={() => setShowMobileFilters((v) => !v)}
@@ -876,6 +1017,7 @@ export default function POS() {
           <div className="space-y-0 lg:hidden rounded-lg border border-slate-200 bg-white overflow-hidden">
             {mobileVisibleProducts.map((product) => {
               const inCart = cart.find((line) => line.productId === product.id);
+              const units = productUnits(product);
               const available = Number(product.availableStock ?? product.stock);
               const price = displayPrice(product);
               const isOutOfStock = available <= 0;
@@ -892,9 +1034,9 @@ export default function POS() {
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="line-clamp-1 text-sm font-medium text-slate-900">{product.name}</p>
-                      <p className="mt-0.5 text-[11px] text-slate-500">Chọn gợi ý bán</p>
+                      <p className="mt-0.5 text-[11px] text-slate-500">{units.length > 1 ? `${units.length} quy cách · chọn khi thêm` : `Bán theo ${product.unit}`}</p>
                       <div className="mt-1 flex items-center gap-1.5">
-                        <span className="text-[18px] leading-none font-semibold text-sky-700 tabular-nums">{formatCurrency(price)}</span>
+                        <span className="text-base leading-none font-semibold text-sky-700 tabular-nums">{formatCompactCurrency(price)}</span>
                         <span className="text-[11px] text-slate-400">/{product.unit}</span>
                         <span className={`text-[11px] ${isOutOfStock ? 'text-rose-600' : isLowStock ? 'text-amber-600' : 'text-slate-500'}`}>
                           {isOutOfStock ? 'Hết hàng' : `Tồn: ${available}`}
@@ -905,14 +1047,14 @@ export default function POS() {
                       {inCart ? (
                         <div className="inline-flex items-center rounded-xl border border-rose-300 bg-white p-1">
                           <button
-                            onClick={() => updateQuantity(product.id, -1)}
+                            onClick={() => updateQuantity(inCart.id, -1)}
                             className="h-7 w-7 rounded-md text-slate-500"
                           >
                             -
                           </button>
                           <span className="w-8 text-center text-sm font-semibold text-slate-900 tabular-nums">{inCart.quantity}</span>
                           <button
-                            onClick={() => updateQuantity(product.id, 1)}
+                            onClick={() => updateQuantity(inCart.id, 1)}
                             disabled={inCart.quantity >= inCart.maxStock}
                             className="h-7 w-7 rounded-md text-slate-700 disabled:opacity-40"
                           >
@@ -923,7 +1065,7 @@ export default function POS() {
                         <button
                           className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-700"
                           disabled={isOutOfStock}
-                          onClick={() => addToCart(product)}
+                          onClick={() => chooseProductForSale(product)}
                           aria-label="Thêm vào giỏ"
                         >
                           +
@@ -937,32 +1079,33 @@ export default function POS() {
           </div>
 
           <div className="hidden lg:block overflow-hidden rounded-md border border-slate-200 bg-white">
-            <div className="grid grid-cols-[90px_minmax(0,1fr)_55px_75px_105px_38px] gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+            <div className="grid grid-cols-[78px_minmax(0,1fr)_42px_52px_75px_30px] gap-1 border-b border-slate-200 bg-slate-50 px-2 py-1.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">
               <span>Mã hàng</span><span>Tên hàng</span><span>ĐVT</span><span className="text-right">Tồn</span><span className="text-right">Giá bán</span><span />
             </div>
             {filteredProducts.map(product => {
               const inCart = cart.find((line) => line.productId === product.id);
+              const units = productUnits(product);
               const available = Number(product.availableStock ?? product.stock);
               const price = displayPrice(product);
               const out = available <= 0;
               const low = available > 0 && available <= product.lowStockThreshold;
               return (
-                <button key={product.id} type="button" disabled={out} onClick={() => addToCart(product)} className={`grid w-full grid-cols-[90px_minmax(0,1fr)_55px_75px_105px_38px] items-center gap-2 border-b border-slate-100 px-3 py-2 text-left text-xs last:border-0 ${out ? 'cursor-not-allowed opacity-50' : 'hover:bg-sky-50'} ${inCart ? 'bg-sky-50/70' : 'bg-white'}`}>
-                  <span className="truncate font-mono text-[11px] text-slate-500">{product.sku}</span>
+                <button key={product.id} type="button" disabled={out} onClick={() => chooseProductForSale(product)} className={`grid w-full grid-cols-[78px_minmax(0,1fr)_42px_52px_75px_30px] items-center gap-1 border-b border-slate-100 px-2 py-1.5 text-left text-[11px] last:border-0 ${out ? 'cursor-not-allowed opacity-50' : 'hover:bg-sky-50'} ${inCart ? 'bg-sky-50/70' : 'bg-white'}`}>
+                  <span className="truncate font-mono text-[10px] text-slate-500">{product.sku}</span>
                   <span className="min-w-0 truncate font-medium text-slate-800">{product.name}</span>
-                  <span className="text-slate-500">{product.unit}</span>
+                  <span className="flex min-w-0 items-center gap-0.5 text-[10px] text-slate-500"><span className="truncate">{product.unit}</span>{units.length > 1 && <span className="rounded bg-sky-50 px-0.5 text-[8px] font-semibold text-sky-700">+{units.length - 1}</span>}</span>
                   <span className={`text-right tabular-nums ${out ? 'text-rose-600' : low ? 'text-amber-600' : 'text-slate-700'}`}>{out ? 'Hết' : available}</span>
-                  <span className="text-right font-semibold tabular-nums text-sky-700">{formatCurrency(price)}</span>
-                  <span className={`flex h-6 w-6 items-center justify-center rounded-md ${inCart ? 'bg-sky-600 text-white' : 'border border-slate-200 text-slate-500'}`}>{inCart ? inCart.quantity : '+'}</span>
+                  <span className="text-right font-semibold tabular-nums text-sky-700">{formatCompactCurrency(price)}</span>
+                  <span className={`flex h-5 w-5 items-center justify-center rounded-md text-[10px] ${inCart ? 'bg-sky-600 text-white' : 'border border-slate-200 text-slate-500'}`}>{inCart ? inCart.quantity : '+'}</span>
                 </button>
               );
             })}
           </div>
           
           {filteredProducts.length === 0 && (
-            <div className="flex h-full flex-col items-center justify-center text-slate-200 p-8 text-center space-y-4">
-              <div className="h-16 w-16 sm:h-24 sm:w-24 rounded-lg sm:rounded-lg bg-slate-100 flex items-center justify-center shadow-inner">
-                <Search className="h-8 w-8 sm:h-10 sm:w-10 opacity-10" />
+            <div className="flex min-h-[220px] flex-col items-center justify-center text-slate-200 p-6 text-center space-y-3">
+              <div className="h-14 w-14 sm:h-20 sm:w-20 rounded-lg bg-slate-100 flex items-center justify-center shadow-inner">
+                <Search className="h-7 w-7 sm:h-9 sm:w-9 opacity-10" />
               </div>
               <p className="font-black text-slate-300 uppercase tracking-[0.3em] text-[8px] sm:text-[10px]">Dữ liệu trống</p>
             </div>
@@ -971,28 +1114,42 @@ export default function POS() {
       </div>
 
       {/* Cart Section */}
-      <div className="hidden w-full lg:flex lg:w-[350px] xl:w-[380px] 2xl:w-[420px] flex-col min-h-0 bg-white relative lg:shadow-[-20px_0_60px_rgba(0,0,0,0.03)] z-40 shrink-0">
-        <div className="p-3 border-b border-slate-100 flex justify-between items-center bg-white lg:sticky lg:top-0 z-40 shrink-0">
-          <div className="flex items-center gap-3 sm:gap-4">
-            <div className={`h-8 w-8 rounded-md bg-sky-600 text-white flex items-center justify-center transition-transform duration-300 ${cartPulse ? 'scale-110' : 'scale-100'}`}>
-              <ShoppingCart className="h-4 w-4 sm:h-5 sm:w-5" />
+      <div className="hidden w-full lg:flex lg:self-stretch lg:w-[350px] xl:w-[380px] 2xl:w-[420px] flex-col min-h-0 bg-white relative lg:shadow-[-20px_0_60px_rgba(0,0,0,0.03)] z-40 shrink-0">
+        <div className="p-3 lg:p-2 border-b border-slate-100 flex justify-between items-center bg-white lg:sticky lg:top-0 z-40 shrink-0">
+          <div className="flex items-center gap-3 sm:gap-4 lg:gap-2">
+            <div className={`h-8 w-8 lg:h-7 lg:w-7 rounded-md bg-sky-600 text-white flex items-center justify-center transition-transform duration-300 ${cartPulse ? 'scale-110' : 'scale-100'}`}>
+              <ShoppingCart className="h-4 w-4 sm:h-5 sm:w-5 lg:h-3.5 lg:w-3.5" />
             </div>
             <div>
-              <h2 className="font-semibold text-slate-900 tracking-tight text-sm leading-none">Chi tiết đơn bán</h2>
-              <p className="text-xs text-slate-400 mt-1">{cart.length} sản phẩm</p>
+              <h2 className="font-semibold text-slate-900 tracking-tight text-sm lg:text-xs leading-none">Chi tiết đơn bán</h2>
+              <p className="text-xs lg:text-[10px] text-slate-400 mt-1">{cart.length} sản phẩm</p>
             </div>
           </div>
-          {cart.length > 0 && (
-            <button 
-              onClick={() => setCart([])} 
-              className="h-8 sm:h-10 px-3 sm:px-5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 font-medium transition-all text-xs ring-1 ring-slate-100"
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setShowOrderContext((prev) => !prev)}
+              aria-label={`Khách hàng và bảng giá: ${selectedCustomer?.name || 'Khách lẻ'}`}
+              aria-expanded={showOrderContext}
+              title="Khách hàng và bảng giá"
+              className={`relative flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${showOrderContext ? 'border-sky-300 bg-sky-50 text-sky-700' : 'border-slate-200 text-slate-500 hover:border-sky-300 hover:text-sky-700'}`}
             >
-              Xóa
+              <User className="h-3.5 w-3.5" />
+              {selectedCustomer && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-white" />}
             </button>
-          )}
+            {cart.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setCart([])}
+                className="h-8 px-2.5 sm:px-3 rounded-lg text-slate-400 hover:text-rose-700 font-medium transition-all text-xs ring-1 ring-slate-100"
+              >
+                Xóa
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className="border-b border-slate-100 bg-slate-50/70 p-3">
+        {showOrderContext && <div className="border-b border-slate-100 bg-slate-50/70 p-3 lg:p-2">
           <div className="mb-1 flex items-center justify-between">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Khách hàng</span>
             {selectedCustomer && <button type="button" onClick={() => selectCustomer(null)} className="text-[11px] text-sky-700 hover:underline">Bán khách lẻ</button>}
@@ -1016,23 +1173,23 @@ export default function POS() {
               {priceLists.map((list: any) => <option key={list.id} value={list.id}>{list.name}</option>)}
             </select>
           </div>
-        </div>
+        </div>}
         
-        <div className="flex-none h-auto lg:flex-1 lg:overflow-y-auto p-3 sm:p-4 space-y-2 sm:space-y-3">
+        <div className="flex-none h-auto lg:flex-1 lg:overflow-y-auto p-2 sm:p-3 lg:p-1.5 space-y-1.5 sm:space-y-2 lg:space-y-1.5">
           {cart.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center text-slate-300 p-4 text-center space-y-4">
-              <div className="h-20 w-20 sm:h-32 sm:w-32 rounded-lg sm:rounded-lg bg-slate-50 flex items-center justify-center shadow-inner">
-                <ShoppingCart className="h-10 w-10 sm:h-14 sm:w-14 opacity-5" />
+            <div className="flex h-full flex-col items-center justify-center text-slate-300 p-3 text-center space-y-2">
+              <div className="h-16 w-16 sm:h-20 sm:w-20 rounded-lg bg-slate-50 flex items-center justify-center shadow-inner">
+                <ShoppingCart className="h-8 w-8 sm:h-10 sm:w-10 opacity-5" />
               </div>
               <div className="space-y-1">
                 <p className="font-medium text-slate-400 text-xs">Giỏ đang trống</p>
               </div>
             </div>
           ) : (
-            <div className="space-y-2 sm:space-y-3 pb-4">
+            <div className="space-y-1.5 sm:space-y-2 pb-2">
                {cart.map(item => (
                  <POSCartItem 
-                   key={item.productId}
+                   key={item.id}
                    item={item}
                    onUpdateQuantity={updateQuantity}
                    onRemove={removeFromCart}
@@ -1045,19 +1202,19 @@ export default function POS() {
           )}
         </div>
 
-        <div className="p-4 sm:p-6 border-t border-slate-50 bg-white shadow-[0_-20px_60px_rgba(0,0,0,0.04)] shrink-0">
-          <div className="mb-3 flex items-center gap-2 overflow-x-auto no-scrollbar">
+        <div className="shrink-0 border-t border-slate-50 bg-white p-2 shadow-[0_-12px_30px_rgba(0,0,0,0.04)] sm:p-3 lg:p-1.5">
+          <div className="mb-1.5 flex items-center gap-1 overflow-x-auto no-scrollbar">
             <button
               onClick={startNewOrder}
-              className={`shrink-0 rounded-lg border px-2 py-1 text-xs ${activeOrderTab === 'live' ? 'border-sky-600 bg-sky-100 text-sky-700' : 'border-sky-200 bg-sky-50 text-sky-700'}`}
+              className={`shrink-0 rounded-md border px-1.5 py-0.5 text-[11px] ${activeOrderTab === 'live' ? 'border-sky-600 bg-sky-100 text-sky-700' : 'border-sky-200 bg-sky-50 text-sky-700'}`}
             >
               Đơn hiện tại
             </button>
             {drafts.slice(0, 5).map((draft) => (
-              <div key={draft.id} className={`shrink-0 flex items-center gap-1 rounded-lg border px-2 py-1 ${activeOrderTab === draft.id ? 'border-sky-500 bg-sky-50' : 'border-slate-200 bg-slate-50'}`}>
+              <div key={draft.id} className={`flex shrink-0 items-center gap-0.5 rounded-md border px-1.5 py-0.5 ${activeOrderTab === draft.id ? 'border-sky-500 bg-sky-50' : 'border-slate-200 bg-slate-50'}`}>
                 <button
                   onClick={() => loadDraft(draft)}
-                  className="text-xs text-slate-700"
+                  className="text-[11px] text-slate-700"
                 >
                   {draft.name}
                 </button>
@@ -1071,11 +1228,11 @@ export default function POS() {
               </div>
             ))}
           </div>
-          <div className="mb-3 grid grid-cols-2 gap-2">
+          <div className="mb-1.5 grid grid-cols-[1.15fr_.85fr_1.3fr] gap-1 lg:mb-1">
             <select
               value={orderDiscountType}
               onChange={(e) => setOrderDiscountType(e.target.value as 'percent' | 'amount')}
-              className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm"
+              className="h-7 min-w-0 rounded-md border border-slate-200 bg-white px-1.5 text-[11px] lg:h-6"
             >
               <option value="amount">Giảm tổng (đ)</option>
               <option value="percent">Giảm tổng (%)</option>
@@ -1085,32 +1242,32 @@ export default function POS() {
               value={orderDiscountValue || ''}
               onChange={(e) => setOrderDiscountValue(Number(e.target.value))}
               placeholder="Giảm giá đơn"
-              className="h-9 text-sm"
+              className="h-7 min-w-0 text-[11px] lg:h-6"
             />
             <Input
               value={orderNote}
               onChange={(e) => setOrderNote(e.target.value)}
               placeholder="Ghi chú đơn"
-              className="col-span-2 h-9 text-sm"
+              className="h-7 min-w-0 text-[11px] lg:h-6"
             />
           </div>
-          <div className="flex justify-between items-end mb-4 sm:mb-6">
-            <div className="space-y-1">
-              <p className="text-xs font-medium text-slate-500 pl-1">Phải thu</p>
-              <div className="text-xl sm:text-3xl font-semibold text-slate-900 tabular-nums leading-none">{formatCurrency(finalAmount)}</div>
+          <div className="mb-1.5 flex items-center justify-between gap-2 lg:mb-1">
+            <div className="min-w-0">
+              <p className="text-[10px] font-medium text-slate-500">Phải thu</p>
+              <div className="text-lg font-semibold leading-none tabular-nums text-slate-900 sm:text-xl">{formatCurrency(finalAmount)}</div>
               {orderDiscountAmount > 0 && (
-                <p className="text-xs text-emerald-700">Đã giảm: {formatCurrency(orderDiscountAmount)}</p>
+                <p className="text-[10px] text-emerald-700">Đã giảm {formatCurrency(orderDiscountAmount)}</p>
               )}
             </div>
-            <Button variant="outline" className="h-10 text-sm" disabled={cart.length === 0} onClick={saveDraft}>Lưu đơn</Button>
+            <Button variant="outline" className="h-7 shrink-0 px-2 text-[11px]" disabled={cart.length === 0} onClick={saveDraft}>Lưu đơn</Button>
           </div>
           <Button 
-            className="w-full h-12 sm:h-16 text-base sm:text-lg font-semibold rounded-lg sm:rounded-lg shadow-xl shadow-sky-900/20 bg-sky-600 hover:bg-sky-700 active:scale-[0.98] transition-all text-white group relative overflow-hidden" 
+            className="group relative h-9 w-full overflow-hidden rounded-md bg-sky-600 text-sm font-semibold text-white shadow-md shadow-sky-900/15 transition-all hover:bg-sky-700 active:scale-[0.98] lg:h-8"
             disabled={cart.length === 0}
             onClick={() => setStep('payment')}
           >
             <span className="relative z-10 flex items-center gap-2">
-              Thanh toán <ChevronRight className="h-4 w-4 sm:h-6 sm:w-6 group-hover:translate-x-2 transition-transform duration-500" />
+              Thanh toán <ChevronRight className="h-4 w-4 sm:h-6 sm:w-6 lg:h-4 lg:w-4 group-hover:translate-x-2 transition-transform duration-500" />
             </span>
           </Button>
         </div>
@@ -1177,7 +1334,7 @@ export default function POS() {
                       <span className="min-w-0"><span className="block truncate text-xs font-medium text-slate-800">{customer.name}</span><span className="block text-[11px] text-slate-500">{customer.phone}</span></span>
                       <span className={`ml-3 shrink-0 text-xs font-semibold tabular-nums ${customer.totalDebt > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>{formatCurrency(customer.totalDebt || 0)}</span>
                     </button>
-                  )) : customerSearchTerm ? <p className="px-3 py-4 text-center text-xs text-slate-500">Không tìm thấy khách hàng phù hợp.</p> : <p className="px-3 py-4 text-center text-xs text-slate-500">Nhập tên hoặc số điện thoại để tìm.</p>}
+                  )) : customerSearchTerm ? <p className="px-3 py-4 text-center text-xs text-slate-500">Không tìm thấy khách hàng phù hợp.</p> : <p className="px-3 py-4 text-center text-xs text-slate-500">Chưa có khách hàng.</p>}
                 </div>
               </div>
             )}
@@ -1185,66 +1342,7 @@ export default function POS() {
         </div>
       )}
 
-      {showSalesInfoModal && (
-        <div className="fixed inset-0 z-[120] bg-slate-900/40 lg:hidden">
-          <div className="h-full w-full bg-slate-100">
-            <div className="h-14 px-4 bg-white border-b border-slate-200 flex items-center justify-between">
-              <button onClick={() => setShowSalesInfoModal(false)} className="text-slate-500">
-                <ArrowLeft className="h-5 w-5" />
-              </button>
-              <h3 className="text-xl font-semibold text-slate-900">Thông tin bán hàng</h3>
-              <button onClick={() => setShowSalesInfoModal(false)} className="text-sky-600 font-medium">Xong</button>
-            </div>
-            <div className="p-3 space-y-3">
-              <div className="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
-                <div className="h-14 px-4 flex items-center justify-between">
-                  <span className="text-slate-700">Người bán</span>
-                  <span className="text-slate-900 font-medium">{currentUser?.name || 'N/A'}</span>
-                </div>
-                <div className="h-14 px-4 flex items-center justify-between">
-                  <span className="text-slate-700">Kênh bán</span>
-                  <span className="text-slate-900 font-medium">Bán trực tiếp</span>
-                </div>
-                <div className="h-14 px-4 flex items-center justify-between">
-                  <span className="text-slate-700">Thời gian</span>
-                  <span className="text-slate-900 font-medium">{new Date().toLocaleString('vi-VN')}</span>
-                </div>
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-white p-3">
-                <textarea
-                  value={orderNote}
-                  onChange={(e) => setOrderNote(e.target.value.slice(0, 1000))}
-                  placeholder="Ghi chú..."
-                  className="w-full h-40 resize-none outline-none text-base text-slate-800 placeholder:text-slate-400"
-                />
-                <div className="text-right text-sm text-slate-500">{orderNote.length}/1000</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       <style>{`
-        @media print {
-          body * {
-            visibility: hidden;
-            background: white !important;
-          }
-          #printable-invoice, #printable-invoice * {
-            visibility: visible;
-          }
-          #printable-invoice {
-            position: fixed;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            padding: 20px;
-            margin: 0;
-            background: white;
-            z-index: 9999;
-          }
-        }
         .scrollbar-none::-webkit-scrollbar {
           display: none;
         }

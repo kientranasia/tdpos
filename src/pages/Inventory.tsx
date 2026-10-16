@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useMemo } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { Search, Plus, AlertTriangle, Package, ArrowUpDown, X, Save, Edit3, Tag, CheckCircle, Camera, Layers, Trash2, Upload, Download, ScanLine, SlidersHorizontal, ListFilter, Ellipsis, Settings2 } from 'lucide-react';
+import { Search, Plus, AlertTriangle, Package, ArrowUpDown, X, Save, Edit3, Tag, CheckCircle, Camera, Layers, Trash2, Upload, Download, ScanLine, Barcode, SlidersHorizontal, ListFilter, Ellipsis, Settings2 } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
-import { formatCurrency } from '../lib/utils';
+import { formatCurrency, normalizeSearchText } from '../lib/utils';
 import { Product } from '../types';
 import { v4 as uuid } from 'uuid';
 import { productsApi, stockMovementsApi, priceListsApi, productUnitsApi, productComponentsApi } from '../lib/api';
@@ -18,8 +19,49 @@ type ImportPreviewRow = {
   existingId?: string;
 };
 
+type NumericDraft = number | string;
+
+type ProductFormState = {
+  name: string;
+  sku: string;
+  barcode: string;
+  category: string;
+  unit: string;
+  purchasePrice: NumericDraft;
+  sellingPrice: NumericDraft;
+  taxRate: NumericDraft;
+  stock: NumericDraft;
+  lowStockThreshold: NumericDraft;
+  imageUrl: string;
+  productType: 'standard' | 'combo';
+};
+
+type StockUpdateFormState = {
+  quantity: NumericDraft;
+  purchasePrice: NumericDraft;
+  sellingPrice: NumericDraft;
+};
+
+const parseNumericDraft = (value: string): NumericDraft => value;
+
+const formatCompactCurrency = (amount: number) => {
+  const value = Number(amount) || 0;
+  const absolute = Math.abs(value);
+  if (absolute >= 1_000_000) {
+    const millions = value / 1_000_000;
+    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}tr`;
+  }
+  if (absolute >= 1_000) {
+    const thousands = value / 1_000;
+    return `${Number.isInteger(thousands) ? thousands : thousands.toFixed(1)}k`;
+  }
+  return `${value}đ`;
+};
+
 export default function Inventory() {
   const { products, addProduct, updateProduct, deleteProduct, activeTenant, categories, addCategory, refreshProducts } = useApp();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [searchTerm, setSearchTerm] = useState('');
   const [showProductModal, setShowProductModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -36,8 +78,8 @@ export default function Inventory() {
   const [savingProduct, setSavingProduct] = useState(false);
   const [formError, setFormError] = useState('');
   const [stockMovements, setStockMovements] = useState<any[]>([]);
-  const [stockCheckActual, setStockCheckActual] = useState<number>(0);
-  const [bulkCheckActuals, setBulkCheckActuals] = useState<Record<string, number>>({});
+  const [stockCheckActual, setStockCheckActual] = useState<NumericDraft>(0);
+  const [bulkCheckActuals, setBulkCheckActuals] = useState<Record<string, NumericDraft>>({});
   const [movementTypeFilter, setMovementTypeFilter] = useState<'all' | 'in' | 'out' | 'adjust'>('all');
   const [stockStatusFilter, setStockStatusFilter] = useState<'all' | 'in_stock' | 'low_stock' | 'out_of_stock'>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
@@ -47,16 +89,13 @@ export default function Inventory() {
   const [importPreviewRows, setImportPreviewRows] = useState<ImportPreviewRow[]>([]);
   const [selectedImportRows, setSelectedImportRows] = useState<number[]>([]);
   const [showBarcodeScannerModal, setShowBarcodeScannerModal] = useState(false);
+  const [variantBarcodeIndex, setVariantBarcodeIndex] = useState<number | null>(null);
   const [showPricingModal, setShowPricingModal] = useState(false);
+  const [showInlinePriceListForm, setShowInlinePriceListForm] = useState(false);
   const [priceLists, setPriceLists] = useState<any[]>([]);
-  const [selectedPriceListId, setSelectedPriceListId] = useState('');
-  const [priceDrafts, setPriceDrafts] = useState<Record<string, number>>({});
-  const [pricingProductId, setPricingProductId] = useState('');
-  const [unitDrafts, setUnitDrafts] = useState<Array<{ name: string; factor: number; barcode: string }>>([]);
-  const [componentDrafts, setComponentDrafts] = useState<Array<{ componentProductId: string; quantity: number }>>([]);
-  const [productVariantDrafts, setProductVariantDrafts] = useState<Array<{ name: string; factor: number; barcode: string }>>([]);
-  const [productComponentDrafts, setProductComponentDrafts] = useState<Array<{ componentProductId: string; quantity: number }>>([]);
-  const [productPriceDrafts, setProductPriceDrafts] = useState<Record<string, number>>({});
+  const [productVariantDrafts, setProductVariantDrafts] = useState<Array<{ name: string; factor: NumericDraft; barcode: string }>>([]);
+  const [productComponentDrafts, setProductComponentDrafts] = useState<Array<{ componentProductId: string; quantity: NumericDraft }>>([]);
+  const [productPriceDrafts, setProductPriceDrafts] = useState<Record<string, NumericDraft>>({});
   const [newPriceList, setNewPriceList] = useState({ name: '', customerType: 'all' });
   const [pricingMessage, setPricingMessage] = useState('');
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -67,7 +106,7 @@ export default function Inventory() {
     return Array.from(new Set([...defaults, ...customUnits, ...dynamicUnits]));
   }, [customUnits, products]);
 
-  const [productForm, setProductForm] = useState({
+  const [productForm, setProductForm] = useState<ProductFormState>({
     name: '',
     sku: '',
     barcode: '',
@@ -82,39 +121,23 @@ export default function Inventory() {
     productType: 'standard' as 'standard' | 'combo'
   });
 
-  const priceDraftKey = (productId: string, unitName: string) => `${productId}::${unitName}`;
-  const baseUnit = (product: Product) => ({ name: product.unit, factor: 1, barcode: product.barcode || '' });
-  const unitsForPricing = (product: Product, selectedProductId = pricingProductId, selectedUnitDrafts = unitDrafts) => {
-    const extraUnits = product.id === selectedProductId
-      ? selectedUnitDrafts
-      : (product.units || []).filter((unit) => unit.name !== product.unit || Number(unit.factor) !== 1).map((unit) => ({ name: unit.name, factor: Number(unit.factor) || 1, barcode: unit.barcode || '' }));
-    const seen = new Set<string>();
-    return [baseUnit(product), ...extraUnits].filter((unit) => {
-      if (!unit.name.trim() || seen.has(unit.name.trim())) return false;
-      seen.add(unit.name.trim());
-      return true;
-    });
-  };
-  const fallbackUnitPrice = (product: Product, unit: { name: string; factor: number }, list?: any, seen = new Set<string>()): number => {
-    if (product.productType === 'combo') {
-      if (seen.has(product.id)) return 0;
-      const comboPrice = (product.components || []).reduce((sum, component) => {
-        const componentProduct = products.find((item) => item.id === component.componentProductId);
-        return sum + (componentProduct ? Number(component.quantity) * fallbackUnitPrice(componentProduct, baseUnit(componentProduct), list, new Set([...seen, product.id])) : 0);
-      }, 0);
-      return comboPrice * (Number(unit.factor) || 1);
-    }
-    const saved = list?.items?.find((row: any) => row.productId === product.id && row.unitName === unit.name);
-    return Number(saved?.price ?? (Number(product.sellingPrice) * (Number(unit.factor) || 1)));
-  };
-  const buildPriceDrafts = (list?: any, selectedProductId = pricingProductId, selectedUnitDrafts = unitDrafts) => Object.fromEntries(
-    products.flatMap((product) => unitsForPricing(product, selectedProductId, selectedUnitDrafts).map((unit) => [
-      priceDraftKey(product.id, unit.name),
-      fallbackUnitPrice(product, unit, list),
-    ])),
-  );
+  const generateNextSku = () => {
+    const usedSkus = new Set(products.map((product) => product.sku.trim().toUpperCase()).filter(Boolean));
+    const highestSequence = products.reduce((highest, product) => {
+      const match = product.sku.trim().match(/(?:SKU|SP)?(\d+)$/i);
+      return match ? Math.max(highest, Number(match[1])) : highest;
+    }, 0);
 
-  const [stockUpdateForm, setUpdateForm] = useState({
+    let sequence = highestSequence + 1;
+    let candidate = `SKU${String(sequence).padStart(3, '0')}`;
+    while (usedSkus.has(candidate)) {
+      sequence += 1;
+      candidate = `SKU${String(sequence).padStart(3, '0')}`;
+    }
+    return candidate;
+  };
+
+  const [stockUpdateForm, setUpdateForm] = useState<StockUpdateFormState>({
     quantity: 0,
     purchasePrice: 0,
     sellingPrice: 0
@@ -161,6 +184,7 @@ export default function Inventory() {
 
   const openCreateProduct = async () => {
     resetProductForm();
+    setProductForm((previous) => ({ ...previous, sku: generateNextSku() }));
     setFormError('');
     try {
       const lists = await priceListsApi.list(true);
@@ -176,6 +200,14 @@ export default function Inventory() {
     setFormError('');
     if (!productForm.name || !productForm.sku || !activeTenant) {
       setFormError('Vui lòng nhập tên sản phẩm và mã SKU.');
+      return;
+    }
+    const normalizedSku = productForm.sku.trim().toLowerCase();
+    const duplicateSku = products.find((product) =>
+      product.id !== editingProduct?.id && product.sku.trim().toLowerCase() === normalizedSku
+    );
+    if (duplicateSku) {
+      setFormError(`SKU ${productForm.sku.trim()} đã tồn tại ở sản phẩm "${duplicateSku.name}".`);
       return;
     }
     if (!productForm.category || !productForm.unit) {
@@ -273,7 +305,7 @@ export default function Inventory() {
         const rows = [
           { productId, unitName: productForm.unit.trim(), unitFactor: 1, price: basePrice },
           ...(productForm.productType === 'standard'
-            ? variants.map((variant) => ({ productId, unitName: variant.name, unitFactor: variant.factor, price: basePrice * variant.factor }))
+            ? variants.map((variant) => ({ productId, unitName: variant.name, unitFactor: variant.factor, price: basePrice * Number(variant.factor) }))
             : []),
         ];
         const existingItems = (list.items || []).filter((item: any) => item.productId !== productId);
@@ -291,16 +323,19 @@ export default function Inventory() {
 
   const handleUpdateStock = async () => {
     if (!stockUpdatingProduct) return;
-    if (!Number.isFinite(stockUpdateForm.quantity) || stockUpdateForm.quantity <= 0) {
+    const quantity = stockUpdateForm.quantity === '' ? NaN : Number(stockUpdateForm.quantity);
+    const purchasePrice = Number(stockUpdateForm.purchasePrice || 0);
+    const sellingPrice = Number(stockUpdateForm.sellingPrice || 0);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
       setFormError('Số lượng nhập kho phải lớn hơn 0.');
       return;
     }
 
-    await productsApi.adjustStock(stockUpdatingProduct.id, stockUpdateForm.quantity, 'increase', 'Nhập kho thủ công');
+    await productsApi.adjustStock(stockUpdatingProduct.id, quantity, 'increase', 'Nhập kho thủ công');
     const success = await updateProduct(stockUpdatingProduct.id, {
-      stock: stockUpdatingProduct.stock + stockUpdateForm.quantity,
-      purchasePrice: stockUpdateForm.purchasePrice > 0 ? stockUpdateForm.purchasePrice : stockUpdatingProduct.purchasePrice,
-      sellingPrice: stockUpdateForm.sellingPrice > 0 ? stockUpdateForm.sellingPrice : stockUpdatingProduct.sellingPrice
+      stock: stockUpdatingProduct.stock + quantity,
+      purchasePrice: purchasePrice > 0 ? purchasePrice : stockUpdatingProduct.purchasePrice,
+      sellingPrice: sellingPrice > 0 ? sellingPrice : stockUpdatingProduct.sellingPrice
     });
     if (success) {
       const movements = await stockMovementsApi.list();
@@ -315,19 +350,20 @@ export default function Inventory() {
   };
 
   const handleStockCheck = async (product: Product) => {
-    if (!Number.isFinite(stockCheckActual) || stockCheckActual < 0) {
+    const actual = stockCheckActual === '' ? NaN : Number(stockCheckActual);
+    if (!Number.isFinite(actual) || actual < 0) {
       setFormError('Số lượng kiểm kê không hợp lệ.');
       return;
     }
-    await stockMovementsApi.stockCheck(product.id, stockCheckActual, 'Kiểm kê nhanh');
-    await updateProduct(product.id, { stock: stockCheckActual });
+    await stockMovementsApi.stockCheck(product.id, actual, 'Kiểm kê nhanh');
+    await updateProduct(product.id, { stock: actual });
     const movements = await stockMovementsApi.list();
     setStockMovements(movements.slice(0, 40));
     setStockCheckActual(0);
   };
 
   const openBulkCheck = () => {
-    const defaults: Record<string, number> = {};
+    const defaults: Record<string, NumericDraft> = {};
     visibleProducts.forEach((p) => { defaults[p.id] = p.stock; });
     setBulkCheckActuals(defaults);
     setShowBulkCheckModal(true);
@@ -337,7 +373,8 @@ export default function Inventory() {
     setFormError('');
     try {
       for (const product of visibleProducts) {
-        const actual = bulkCheckActuals[product.id];
+        const draftActual = bulkCheckActuals[product.id];
+        const actual = draftActual === '' || draftActual === undefined ? NaN : Number(draftActual);
         if (!Number.isFinite(actual) || actual < 0) continue;
         if (actual === product.stock) continue;
         await stockMovementsApi.stockCheck(product.id, actual, 'Kiểm kê hàng loạt');
@@ -391,79 +428,22 @@ export default function Inventory() {
     try {
       const lists = await priceListsApi.list(true);
       setPriceLists(lists);
-      const list = lists.find((item: any) => item.isDefault) || lists[0];
-      setSelectedPriceListId(list?.id || '');
-      const firstProduct = products[0];
-      const firstProductId = firstProduct?.id || '';
-      if (firstProduct) {
-        const [units, components] = await Promise.all([productUnitsApi.list(firstProduct.id), productComponentsApi.list(firstProduct.id)]);
-        const nextUnitDrafts = units.filter((unit: any) => unit.name !== firstProduct.unit).map((unit: any) => ({ name: unit.name, factor: Number(unit.factor), barcode: unit.barcode || '' }));
-        setUnitDrafts(nextUnitDrafts);
-        setComponentDrafts(components.map((component: any) => ({ componentProductId: component.componentProductId, quantity: Number(component.quantity) })));
-        setPriceDrafts(buildPriceDrafts(list, firstProductId, nextUnitDrafts));
-      } else {
-        setUnitDrafts([]);
-        setComponentDrafts([]);
-        setPriceDrafts(buildPriceDrafts(list, '', []));
-      }
-      setPricingProductId(firstProductId);
       setShowPricingModal(true);
     } catch (err) {
       setPricingMessage(err instanceof Error ? err.message : 'Không thể tải cấu hình bán hàng.');
     }
   };
 
-  const changePricingProduct = async (productId: string) => {
-    const product = products.find((item) => item.id === productId);
-    setPricingProductId(productId);
-    if (!product) return;
-    try {
-      const [units, components] = await Promise.all([productUnitsApi.list(productId), productComponentsApi.list(productId)]);
-      setUnitDrafts(units.filter((unit: any) => unit.name !== product.unit).map((unit: any) => ({ name: unit.name, factor: Number(unit.factor), barcode: unit.barcode || '' })));
-      setComponentDrafts(components.map((component: any) => ({ componentProductId: component.componentProductId, quantity: Number(component.quantity) })));
-    } catch (err) {
-      setPricingMessage(err instanceof Error ? err.message : 'Không thể tải cấu hình sản phẩm.');
-    }
-  };
-
-  const changePricingList = (listId: string) => {
-    setSelectedPriceListId(listId);
-    const list = priceLists.find((item) => item.id === listId);
-    setPriceDrafts(buildPriceDrafts(list));
-  };
-
-  const savePricing = async () => {
-    const selectedList = priceLists.find((list) => list.id === selectedPriceListId);
-    const items = products.flatMap((product) => unitsForPricing(product).map((unit) => ({
-      productId: product.id,
-      unitName: unit.name,
-      unitFactor: Number(unit.factor) || 1,
-      price: Number(priceDrafts[priceDraftKey(product.id, unit.name)] ?? fallbackUnitPrice(product, unit, selectedList)),
-    })));
-    try {
-      if (selectedList) {
-        await priceListsApi.saveItems(selectedList.id, items);
-      }
-      const selectedProduct = products.find((product) => product.id === pricingProductId);
-      if (selectedProduct) {
-        await productUnitsApi.save(selectedProduct.id, unitDrafts);
-        await productComponentsApi.save(selectedProduct.id, selectedProduct.productType === 'combo' ? componentDrafts : []);
-      }
-      setPriceLists(await priceListsApi.list(true));
-      setPricingMessage('Đã lưu cấu hình bảng giá, đơn vị và combo.');
-    } catch (err) {
-      setPricingMessage(err instanceof Error ? err.message : 'Không thể lưu cấu hình bán hàng.');
-    }
-  };
-
   const createPriceList = async () => {
     if (!newPriceList.name.trim()) return;
     try {
-      const created = await priceListsApi.create({ name: newPriceList.name.trim(), customerType: newPriceList.customerType, active: true });
-      setPriceLists(await priceListsApi.list(true));
-      setSelectedPriceListId(created.id);
+      await priceListsApi.create({ name: newPriceList.name.trim(), customerType: newPriceList.customerType, active: true });
+      const lists = await priceListsApi.list(true);
+      setPriceLists(lists);
+      setProductPriceDrafts((previous) => Object.fromEntries(lists.map((list: any) => [list.id, previous[list.id] ?? 0])));
       setNewPriceList({ name: '', customerType: 'all' });
       setPricingMessage('Đã tạo bảng giá mới.');
+      setShowInlinePriceListForm(false);
     } catch (err) {
       setPricingMessage(err instanceof Error ? err.message : 'Không thể tạo bảng giá.');
     }
@@ -731,6 +711,7 @@ export default function Inventory() {
 
   const closeBarcodeScannerModal = () => {
     setShowBarcodeScannerModal(false);
+    setVariantBarcodeIndex(null);
   };
 
   const downloadTemplates = () => {
@@ -778,14 +759,14 @@ export default function Inventory() {
   };
 
   const filteredProducts = useMemo(() => {
-    const keyword = searchTerm.trim().toLowerCase();
+    const keyword = normalizeSearchText(searchTerm);
     return products.filter((p) => {
       const matchesKeyword =
         !keyword ||
-        p.name.toLowerCase().includes(keyword) ||
-        p.sku.toLowerCase().includes(keyword) ||
-        (p.barcode || '').toLowerCase().includes(keyword) ||
-        p.category.toLowerCase().includes(keyword);
+        normalizeSearchText(p.name).includes(keyword) ||
+        normalizeSearchText(p.sku).includes(keyword) ||
+        normalizeSearchText(p.barcode).includes(keyword) ||
+        normalizeSearchText(p.category).includes(keyword);
       const matchesCategory = categoryFilter === 'all' || p.category === categoryFilter;
       const availableStock = Number(p.availableStock ?? p.stock);
       const matchesStockStatus =
@@ -836,13 +817,24 @@ export default function Inventory() {
     loadMovements();
   }, []);
 
+  useEffect(() => {
+    const productId = searchParams.get('productId');
+    if (!productId || !products.length || showProductModal) return;
+    const product = products.find((item) => item.id === productId);
+    if (!product) return;
+    void openEditProduct(product).finally(() => {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('productId');
+      setSearchParams(nextParams, { replace: true });
+    });
+  }, [products, searchParams, setSearchParams, showProductModal]);
+
   const inventoryStats = useMemo(() => {
     const lowStock = products.filter((p) => p.trackStock && Number(p.availableStock ?? p.stock) <= p.lowStockThreshold).length;
     const totalUnits = products.reduce((sum, p) => sum + (p.stock || 0), 0);
-    const reservedUnits = products.reduce((sum, p) => sum + Number(p.reservedStock || 0), 0);
     const availableUnits = products.reduce((sum, p) => sum + Number(p.availableStock ?? p.stock ?? 0), 0);
     const totalStockValue = products.reduce((sum, p) => sum + (p.stock || 0) * (p.purchasePrice || 0), 0);
-    return { lowStock, totalUnits, reservedUnits, availableUnits, totalStockValue };
+    return { lowStock, totalUnits, availableUnits, totalStockValue };
   }, [products]);
 
   const uniqueCategories = useMemo(
@@ -863,7 +855,11 @@ export default function Inventory() {
         title="Quét mã sản phẩm"
         onClose={closeBarcodeScannerModal}
         onDetected={(code) => {
-          setProductForm((prev) => ({ ...prev, barcode: code }));
+          if (variantBarcodeIndex !== null) {
+            setProductVariantDrafts((previous) => previous.map((row, index) => index === variantBarcodeIndex ? { ...row, barcode: code } : row));
+          } else {
+            setProductForm((prev) => ({ ...prev, barcode: code }));
+          }
           closeBarcodeScannerModal();
         }}
       />
@@ -1009,12 +1005,12 @@ export default function Inventory() {
                     <Input
                       type="number"
                       value={bulkCheckActuals[p.id] ?? p.stock}
-                      onChange={(e) => setBulkCheckActuals((prev) => ({ ...prev, [p.id]: Number(e.target.value) }))}
+                      onChange={(e) => setBulkCheckActuals((prev) => ({ ...prev, [p.id]: parseNumericDraft(e.target.value) }))}
                       className="h-9 text-sm"
                     />
                   </div>
                   <div className="col-span-3 text-xs text-slate-500">
-                    Chênh: {(bulkCheckActuals[p.id] ?? p.stock) - p.stock}
+                    Chênh: {bulkCheckActuals[p.id] === '' ? '—' : Number(bulkCheckActuals[p.id] ?? p.stock) - p.stock}
                   </div>
                 </div>
               ))}
@@ -1028,40 +1024,40 @@ export default function Inventory() {
       )}
 
       {showProductModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-2xl rounded-lg shadow-2xl border border-white overflow-hidden animate-in zoom-in-95 duration-500">
-            <div className="px-4 py-4 md:px-6 md:py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
-               <div className="flex items-center gap-4">
-                  <div className="h-10 w-10 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-lg shadow-sky-900/20">
-                     <Package className="h-5 w-5" />
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 p-2 backdrop-blur-sm animate-in fade-in duration-300 sm:p-4">
+          <div className="flex h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-white bg-white shadow-2xl animate-in zoom-in-95 duration-500 sm:h-[calc(100dvh-2rem)] sm:max-h-[calc(100dvh-2rem)] sm:rounded-xl">
+            <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/70 px-3 py-2 sm:px-4 sm:py-3">
+               <div className="flex items-center gap-2.5">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-sky-600 text-white shadow-sm shadow-sky-900/20 sm:h-8 sm:w-8">
+                     <Package className="h-4 w-4" />
                   </div>
                   <div>
-                    <h2 className="text-base md:text-lg font-semibold text-slate-900">{editingProduct ? 'Sửa sản phẩm' : 'Thêm sản phẩm'}</h2>
-                    <p className="text-xs text-slate-500 mt-0.5">Thông tin hàng hóa cơ bản</p>
+                    <h2 className="text-sm md:text-base font-semibold leading-5 text-slate-900">{editingProduct ? 'Sửa sản phẩm' : 'Thêm sản phẩm'}</h2>
+                    <p className="text-[11px] text-slate-500">Thông tin hàng hóa cơ bản</p>
                   </div>
                </div>
-               <button onClick={() => setShowProductModal(false)} className="h-9 w-9 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500 transition-all flex items-center justify-center">
-                  <X className="h-5 w-5" />
+               <button onClick={() => setShowProductModal(false)} className="h-8 w-8 rounded-lg hover:bg-slate-100 text-slate-700 hover:text-red-600 transition-all flex items-center justify-center">
+                  <X className="h-4 w-4" />
                </button>
             </div>
             
-            <div className="px-4 py-4 md:px-6 md:py-5 space-y-4 md:space-y-5 max-h-[70vh] overflow-y-auto custom-scrollbar">
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-2 custom-scrollbar sm:space-y-3 sm:px-4 sm:py-3 md:px-5">
                {formError && (
-                 <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                 <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
                    {formError}
                  </div>
                )}
-               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
-                  <div className="space-y-4">
-                    <label className="text-xs font-semibold text-slate-500 ml-1">Hình ảnh sản phẩm</label>
+               <div className="grid grid-cols-1 gap-2 sm:gap-3 md:grid-cols-[180px_minmax(0,1fr)]">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-semibold text-slate-500">Hình ảnh sản phẩm</label>
                     <div className="relative group/img">
-                      <div className="h-36 md:h-40 w-full rounded-lg bg-slate-50 border-2 border-dashed border-slate-200 flex flex-col items-center justify-center overflow-hidden transition-all group-hover/img:border-sky-300">
+                      <div className="h-20 w-full rounded-lg border border-dashed border-slate-200 bg-slate-50 flex flex-col items-center justify-center overflow-hidden transition-all group-hover/img:border-sky-300 sm:h-24 md:h-32">
                         {productForm.imageUrl ? (
                           <img src={productForm.imageUrl} className="h-full w-full object-cover" alt="Preview" />
                         ) : (
                           <>
-                            <Camera className="h-8 w-8 text-slate-300 group-hover/img:scale-110 transition-transform" />
-                            <span className="text-xs font-medium text-slate-500 mt-2">Tải ảnh lên</span>
+                            <Camera className="h-6 w-6 text-slate-300 group-hover/img:scale-110 transition-transform" />
+                            <span className="text-[11px] font-medium text-slate-500 mt-1.5">Tải ảnh lên</span>
                           </>
                         )}
                         <input 
@@ -1074,66 +1070,66 @@ export default function Inventory() {
                       {productForm.imageUrl && (
                         <button 
                           onClick={() => setProductForm({...productForm, imageUrl: ''})}
-                          className="absolute -top-2 -right-2 h-8 w-8 rounded-full bg-white shadow-lg border border-slate-100 text-red-500 flex items-center justify-center hover:scale-110 transition-transform"
+                          className="absolute -top-1.5 -right-1.5 h-7 w-7 rounded-full bg-white shadow-md border border-slate-100 text-red-500 flex items-center justify-center hover:scale-110 transition-transform"
                         >
                           <X className="h-4 w-4" />
                         </button>
                       )}
                     </div>
                   </div>
-                  <div className="space-y-6">
-                    <div className="space-y-2">
-                        <label className="text-xs font-semibold text-slate-500 ml-1">Mã SKU</label>
-                        <div className="relative">
-                        <Tag className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300" />
-                        <Input 
-                            value={productForm.sku}
-                            onChange={e => setProductForm({...productForm, sku: e.target.value})}
-                            className="h-11 pl-12 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm"
-                            placeholder="Ví dụ: SP001" 
-                        />
-                        </div>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <div className="space-y-1 md:col-span-2">
+                      <label className="text-[11px] font-semibold text-slate-500">Tên sản phẩm</label>
+                      <Input
+                        value={productForm.name}
+                        onChange={e => setProductForm({...productForm, name: e.target.value})}
+                        className="h-8 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm sm:h-9"
+                        placeholder="Ví dụ: Nước ngọt Coca"
+                      />
                     </div>
-                    <div className="space-y-2">
-                        <label className="text-xs font-semibold text-slate-500 ml-1">Mã vạch</label>
-                        <div className="relative">
-                        <Tag className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300" />
-                        <Input 
-                            value={productForm.barcode}
-                            onChange={e => setProductForm({...productForm, barcode: e.target.value})}
-                            className="h-11 pl-12 pr-28 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm"
-                            placeholder="EAN/UPC/Code128 (không bắt buộc)" 
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-500">Mã SKU</label>
+                      <div className="relative">
+                        <Tag className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-300" />
+                        <Input
+                          value={productForm.sku}
+                          onChange={e => setProductForm({...productForm, sku: e.target.value})}
+                          className="h-8 pl-9 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm sm:h-9"
+                          placeholder="Ví dụ: SP001"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-slate-500">Mã vạch</label>
+                      <div className="relative">
+                        <Tag className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-300" />
+                        <Input
+                          value={productForm.barcode}
+                          onChange={e => setProductForm({...productForm, barcode: e.target.value})}
+                          className="h-8 pl-9 pr-24 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm sm:h-9"
+                          placeholder="EAN/UPC/Code128 (không bắt buộc)"
                         />
                         <button
                           type="button"
                           onClick={() => setShowBarcodeScannerModal(true)}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 h-8 px-2.5 rounded-md bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 flex items-center gap-1 text-xs font-medium"
+                          className="absolute right-1.5 top-1/2 -translate-y-1/2 h-7 px-2 rounded-md bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 flex items-center gap-1 text-[11px] font-medium"
                         >
                           <Camera className="h-3.5 w-3.5" />
                           <ScanLine className="h-3.5 w-3.5" />
                           Quét
                         </button>
-                        </div>
-                    </div>
-                    <div className="space-y-2">
-                        <label className="text-xs font-semibold text-slate-500 ml-1">Tên sản phẩm</label>
-                        <Input 
-                        value={productForm.name}
-                        onChange={e => setProductForm({...productForm, name: e.target.value})}
-                        className="h-11 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm"
-                        placeholder="Ví dụ: Nước ngọt Coca" 
-                        />
+                      </div>
                     </div>
                   </div>
                </div>
 
-               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
-                  <div className="space-y-2">
+               <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                  <div className="space-y-1">
                     <div className="flex items-center justify-between px-1">
-                        <label className="text-xs font-semibold text-slate-500">Danh mục</label>
+                        <label className="text-[11px] font-semibold text-slate-500">Danh mục</label>
                         <button 
                           onClick={() => setShowCategoryModal(true)}
-                          className="text-xs font-semibold text-sky-600 hover:text-sky-700"
+                          className="text-[11px] font-semibold text-sky-600 hover:text-sky-700"
                         >
                           + Thêm mới
                         </button>
@@ -1141,7 +1137,7 @@ export default function Inventory() {
                     <select 
                       value={productForm.category}
                       onChange={e => setProductForm({...productForm, category: e.target.value})}
-                      className="w-full h-11 px-4 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm appearance-none"
+                      className="w-full h-8 px-3 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm appearance-none sm:h-9"
                     >
                       {categories.map(cat => (
                         <option key={cat.id} value={cat.name}>{cat.name}</option>
@@ -1151,28 +1147,8 @@ export default function Inventory() {
                       )}
                     </select>
                   </div>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between px-1">
-                      <label className="text-xs font-semibold text-slate-500">Đơn vị tính</label>
-                      <button
-                        onClick={() => setShowUnitModal(true)}
-                        className="text-xs font-semibold text-sky-600 hover:text-sky-700"
-                      >
-                        + Thêm mới
-                      </button>
-                    </div>
-                    <select
-                      value={productForm.unit}
-                      onChange={e => setProductForm({ ...productForm, unit: e.target.value })}
-                      className="w-full h-11 px-4 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm appearance-none"
-                    >
-                      {unitOptions.map((unit) => (
-                        <option key={unit} value={unit}>{unit}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold text-slate-500 ml-1">Loại hàng hóa</label>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-semibold text-slate-500">Loại hàng hóa</label>
                     <select
                       value={productForm.productType}
                       onChange={e => {
@@ -1180,7 +1156,7 @@ export default function Inventory() {
                         setProductForm({ ...productForm, productType, ...(productType === 'combo' ? { purchasePrice: 0, stock: 0, unit: 'Bộ' } : {}) });
                         if (productType === 'combo') setProductVariantDrafts([]);
                       }}
-                      className="w-full h-11 px-4 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm"
+                      className="w-full h-8 px-3 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm sm:h-9"
                     >
                       <option value="standard">Sản phẩm thường</option>
                       <option value="combo">Combo bán hàng</option>
@@ -1188,43 +1164,107 @@ export default function Inventory() {
                   </div>
                </div>
 
-               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
-                    <div className="space-y-2">
-                    <label className="text-xs font-semibold text-slate-500 ml-1">Giá nhập</label>
+               <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between px-1">
+                      <label className="text-[11px] font-semibold text-slate-500">Đơn vị tính</label>
+                      <button
+                        onClick={() => setShowUnitModal(true)}
+                        className="text-[11px] font-semibold text-sky-600 hover:text-sky-700"
+                      >
+                        + Thêm mới
+                      </button>
+                    </div>
+                    <select
+                      value={productForm.unit}
+                      onChange={e => setProductForm({ ...productForm, unit: e.target.value })}
+                      className="w-full h-8 px-3 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm appearance-none sm:h-9"
+                    >
+                      {unitOptions.map((unit) => (
+                        <option key={unit} value={unit}>{unit}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-semibold text-slate-500">Giá nhập</label>
                     <div className="relative">
                        <Input 
                          type="number"
                          value={productForm.purchasePrice}
-                         onChange={e => setProductForm({...productForm, purchasePrice: Number(e.target.value)})}
+                         onChange={e => setProductForm((previous) => ({ ...previous, purchasePrice: parseNumericDraft(e.target.value) }))}
                          disabled={productForm.productType === 'combo'}
-                         className="h-11 pr-9 rounded-lg bg-sky-50/30 border-none shadow-inner font-semibold text-sky-700 tabular-nums"
+                         className="h-8 pr-9 rounded-lg bg-sky-50/30 border-none shadow-inner font-semibold text-sky-700 tabular-nums sm:h-9"
                        />
                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-semibold text-sky-700">đ</span>
                     </div>
                     {productForm.productType === 'combo' && <p className="text-[11px] text-slate-500">Combo không nhập kho trực tiếp nên không có giá nhập.</p>}
                   </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold text-slate-500 ml-1">Thuế suất (%)</label>
-                    <Input type="number" min="0" max="100" value={productForm.taxRate} onChange={e => setProductForm({...productForm, taxRate: Number(e.target.value)})} className="h-11 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 tabular-nums" />
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-semibold text-slate-500">Thuế suất (%)</label>
+                    <Input type="number" min="0" max="100" value={productForm.taxRate} onChange={e => setProductForm((previous) => ({ ...previous, taxRate: parseNumericDraft(e.target.value) }))} className="h-8 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 tabular-nums sm:h-9" />
                   </div>
                </div>
 
-               <div className="rounded-lg border border-sky-100 bg-sky-50/40 p-4 space-y-3">
+               <div className="rounded-lg border border-sky-100 bg-sky-50/40 p-3 space-y-2">
                  <div className="flex items-start justify-between gap-3">
                    <div>
                      <h3 className="text-sm font-semibold text-slate-900">Giá bán theo bảng giá</h3>
-                     <p className="mt-1 text-xs leading-5 text-slate-500">
+                     <p className="mt-0.5 text-[11px] leading-4 text-slate-500">
                        Nhập giá tại đơn vị cơ sở <b>{productForm.unit || '—'}</b>. Giá biến thể sẽ tự tính theo tỷ suất quy đổi.
                      </p>
                    </div>
-                   <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[11px] font-medium text-sky-700">Đơn vị cơ sở</span>
+                   <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                     <button
+                       type="button"
+                       onClick={() => setShowInlinePriceListForm((visible) => !visible)}
+                       className="rounded-md border border-sky-200 bg-white px-2 py-1 text-[11px] font-medium text-sky-700 hover:bg-sky-50"
+                     >
+                       {showInlinePriceListForm ? 'Đóng' : '+ Tạo bảng giá'}
+                     </button>
+                     <button type="button" onClick={openPricing} className="text-[11px] font-medium text-slate-500 hover:text-sky-700">Quản lý</button>
+                     <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-sky-700">Đơn vị cơ sở</span>
+                   </div>
                  </div>
-                 {priceLists.length === 0 && <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">Chưa có bảng giá. Hệ thống sẽ dùng giá cơ bản hiện có và tạo bảng giá mặc định khi lưu.</p>}
+                 {priceLists.length === 0 && <p className="rounded-md bg-amber-50 px-3 py-1.5 text-[11px] text-amber-700">Chưa có bảng giá. Hệ thống sẽ dùng giá cơ bản hiện có và tạo bảng giá mặc định khi lưu.</p>}
+                 {showInlinePriceListForm && (
+                   <div className="rounded-md border border-sky-200 bg-white p-2">
+                     <div className="mb-1.5 flex items-center justify-between gap-2">
+                       <span className="text-xs font-semibold text-slate-800">Tạo bảng giá mới</span>
+                       <span className="text-[11px] text-slate-500">Giá áp dụng theo nhóm khách</span>
+                     </div>
+                     <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_150px_auto]">
+                       <Input
+                         autoFocus
+                         value={newPriceList.name}
+                         onChange={(e) => setNewPriceList({ ...newPriceList, name: e.target.value })}
+                         onKeyDown={(e) => {
+                           if (e.key === 'Enter') {
+                             e.preventDefault();
+                             void createPriceList();
+                           }
+                         }}
+                         placeholder="Ví dụ: Giá cơ quan"
+                         className="h-9 text-xs"
+                       />
+                       <select
+                         value={newPriceList.customerType}
+                         onChange={(e) => setNewPriceList({ ...newPriceList, customerType: e.target.value })}
+                         className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs"
+                       >
+                         <option value="all">Mọi nhóm khách</option>
+                         <option value="retail">Bán lẻ</option>
+                         <option value="loyal">Khách thân thiết</option>
+                       </select>
+                       <Button type="button" onClick={createPriceList} disabled={!newPriceList.name.trim()} className="h-9 px-3 text-xs">Tạo bảng</Button>
+                     </div>
+                     {pricingMessage && <p className="mt-1.5 text-[11px] text-emerald-700">{pricingMessage}</p>}
+                   </div>
+                 )}
                  <div className="grid gap-2 md:grid-cols-2">
                    {priceLists.map((list: any) => {
                      const calculated = productForm.productType === 'combo' ? comboBasePriceForList(list) : undefined;
-                     return <div key={list.id} className="rounded-md border border-white bg-white p-3">
-                       <div className="mb-2 flex items-center justify-between gap-2">
+                     return <div key={list.id} className="rounded-md border border-white bg-white p-2">
+                       <div className="mb-1 flex items-center justify-between gap-2">
                          <span className="text-xs font-semibold text-slate-700">{list.name}</span>
                          {list.isDefault && <span className="text-[10px] font-medium text-emerald-600">Mặc định</span>}
                        </div>
@@ -1233,58 +1273,58 @@ export default function Inventory() {
                            type="number"
                            min="0"
                            value={productForm.productType === 'combo' ? calculated : (productPriceDrafts[list.id] ?? 0)}
-                           onChange={(e) => setProductPriceDrafts({ ...productPriceDrafts, [list.id]: Number(e.target.value) || 0 })}
+                           onChange={(e) => setProductPriceDrafts((previous) => ({ ...previous, [list.id]: parseNumericDraft(e.target.value) }))}
                            disabled={productForm.productType === 'combo'}
-                           className="h-10 pr-9 text-sm font-semibold tabular-nums"
+                           className="h-9 pr-9 text-sm font-semibold tabular-nums"
                          />
                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">đ</span>
                        </div>
                      </div>;
                    })}
                  </div>
-                 {productForm.productType === 'combo' && <p className="text-xs text-slate-500">Giá combo = tổng giá các sản phẩm thành phần theo từng bảng giá.</p>}
+                 {productForm.productType === 'combo' && <p className="text-[11px] text-slate-500">Giá combo = tổng giá các sản phẩm thành phần theo từng bảng giá.</p>}
                </div>
 
                {productForm.productType === 'standard' ? (
-                 <div className="rounded-lg border border-slate-200 p-4 space-y-3">
+                 <div className="rounded-lg border border-slate-200 p-3 space-y-2">
                    <div className="flex items-start justify-between gap-3">
                      <div>
                        <h3 className="text-sm font-semibold text-slate-900">Biến thể đơn vị bán</h3>
-                       <p className="mt-1 text-xs leading-5 text-slate-500">Đơn vị cơ sở: <b>{productForm.unit || '—'}</b> ×1. Ví dụ: 1 Hộp = 20 Cây.</p>
+                       <p className="mt-0.5 text-[11px] leading-4 text-slate-500">Đơn vị cơ sở: <b>{productForm.unit || '—'}</b> ×1. Ví dụ: 1 Hộp = 20 Cây.</p>
                      </div>
                      <Button variant="outline" className="h-8 shrink-0 px-2 text-xs" onClick={() => setProductVariantDrafts([...productVariantDrafts, { name: '', factor: 1, barcode: '' }])}>
                        <Plus className="mr-1 h-3 w-3" />Thêm biến thể
                      </Button>
                    </div>
-                   {productVariantDrafts.length === 0 && <p className="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-500">Chưa có biến thể. Sản phẩm sẽ bán theo {productForm.unit || 'đơn vị cơ sở'}.</p>}
-                   <div className="space-y-2">
-                     {productVariantDrafts.map((variant, index) => <div key={`${variant.name}-${index}`} className="grid gap-2 md:grid-cols-[1fr_110px_1fr_auto]">
-                       <Input value={variant.name} placeholder="Tên biến thể, ví dụ Hộp" onChange={(e) => setProductVariantDrafts(productVariantDrafts.map((row, i) => i === index ? { ...row, name: e.target.value } : row))} className="h-9 text-xs" />
-                       <div className="relative"><Input type="number" min="0.01" value={variant.factor} onChange={(e) => setProductVariantDrafts(productVariantDrafts.map((row, i) => i === index ? { ...row, factor: Number(e.target.value) || 0 } : row))} className="h-9 pr-10 text-xs" /><span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">× cơ sở</span></div>
-                       <Input value={variant.barcode} placeholder="Mã vạch riêng (nếu có)" onChange={(e) => setProductVariantDrafts(productVariantDrafts.map((row, i) => i === index ? { ...row, barcode: e.target.value } : row))} className="h-9 text-xs" />
+                   {productVariantDrafts.length === 0 && <p className="rounded-md bg-slate-50 px-3 py-1.5 text-[11px] text-slate-500">Chưa có biến thể. Sản phẩm sẽ bán theo {productForm.unit || 'đơn vị cơ sở'}.</p>}
+                   <div className="space-y-1.5">
+                     {productVariantDrafts.map((variant, index) => <div key={`variant-row-${index}`} className="grid gap-2 md:grid-cols-[1fr_110px_1fr_auto]">
+                       <Input value={variant.name} placeholder="Tên biến thể, ví dụ Hộp" onChange={(e) => setProductVariantDrafts((previous) => previous.map((row, i) => i === index ? { ...row, name: e.target.value } : row))} className="h-9 text-xs" />
+                       <div className="relative"><Input type="text" inputMode="decimal" value={variant.factor} onChange={(e) => setProductVariantDrafts((previous) => previous.map((row, i) => i === index ? { ...row, factor: e.target.value.replace(',', '.') } : row))} className="h-9 pr-10 text-xs" placeholder="1" aria-label={`Hệ số quy đổi biến thể ${index + 1}`} /><span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">× cơ sở</span></div>
+                       <div className="relative"><Barcode className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-300" /><Input value={variant.barcode} placeholder="Mã vạch riêng (nếu có)" onChange={(e) => setProductVariantDrafts((previous) => previous.map((row, i) => i === index ? { ...row, barcode: e.target.value } : row))} className="h-9 pl-8 pr-9 text-xs" /><button type="button" aria-label="Quét mã vạch biến thể" title="Quét mã vạch biến thể" onClick={() => { setVariantBarcodeIndex(index); setShowBarcodeScannerModal(true); }} className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-slate-500 hover:bg-sky-50 hover:text-sky-700"><ScanLine className="h-3.5 w-3.5" /></button></div>
                        <button type="button" onClick={() => setProductVariantDrafts(productVariantDrafts.filter((_, i) => i !== index))} className="flex h-9 items-center justify-center text-rose-500"><Trash2 className="h-4 w-4" /></button>
                      </div>)}
                    </div>
                  </div>
                ) : (
-                 <div className="rounded-lg border border-amber-200 bg-amber-50/40 p-4 space-y-3">
+                 <div className="rounded-lg border border-amber-200 bg-amber-50/40 p-3 space-y-2">
                    <div className="flex items-start justify-between gap-3">
                      <div>
                        <h3 className="text-sm font-semibold text-slate-900">Sản phẩm thành phần của combo</h3>
-                       <p className="mt-1 text-xs leading-5 text-slate-500">Chỉ chọn sản phẩm thường đang có trên hệ thống. Khi bán combo, tồn kho sẽ trừ ở từng thành phần.</p>
+                       <p className="mt-0.5 text-[11px] leading-4 text-slate-500">Chỉ chọn sản phẩm thường đang có trên hệ thống. Khi bán combo, tồn kho sẽ trừ ở từng thành phần.</p>
                      </div>
                      <Button variant="outline" className="h-8 shrink-0 border-amber-200 px-2 text-xs" onClick={() => setProductComponentDrafts([...productComponentDrafts, { componentProductId: products.find((p) => p.productType !== 'combo' && p.id !== editingProduct?.id)?.id || '', quantity: 1 }])}>
                        <Plus className="mr-1 h-3 w-3" />Thêm sản phẩm
                      </Button>
                    </div>
-                   {productComponentDrafts.length === 0 && <p className="rounded-md bg-white/70 px-3 py-2 text-xs text-amber-700">Hãy thêm sách, vật tư hoặc sản phẩm đơn vào gói combo.</p>}
-                   <div className="space-y-2">
+                   {productComponentDrafts.length === 0 && <p className="rounded-md bg-white/70 px-3 py-1.5 text-[11px] text-amber-700">Hãy thêm sách, vật tư hoặc sản phẩm đơn vào gói combo.</p>}
+                   <div className="space-y-1.5">
                      {productComponentDrafts.map((component, index) => <div key={`${component.componentProductId}-${index}`} className="grid gap-2 md:grid-cols-[1fr_110px_auto]">
                        <select value={component.componentProductId} onChange={(e) => setProductComponentDrafts(productComponentDrafts.map((row, i) => i === index ? { ...row, componentProductId: e.target.value } : row))} className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs">
                          <option value="">Chọn sản phẩm</option>
                          {products.filter((p) => p.productType !== 'combo' && p.id !== editingProduct?.id).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.unit}</option>)}
                        </select>
-                       <Input type="number" min="0.01" value={component.quantity} onChange={(e) => setProductComponentDrafts(productComponentDrafts.map((row, i) => i === index ? { ...row, quantity: Number(e.target.value) || 0 } : row))} className="h-9 text-xs" placeholder="Số lượng" />
+                       <Input type="number" min="0.01" value={component.quantity} onChange={(e) => setProductComponentDrafts((previous) => previous.map((row, i) => i === index ? { ...row, quantity: parseNumericDraft(e.target.value) } : row))} className="h-9 text-xs" placeholder="Số lượng" />
                        <button type="button" onClick={() => setProductComponentDrafts(productComponentDrafts.filter((_, i) => i !== index))} className="flex h-9 items-center justify-center text-rose-500"><Trash2 className="h-4 w-4" /></button>
                      </div>)}
                    </div>
@@ -1292,25 +1332,25 @@ export default function Inventory() {
                )}
 
                {!editingProduct && (
-                 <div className="space-y-2">
-                    <label className="text-xs font-semibold text-slate-500 ml-1">Số lượng tồn kho ban đầu</label>
+                 <div className="space-y-1">
+                    <label className="text-[11px] font-semibold text-slate-500">Số lượng tồn kho ban đầu</label>
                     <Input 
                        type="number"
                        value={productForm.stock}
-                       onChange={e => setProductForm({...productForm, stock: Number(e.target.value)})}
+                       onChange={e => setProductForm((previous) => ({ ...previous, stock: parseNumericDraft(e.target.value) }))}
                        disabled={productForm.productType === 'combo'}
-                       className="h-11 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm"
+                       className="h-9 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm"
                     />
                     {productForm.productType === 'combo' && <p className="text-[11px] text-slate-500">Combo không có tồn riêng; tồn khả dụng được tính từ các thành phần.</p>}
                  </div>
                )}
             </div>
 
-            <div className="px-4 py-4 md:px-6 md:py-5 bg-slate-50/70 border-t border-slate-100">
+            <div className="shrink-0 border-t border-slate-100 bg-slate-50/70 px-3 py-2 sm:px-4 sm:py-3 md:px-5">
                <Button 
                  onClick={handleSaveProduct}
                  disabled={savingProduct}
-                 className="w-full h-11 md:h-12 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-semibold shadow-xl shadow-sky-900/20 gap-2"
+                 className="w-full h-10 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-semibold shadow-sm shadow-sky-900/20 gap-2"
                 >
                  <Save className="h-4 w-4" />
                  <span>{savingProduct ? 'Đang lưu...' : 'Lưu sản phẩm'}</span>
@@ -1321,67 +1361,41 @@ export default function Inventory() {
       )}
 
       {showPricingModal && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
-          <div className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-lg border border-white bg-white shadow-2xl">
-            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white px-5 py-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-600 text-white"><Settings2 className="h-5 w-5" /></div>
-                <div><h2 className="font-semibold text-slate-900">Cấu hình bán hàng</h2><p className="text-xs text-slate-500">Bảng giá, đơn vị quy đổi và thành phần combo</p></div>
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/60 p-3 backdrop-blur-sm">
+          <div className="w-full max-w-xl overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-50 text-sky-700"><Settings2 className="h-4 w-4" /></div>
+                <div><h2 className="text-sm font-semibold text-slate-900">Quản lý bảng giá</h2><p className="text-[11px] text-slate-500">Tạo nhóm giá để chọn nhanh tại POS</p></div>
               </div>
-              <button onClick={() => setShowPricingModal(false)} className="rounded-md p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X className="h-5 w-5" /></button>
+              <button onClick={() => setShowPricingModal(false)} className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X className="h-4 w-4" /></button>
             </div>
-            <div className="grid gap-5 p-5 lg:grid-cols-[260px_1fr]">
-              <div className="space-y-4">
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Bảng giá</p>
-                  <select value={selectedPriceListId} onChange={(e) => changePricingList(e.target.value)} className="h-10 w-full rounded-md border border-slate-200 bg-white px-2 text-sm">
-                    {priceLists.map((list) => <option key={list.id} value={list.id}>{list.name} · {list.customerType === 'loyal' ? 'Thân thiết' : list.customerType === 'retail' ? 'Bán lẻ' : list.customerType === 'all' ? 'Mặc định' : list.customerType}</option>)}
-                  </select>
-                  <div className="mt-3 flex gap-2">
-                    <Input value={newPriceList.name} onChange={(e) => setNewPriceList({ ...newPriceList, name: e.target.value })} placeholder="Bảng giá mới" className="h-9 text-sm" />
-                    <Button onClick={createPriceList} className="h-9 shrink-0 px-3">Tạo</Button>
-                  </div>
-                  <p className="mt-2 text-[11px] leading-4 text-slate-500">Tên bảng giá là loại giá sẽ chọn khi bán, ví dụ: Chung, Cơ quan, Sỉ, Y tế.</p>
-                  <select value={newPriceList.customerType} onChange={(e) => setNewPriceList({ ...newPriceList, customerType: e.target.value })} className="mt-2 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs">
+            <div className="space-y-3 p-4">
+              <div className="rounded-lg border border-slate-200">
+                <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
+                  <div><h3 className="text-xs font-semibold text-slate-900">Bảng giá hiện có</h3><p className="text-[11px] text-slate-500">Giá từng sản phẩm được nhập trong form sản phẩm.</p></div>
+                  <span className="text-[11px] font-medium text-slate-400">{priceLists.length} bảng</span>
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {priceLists.map((list: any) => <div key={list.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                    <span className="min-w-0 truncate text-xs font-medium text-slate-700">{list.name}</span>
+                    <span className="shrink-0 text-[11px] text-slate-400">{list.isDefault ? 'Mặc định' : list.customerType === 'loyal' ? 'Thân thiết' : list.customerType === 'retail' ? 'Bán lẻ' : 'Mọi nhóm khách'}</span>
+                  </div>)}
+                  {priceLists.length === 0 && <p className="px-3 py-3 text-xs text-slate-500">Chưa có bảng giá nào.</p>}
+                </div>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+                <h3 className="mb-2 text-xs font-semibold text-slate-900">Thêm bảng giá</h3>
+                <div className="grid gap-2 sm:grid-cols-[1fr_150px_auto]">
+                  <Input value={newPriceList.name} onChange={(e) => setNewPriceList({ ...newPriceList, name: e.target.value })} placeholder="Ví dụ: Giá cơ quan" className="h-9 bg-white text-xs" />
+                  <select value={newPriceList.customerType} onChange={(e) => setNewPriceList({ ...newPriceList, customerType: e.target.value })} className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs">
                     <option value="all">Mọi nhóm khách</option><option value="retail">Bán lẻ</option><option value="loyal">Khách thân thiết</option>
                   </select>
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500">Sản phẩm cấu hình</label>
-                  <select value={pricingProductId} onChange={(e) => changePricingProduct(e.target.value)} className="h-10 w-full rounded-md border border-slate-200 bg-white px-2 text-sm">
-                    {products.map((product) => <option key={product.id} value={product.id}>{product.name} · {product.productType === 'combo' ? 'Combo' : product.unit}</option>)}
-                  </select>
-                  <p className="mt-2 text-xs text-slate-500">Đơn vị cơ sở: <b>{products.find((p) => p.id === pricingProductId)?.unit || '—'}</b></p>
+                  <Button onClick={createPriceList} disabled={!newPriceList.name.trim()} className="h-9 px-3 text-xs">Tạo bảng</Button>
                 </div>
               </div>
-              <div className="space-y-5">
-                <div>
-                  <div className="mb-2 flex items-center justify-between"><h3 className="font-semibold text-slate-900">Giá theo sản phẩm · {priceLists.find((list) => list.id === selectedPriceListId)?.name || '—'}</h3><span className="text-xs text-slate-500">Mỗi đơn vị có thể có giá riêng</span></div>
-                  <div className="max-h-64 overflow-auto rounded-lg border border-slate-200">
-                    <table className="w-full text-sm"><thead className="sticky top-0 bg-slate-50 text-left text-xs text-slate-500"><tr><th className="p-2">Sản phẩm</th><th className="p-2">Đơn vị</th><th className="p-2 text-right">Giá bán</th></tr></thead><tbody className="divide-y divide-slate-100">
-                      {products.flatMap((product) => unitsForPricing(product).map((unit) => {
-                        const key = priceDraftKey(product.id, unit.name);
-                        return <tr key={key}><td className="p-2 font-medium text-slate-800">{product.name}{product.productType === 'combo' && <span className="ml-1 text-[10px] font-normal text-amber-600">Combo</span>}</td><td className="p-2 text-slate-500">{unit.name} <span className="text-[11px] text-slate-400">· ×{unit.factor}</span></td><td className="p-2"><Input type="number" min="0" value={priceDrafts[key] ?? fallbackUnitPrice(product, unit, priceLists.find((list) => list.id === selectedPriceListId))} onChange={(e) => setPriceDrafts({ ...priceDrafts, [key]: Number(e.target.value) || 0 })} className="ml-auto h-9 max-w-36 text-right" /></td></tr>;
-                      }))}
-                    </tbody></table>
-                  </div>
-                </div>
-                <div className="grid gap-5 md:grid-cols-2">
-                  <div className="rounded-lg border border-slate-200 p-3">
-                    <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold text-slate-900">Biến thể / đơn vị bán</h3><Button variant="outline" className="h-8 px-2 text-xs" onClick={() => setUnitDrafts([...unitDrafts, { name: '', factor: 1, barcode: '' }])}><Plus className="mr-1 h-3 w-3" />Thêm đơn vị</Button></div>
-                    <div className="space-y-2">{unitDrafts.map((unit, index) => <div key={`${unit.name}-${index}`} className="grid grid-cols-[1fr_70px_1fr_auto] gap-2"><Input value={unit.name} placeholder="Tên đơn vị" onChange={(e) => setUnitDrafts(unitDrafts.map((row, i) => i === index ? { ...row, name: e.target.value } : row))} className="h-9 text-xs" /><Input type="number" min="0.01" value={unit.factor} onChange={(e) => setUnitDrafts(unitDrafts.map((row, i) => i === index ? { ...row, factor: Number(e.target.value) || 1 } : row))} className="h-9 text-xs" /><Input value={unit.barcode} placeholder="Mã vạch" onChange={(e) => setUnitDrafts(unitDrafts.map((row, i) => i === index ? { ...row, barcode: e.target.value } : row))} className="h-9 text-xs" /><button onClick={() => setUnitDrafts(unitDrafts.filter((_, i) => i !== index))} className="text-rose-500"><Trash2 className="h-4 w-4" /></button></div>)}</div>
-                    <p className="mt-2 text-xs text-slate-500">Ví dụ: 1 Hộp = 20 {products.find((p) => p.id === pricingProductId)?.unit || 'đơn vị cơ sở'}. Khi nhập/bán theo Hộp, tồn kho vẫn quy đổi về đơn vị cơ sở.</p>
-                  </div>
-                  <div className="rounded-lg border border-slate-200 p-3">
-                    <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold text-slate-900">Gói combo</h3><Button variant="outline" className="h-8 px-2 text-xs" onClick={() => setComponentDrafts([...componentDrafts, { componentProductId: products.find((p) => p.productType !== 'combo' && p.id !== pricingProductId)?.id || '', quantity: 1 }])}><Plus className="mr-1 h-3 w-3" />Thêm sản phẩm</Button></div>
-                    <div className="space-y-2">{componentDrafts.map((component, index) => <div key={`${component.componentProductId}-${index}`} className="grid grid-cols-[1fr_70px_auto] gap-2"><select value={component.componentProductId} onChange={(e) => setComponentDrafts(componentDrafts.map((row, i) => i === index ? { ...row, componentProductId: e.target.value } : row))} className="h-9 rounded-md border border-slate-200 px-2 text-xs">{products.filter((p) => p.productType !== 'combo' && p.id !== pricingProductId).map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</select><Input type="number" min="0.01" value={component.quantity} onChange={(e) => setComponentDrafts(componentDrafts.map((row, i) => i === index ? { ...row, quantity: Number(e.target.value) || 1 } : row))} className="h-9 text-xs" /><button onClick={() => setComponentDrafts(componentDrafts.filter((_, i) => i !== index))} className="text-rose-500"><Trash2 className="h-4 w-4" /></button></div>)}</div>
-                    {products.find((p) => p.id === pricingProductId)?.productType !== 'combo' && <p className="mt-2 text-xs text-slate-500">Chuyển loại sản phẩm sang Combo để tạo một sản phẩm gói và chọn các sản phẩm thành phần bên trong.</p>}
-                    {products.find((p) => p.id === pricingProductId)?.productType === 'combo' && <p className="mt-2 text-xs text-slate-500">Giá combo tự cộng theo bảng giá hiện tại của các sản phẩm thành phần; khi bán, tồn kho sẽ trừ ở từng thành phần.</p>}
-                  </div>
-                </div>
-                {pricingMessage && <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{pricingMessage}</p>}
-                <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setShowPricingModal(false)}>Đóng</Button><Button onClick={savePricing}><Save className="mr-2 h-4 w-4" />Lưu cấu hình</Button></div>
-              </div>
+              {pricingMessage && <p className="rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-700">{pricingMessage}</p>}
+              <div className="flex justify-end"><Button variant="outline" className="h-9 px-3 text-xs" onClick={() => setShowPricingModal(false)}>Đóng</Button></div>
             </div>
           </div>
         </div>
@@ -1487,7 +1501,7 @@ export default function Inventory() {
                           autoFocus
                           className="border-none bg-transparent shadow-none p-0 text-2xl font-black text-slate-900 tabular-nums focus:ring-0"
                           value={stockUpdateForm.quantity}
-                          onChange={e => setUpdateForm({...stockUpdateForm, quantity: Number(e.target.value)})}
+                          onChange={e => setUpdateForm((previous) => ({ ...previous, quantity: parseNumericDraft(e.target.value) }))}
                         />
                       </div>
                    </div>
@@ -1499,7 +1513,7 @@ export default function Inventory() {
                           type="number"
                           className="h-12 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700" 
                           value={stockUpdateForm.purchasePrice}
-                          onChange={e => setUpdateForm({...stockUpdateForm, purchasePrice: Number(e.target.value)})}
+                          onChange={e => setUpdateForm((previous) => ({ ...previous, purchasePrice: parseNumericDraft(e.target.value) }))}
                         />
                       </div>
                       <div className="space-y-2">
@@ -1508,7 +1522,7 @@ export default function Inventory() {
                           type="number"
                           className="h-12 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700" 
                           value={stockUpdateForm.sellingPrice}
-                          onChange={e => setUpdateForm({...stockUpdateForm, sellingPrice: Number(e.target.value)})}
+                          onChange={e => setUpdateForm((previous) => ({ ...previous, sellingPrice: parseNumericDraft(e.target.value) }))}
                         />
                       </div>
                    </div>
@@ -1520,7 +1534,7 @@ export default function Inventory() {
                           type="number"
                           className="h-11 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700"
                           value={stockCheckActual}
-                          onChange={e => setStockCheckActual(Number(e.target.value))}
+                          onChange={e => setStockCheckActual(parseNumericDraft(e.target.value))}
                         />
                         <Button
                           type="button"
@@ -1546,13 +1560,13 @@ export default function Inventory() {
         </div>
       )}
 
-      <div className="p-3 lg:p-4 bg-white border-b border-slate-200 sticky top-0 z-40 flex flex-col lg:flex-row gap-2 lg:gap-4 items-start lg:items-center justify-between shadow-sm shrink-0">
-        <div className="hidden lg:flex items-center gap-5">
-          <div className="h-9 w-9 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-sm shrink-0">
+      <div className="px-3 py-2 bg-white border-b border-slate-200 sticky top-0 z-40 flex flex-col lg:flex-row gap-2 lg:gap-3 items-start lg:items-center justify-between shadow-sm shrink-0">
+        <div className="hidden lg:flex items-center gap-3">
+          <div className="h-8 w-8 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-sm shrink-0">
             <Package className="h-4 w-4" />
           </div>
           <div>
-            <h1 className="text-base font-semibold leading-tight text-slate-900">Kho hàng</h1>
+            <h1 className="text-sm font-semibold leading-tight text-slate-900">Kho hàng</h1>
             <p className="text-[11px] leading-tight text-slate-500 mt-0.5">{products.length} mặt hàng trong hệ thống</p>
           </div>
         </div>
@@ -1565,10 +1579,10 @@ export default function Inventory() {
             className="hidden"
             onChange={handleImportFile}
           />
-          <div className="relative group w-full flex-1 lg:w-72">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-sky-600 transition-colors" />
+          <div className="relative group w-full flex-1 lg:w-64">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-sky-600 transition-colors" />
             <Input 
-              className="h-9 lg:h-10 rounded-lg border-none bg-slate-100/70 shadow-inner focus:ring-2 focus:ring-sky-500/20 transition-all font-medium text-sm placeholder:text-slate-400"
+              className="h-9 rounded-lg border-none bg-slate-100/70 pl-9 shadow-inner focus:ring-2 focus:ring-sky-500/20 transition-all font-medium text-xs placeholder:text-slate-400"
                 placeholder="Tìm theo tên, SKU, danh mục..." 
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
@@ -1576,16 +1590,8 @@ export default function Inventory() {
           </div>
           <div className="grid grid-cols-[1fr_auto] gap-2 sm:flex sm:items-center sm:gap-2">
             <Button
-              variant="outline"
-              onClick={openPricing}
-              className="h-9 lg:h-10 px-3 rounded-lg gap-2 font-medium text-sm"
-            >
-              <Settings2 className="h-4 w-4" />
-              <span className="hidden sm:inline">Bảng giá & combo</span>
-            </Button>
-            <Button
               onClick={openCreateProduct}
-              className="h-9 lg:h-10 px-4 rounded-lg gap-2 font-semibold bg-sky-600 hover:bg-sky-700 shadow-sm transition-all text-white shrink-0 text-sm"
+              className="h-9 px-3 rounded-lg gap-1.5 font-semibold bg-sky-600 hover:bg-sky-700 shadow-sm transition-all text-white shrink-0 text-xs"
             >
               <Plus className="h-4 w-4 sm:h-5 sm:w-5" />
               <span>Thêm mới</span>
@@ -1593,9 +1599,9 @@ export default function Inventory() {
             <Button
               variant="outline"
               onClick={() => setShowMobileActionSheet(true)}
-              className="h-10 px-3 rounded-lg text-sm gap-2 lg:hidden"
+              className="h-9 px-2.5 rounded-lg text-xs gap-1.5 lg:hidden"
             >
-              <Ellipsis className="h-4 w-4" />
+              <Ellipsis className="h-3.5 w-3.5" />
               <span className="hidden min-[390px]:inline">Tác vụ</span>
             </Button>
           </div>
@@ -1603,7 +1609,7 @@ export default function Inventory() {
             variant="outline"
             onClick={() => fileInputRef.current?.click()}
             disabled={importing}
-            className="hidden lg:inline-flex h-10 lg:h-11 px-4 rounded-lg text-sm gap-2"
+            className="hidden lg:inline-flex h-9 px-3 rounded-lg text-xs gap-1.5"
           >
             <Upload className="h-4 w-4" />
             {importing ? 'Đang import...' : 'Import CSV/Excel'}
@@ -1611,53 +1617,49 @@ export default function Inventory() {
           <Button
             variant="outline"
             onClick={downloadTemplates}
-            className="hidden lg:inline-flex h-10 lg:h-11 px-4 rounded-lg text-sm gap-2"
+            className="hidden lg:inline-flex h-9 px-3 rounded-lg text-xs gap-1.5"
           >
             <Download className="h-4 w-4" />
             Tải mẫu
           </Button>
-          <Button variant="outline" onClick={openBulkCheck} className="hidden lg:inline-flex h-10 lg:h-11 px-4 rounded-lg text-sm">
+          <Button variant="outline" onClick={openBulkCheck} className="hidden lg:inline-flex h-9 px-3 rounded-lg text-xs">
             Kiểm kê
           </Button>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3 lg:p-6">
-        <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5 lg:mb-6">
-          <div className="rounded-lg border border-slate-200 bg-white p-4">
-            <p className="text-xs text-slate-500">Tồn thực tế</p>
-            <p className="mt-1 text-lg font-semibold text-slate-900 tabular-nums">{inventoryStats.totalUnits}</p>
+        <div className="flex-1 overflow-y-auto p-2 lg:p-3">
+        <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+          <div className="rounded-lg border border-slate-200 bg-white p-2.5">
+            <p className="text-[10px] text-slate-500">Tồn thực tế</p>
+            <p className="mt-0.5 text-sm font-semibold text-slate-700 tabular-nums">{inventoryStats.totalUnits}</p>
           </div>
-          <div className="rounded-lg border border-slate-200 bg-white p-4">
-            <p className="text-xs text-slate-500">Tồn khả dụng</p>
-            <p className="mt-1 text-lg font-semibold text-emerald-700 tabular-nums">{inventoryStats.availableUnits}</p>
+          <div className="rounded-lg border border-slate-200 bg-white p-2.5">
+            <p className="text-[10px] text-slate-500">Tồn khả dụng</p>
+            <p className="mt-0.5 text-sm font-semibold text-slate-700 tabular-nums">{inventoryStats.availableUnits}</p>
           </div>
-          <div className="rounded-lg border border-slate-200 bg-white p-4">
-            <p className="text-xs text-slate-500">Đang giữ cho bill</p>
-            <p className="mt-1 text-lg font-semibold text-orange-600 tabular-nums">{inventoryStats.reservedUnits}</p>
+          <div className="rounded-lg border border-slate-200 bg-white p-2.5">
+            <p className="text-[10px] text-slate-500">Giá trị tồn (giá nhập)</p>
+            <p className="mt-0.5 text-sm font-semibold text-slate-700 tabular-nums">{formatCurrency(inventoryStats.totalStockValue)}</p>
           </div>
-          <div className="rounded-lg border border-slate-200 bg-white p-4">
-            <p className="text-xs text-slate-500">Giá trị tồn (giá nhập)</p>
-            <p className="mt-1 text-lg font-semibold text-sky-700 tabular-nums">{formatCurrency(inventoryStats.totalStockValue)}</p>
-          </div>
-          <div className="rounded-lg border border-slate-200 bg-white p-4">
-            <p className="text-xs text-slate-500">Mặt hàng sắp hết</p>
-            <p className={`mt-1 text-lg font-semibold tabular-nums ${inventoryStats.lowStock > 0 ? 'text-amber-700' : 'text-slate-900'}`}>
+          <div className="rounded-lg border border-slate-200 bg-white p-2.5">
+            <p className="text-[10px] text-slate-500">Mặt hàng sắp hết</p>
+            <p className={`mt-0.5 text-sm font-semibold tabular-nums ${inventoryStats.lowStock > 0 ? 'text-amber-700' : 'text-slate-700'}`}>
               {inventoryStats.lowStock}
             </p>
           </div>
         </div>
 
-        <div className="mb-4 rounded-lg border border-slate-200 bg-white p-3 lg:p-4">
-          <div className="mb-3 flex items-center gap-2 text-xs font-medium text-slate-600">
-            <SlidersHorizontal className="h-4 w-4 text-slate-500" />
+        <div className="mb-3 rounded-lg border border-slate-200 bg-white p-2.5">
+          <div className="mb-2 flex items-center gap-2 text-[11px] font-medium text-slate-600">
+            <SlidersHorizontal className="h-3.5 w-3.5 text-slate-500" />
             Bộ lọc & sắp xếp hàng hóa
           </div>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
             <select
               value={categoryFilter}
               onChange={(e) => setCategoryFilter(e.target.value)}
-              className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
+              className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
             >
               <option value="all">Tất cả danh mục</option>
               {uniqueCategories.map((cat) => (
@@ -1667,7 +1669,7 @@ export default function Inventory() {
             <select
               value={stockStatusFilter}
               onChange={(e) => setStockStatusFilter(e.target.value as any)}
-              className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
+              className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
             >
               <option value="all">Tất cả tồn kho</option>
               <option value="in_stock">Còn hàng</option>
@@ -1677,7 +1679,7 @@ export default function Inventory() {
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as any)}
-              className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
+              className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
             >
               <option value="updated_desc">Mới cập nhật</option>
               <option value="name_asc">Tên A → Z</option>
@@ -1687,7 +1689,7 @@ export default function Inventory() {
             </select>
             <Button
               variant="outline"
-              className="h-10 justify-start gap-2 px-3 text-sm"
+              className="h-9 justify-start gap-2 px-2.5 text-xs"
               onClick={() => {
                 setCategoryFilter('all');
                 setStockStatusFilter('all');
@@ -1700,23 +1702,23 @@ export default function Inventory() {
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow-xl shadow-slate-900/5 border border-white overflow-hidden">
+        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
           {/* Mobile View: High-polish Cards */}
           <div className="grid grid-cols-1 gap-px bg-slate-100 lg:hidden">
             {visibleProducts.map(product => (
-              <div key={product.id} className="p-4 bg-white space-y-3 relative group active:bg-slate-50 transition-colors" onClick={() => openStockEntry(product)}>
+              <div key={product.id} className="p-3 bg-white space-y-2 relative group active:bg-slate-50 transition-colors" onClick={() => openStockEntry(product)}>
                 <div className="flex justify-between items-start">
                   <div className="space-y-1">
-                    <div className="text-xs font-semibold text-slate-500 font-mono leading-none">{product.sku}</div>
-                    <div className="font-semibold text-slate-900 text-lg leading-tight tracking-tight">{product.name}</div>
+                    <button type="button" className="block text-left text-xs font-semibold text-slate-500 font-mono leading-none hover:text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); void openEditProduct(product); }}>{product.sku}</button>
+                    <button type="button" className="block text-left font-semibold text-slate-900 text-base leading-tight tracking-tight hover:text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); void openEditProduct(product); }}>{product.name}</button>
                   </div>
-                  <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         openEditProduct(product);
                       }}
-                      className="h-9 w-9 rounded-lg bg-slate-100 text-slate-500 flex items-center justify-center"
+                      className="h-8 w-8 rounded-md bg-slate-100 text-slate-500 flex items-center justify-center"
                     >
                       <Edit3 className="h-4 w-4" />
                     </button>
@@ -1725,40 +1727,34 @@ export default function Inventory() {
                         e.stopPropagation();
                         handleDeleteProduct(product);
                       }}
-                      className="h-9 w-9 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center"
+                      className="h-8 w-8 rounded-md bg-rose-50 text-rose-600 flex items-center justify-center"
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
-                    <div className={`h-9 w-9 rounded-lg flex items-center justify-center shadow-inner transition-transform group-hover:rotate-12 ${
-                      product.stock <= product.lowStockThreshold ? 'bg-orange-50 text-orange-600' : 'bg-sky-50 text-sky-600'
-                    }`}>
-                      <Package className="h-4 w-4" />
-                    </div>
                   </div>
                 </div>
                 
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium text-slate-600 bg-slate-100 px-2.5 py-1 rounded-lg leading-none ring-1 ring-slate-200/50">{product.category}</span>
-                  <span className="text-xs font-medium text-slate-600 bg-slate-100 px-2.5 py-1 rounded-lg leading-none ring-1 ring-slate-200/50">{product.unit}</span>
+                  <span className="text-[11px] font-medium text-slate-600 bg-slate-100 px-2 py-1 rounded-md leading-none ring-1 ring-slate-200/50">{product.category}</span>
+                  <span className="text-[11px] font-medium text-slate-600 bg-slate-100 px-2 py-1 rounded-md leading-none ring-1 ring-slate-200/50">{product.unit}</span>
                 </div>
 
-                <div className="grid grid-cols-3 gap-3 pt-4 border-t border-slate-100">
+                <div className="grid grid-cols-3 gap-2 pt-3 border-t border-slate-100">
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-500">Tồn kho</div>
-                    <div className={`text-lg font-semibold tabular-nums leading-none ${
-                      Number(product.availableStock ?? product.stock) <= product.lowStockThreshold ? 'text-orange-600' : 'text-slate-900'
+                    <div className="text-[11px] font-medium text-slate-500">Tồn kho</div>
+                      <div className={`text-sm font-medium tabular-nums leading-none ${
+                      Number(product.availableStock ?? product.stock) <= product.lowStockThreshold ? 'text-amber-700' : 'text-slate-700'
                     }`}>
-                      {Number(product.availableStock ?? product.stock)} <span className="text-xs text-slate-400 font-medium ml-0.5">{product.unit}</span>
+                      {Number(product.availableStock ?? product.stock)} <span className="text-[11px] text-slate-400 font-medium ml-0.5">{product.unit}</span>
                     </div>
-                    <div className="text-[11px] text-slate-400">Thực tế {product.stock} · Giữ {product.reservedStock || 0}</div>
                   </div>
                   <div className="text-right space-y-1">
                     <div className="text-xs font-medium text-slate-500">Giá nhập</div>
-                    <div className="text-base font-semibold text-slate-600 tabular-nums leading-none">{formatCurrency(product.purchasePrice)}</div>
+                    <div className="text-sm font-semibold text-slate-600 tabular-nums leading-none">{formatCompactCurrency(product.purchasePrice)}</div>
                   </div>
                   <div className="text-right space-y-1">
                     <div className="text-xs font-medium text-slate-500">Giá bán</div>
-                    <div className="text-lg font-semibold text-sky-700 tabular-nums leading-none">{formatCurrency(product.sellingPrice)}</div>
+                    <div className="text-sm font-semibold text-sky-700 tabular-nums leading-none">{formatCompactCurrency(product.sellingPrice)}</div>
                   </div>
                 </div>
               </div>
@@ -1767,91 +1763,85 @@ export default function Inventory() {
 
           {/* Desktop View: Polished Table */}
           <div className="hidden lg:block overflow-x-auto">
-            <table className="w-full min-w-[1120px] text-left border-collapse table-fixed">
+            <table className="w-full min-w-0 text-left text-xs border-collapse table-fixed">
               <colgroup>
-                <col className="w-[130px]" />
-                <col className="w-[340px]" />
-                <col className="w-[150px]" />
-                <col className="w-[140px]" />
-                <col className="w-[170px]" />
-                <col className="w-[170px]" />
-                <col className="w-[140px]" />
+                <col className="w-[9%]" />
+                <col className="w-[30%]" />
+                <col className="w-[12%]" />
+                <col className="w-[12%]" />
+                <col className="w-[13%]" />
+                <col className="w-[15%]" />
+                <col className="w-[9%]" />
               </colgroup>
               <thead>
                 <tr className="bg-slate-50/50">
-                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100">
+                  <th className="px-2 py-2 text-[11px] font-semibold text-slate-500 border-b border-slate-100">
                     <div className="flex items-center gap-2">Mã SKU <ArrowUpDown className="h-3 w-3" /></div>
                   </th>
-                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100">Sản phẩm</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100">Danh mục</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100 text-right">Giá nhập</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100 text-right">Giá bán</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100 text-center">Tồn kho</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 border-b border-slate-100 text-center">Thao tác</th>
+                  <th className="px-2 py-2 text-[11px] font-semibold text-slate-500 border-b border-slate-100">Sản phẩm</th>
+                  <th className="px-2 py-2 text-[11px] font-semibold text-slate-500 border-b border-slate-100">Danh mục</th>
+                  <th className="px-2 py-2 text-[11px] font-semibold text-slate-500 border-b border-slate-100 text-right">Giá nhập</th>
+                  <th className="px-2 py-2 text-[11px] font-semibold text-slate-500 border-b border-slate-100 text-right">Giá bán</th>
+                  <th className="px-2 py-2 text-[11px] font-semibold text-slate-500 border-b border-slate-100 text-center">Tồn kho</th>
+                  <th className="px-2 py-2 text-[11px] font-semibold text-slate-500 border-b border-slate-100 text-center">Thao tác</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {visibleProducts.map(product => (
-                  <tr key={product.id} className="group h-[84px] hover:bg-sky-50/20 transition-all duration-300">
-                    <td className="px-4 py-3 align-middle">
-                      <span className="inline-flex max-w-full truncate font-mono text-xs font-semibold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-md border border-slate-200/50">{product.sku}</span>
+                  <tr key={product.id} className="group h-[56px] hover:bg-sky-50/20 transition-colors">
+                    <td className="px-2 py-1.5 align-middle">
+                      <button type="button" className="inline-flex max-w-full truncate font-mono text-[11px] font-semibold text-slate-500 bg-slate-100 px-2 py-1 rounded-md hover:text-sky-700" onClick={() => void openEditProduct(product)}>{product.sku}</button>
                     </td>
-                    <td className="px-4 py-3 align-middle">
-                      <div className="flex items-center gap-4">
-                        <div className="h-10 w-10 rounded-lg bg-slate-50 group-hover:bg-white group-hover:shadow-lg transition-all flex items-center justify-center text-slate-400 group-hover:text-sky-600 border border-transparent group-hover:border-sky-100 shrink-0">
-                           <Package className="h-5 w-5 transform group-hover:rotate-12 transition-transform" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="font-semibold text-slate-900 tracking-tight text-base leading-tight truncate">{product.name}</div>
-                          {product.barcode && <div className="text-xs text-slate-500 font-mono truncate">{product.barcode}</div>}
-                        </div>
+                    <td className="px-2 py-1.5 align-middle">
+                      <div className="min-w-0">
+                        <button type="button" className="block max-w-full truncate text-left font-semibold text-slate-900 tracking-tight text-xs leading-tight hover:text-sky-700 hover:underline" onClick={() => void openEditProduct(product)}>{product.name}</button>
+                        {product.barcode && <div className="text-[10px] text-slate-500 font-mono truncate">{product.barcode}</div>}
                       </div>
                     </td>
-                    <td className="px-4 py-3 align-middle">
-                      <span className="inline-flex max-w-full truncate text-xs font-medium text-slate-600 bg-slate-50 px-2.5 py-1 rounded-md border border-slate-100">{product.category}</span>
+                    <td className="px-2 py-1.5 align-middle">
+                      <span className="inline-flex max-w-full truncate text-[11px] font-medium text-slate-600 bg-slate-50 px-2 py-1 rounded-md">{product.category}</span>
                     </td>
-                    <td className="px-4 py-3 align-middle text-right font-semibold text-slate-500 tabular-nums text-sm whitespace-nowrap">
-                        {formatCurrency(product.purchasePrice)}
+                    <td className="px-2 py-1.5 align-middle text-right font-semibold text-slate-500 tabular-nums text-[11px] whitespace-nowrap">
+                        {formatCompactCurrency(product.purchasePrice)}
                     </td>
-                    <td className="px-4 py-3 align-middle text-right">
+                    <td className="px-2 py-1.5 align-middle text-right">
                       <div className="flex flex-col items-end">
-                        <div className="font-semibold text-sky-700 text-lg tabular-nums whitespace-nowrap">{formatCurrency(product.sellingPrice)}</div>
-                        <button 
+                        <div className="font-semibold text-sky-700 text-sm tabular-nums whitespace-nowrap">{formatCompactCurrency(product.sellingPrice)}</div>
+                        <button
                           onClick={(e) => {
                             e.stopPropagation();
                             openEditProduct(product);
                           }}
-                          className="text-xs font-medium text-slate-400 hover:text-sky-600 transition-colors"
+                          className="text-[10px] font-medium text-slate-400 hover:text-sky-600 transition-colors"
                         >
                           Sửa giá
                         </button>
                       </div>
                     </td>
-                    <td className="px-4 py-3 align-middle">
-                      <div className="flex justify-center">
-                        <div className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2.5 shadow-sm transition-transform group-hover:scale-105 ${
+                    <td className="px-2 py-1.5 align-middle">
+                      <div className="flex flex-col items-center justify-center">
+                        <div className={`px-1.5 py-1 rounded-md border text-[11px] font-medium flex items-center gap-1 ${
                           Number(product.availableStock ?? product.stock) <= product.lowStockThreshold
-                            ? 'bg-orange-600 text-white ring-4 ring-orange-100' 
-                            : 'bg-slate-900 text-white ring-4 ring-slate-100'
+                            ? 'border-amber-200 bg-amber-50 text-amber-700'
+                            : 'border-slate-200 bg-slate-50 text-slate-700'
                         }`}>
-                          <button className="hover:scale-125 transition-transform" onClick={(e) => {
+                          <button className="hover:text-sky-700 transition-colors" onClick={(e) => {
                              e.stopPropagation();
                              openStockEntry(product);
-                          }}><Plus className="h-4 w-4" /></button>
-                          <span className="text-sm font-semibold tabular-nums whitespace-nowrap">{Number(product.availableStock ?? product.stock)}</span>
-                          <span className="opacity-70">{product.unit}</span>
-                          {Number(product.availableStock ?? product.stock) <= product.lowStockThreshold && <AlertTriangle className="h-4 w-4" />}
+                          }}><Plus className="h-3.5 w-3.5" /></button>
+                          <span className="tabular-nums whitespace-nowrap">{Number(product.availableStock ?? product.stock)}</span>
+                          <span className="text-[10px] text-slate-500">{product.unit}</span>
+                          {Number(product.availableStock ?? product.stock) <= product.lowStockThreshold && <AlertTriangle className="h-3 w-3" />}
                         </div>
-                        <p className="mt-1 text-[10px] text-slate-400">Thực tế {product.stock} · Giữ {product.reservedStock || 0}</p>
                       </div>
                     </td>
-                    <td className="px-4 py-3 align-middle">
-                      <div className="flex justify-center gap-2">
+                    <td className="px-2 py-1.5 align-middle">
+                      <div className="flex justify-center gap-1">
                         <Button 
                           variant="ghost" 
                           size="sm" 
                           onClick={() => openEditProduct(product)}
-                          className="h-9 w-9 rounded-lg bg-slate-50 hover:bg-sky-600 text-slate-400 hover:text-white transition-all shadow-sm ring-1 ring-slate-100 hover:ring-sky-500"
+                          className="h-8 w-8 rounded-md bg-slate-50 hover:bg-slate-100 text-slate-600 hover:text-sky-700 transition-colors"
                         >
                           <Edit3 className="h-4 w-4" />
                         </Button>
@@ -1859,7 +1849,7 @@ export default function Inventory() {
                           variant="ghost"
                           size="sm"
                           onClick={() => handleDeleteProduct(product)}
-                          className="h-9 w-9 rounded-lg bg-rose-50 hover:bg-rose-600 text-rose-500 hover:text-white transition-all shadow-sm ring-1 ring-rose-100 hover:ring-rose-500"
+                          className="h-8 w-8 rounded-md bg-rose-50 hover:bg-rose-600 text-rose-500 hover:text-white transition-colors"
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -1872,22 +1862,22 @@ export default function Inventory() {
           </div>
           
           {visibleProducts.length === 0 && (
-            <div className="p-32 text-center space-y-8 animate-pulse">
-              <div className="inline-flex h-32 w-32 items-center justify-center rounded-lg bg-slate-50 text-slate-200 shadow-inner">
-                <Search className="h-16 w-16 opacity-10" />
+            <div className="p-16 text-center space-y-4 animate-pulse">
+              <div className="inline-flex h-20 w-20 items-center justify-center rounded-lg bg-slate-50 text-slate-200 shadow-inner">
+                <Search className="h-9 w-9 opacity-10" />
               </div>
-              <p className="text-slate-300 font-black uppercase tracking-[0.5em] text-xs">Dữ liệu hàng hóa trống</p>
+              <p className="text-slate-300 font-semibold uppercase tracking-[0.25em] text-xs">Dữ liệu hàng hóa trống</p>
             </div>
           )}
         </div>
 
-        <div className="mt-4 rounded-lg border border-slate-200 bg-white overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold text-slate-900">Lịch sử kho gần đây</h3>
+        <div className="mt-3 rounded-lg border border-slate-200 bg-white overflow-hidden">
+          <div className="px-3 py-2 border-b border-slate-100 flex items-center justify-between gap-3">
+            <h3 className="text-xs font-semibold text-slate-900">Lịch sử kho gần đây</h3>
             <select
               value={movementTypeFilter}
               onChange={(e) => setMovementTypeFilter(e.target.value as any)}
-              className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700"
+              className="h-8 rounded-md border border-slate-200 bg-white px-2 text-[11px] text-slate-700"
             >
               <option value="all">Tất cả</option>
               <option value="in">Nhập kho</option>
@@ -1900,7 +1890,7 @@ export default function Inventory() {
               <p className="p-4 text-sm text-slate-500">Chưa có biến động kho.</p>
             ) : (
               visibleStockMovements.slice(0, 12).map((m) => (
-                <div key={m.id} className="px-4 py-3 flex items-center justify-between gap-3">
+                <div key={m.id} className="px-3 py-2 flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <span className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${movementMeta(m.type).tone}`}>
@@ -1914,6 +1904,8 @@ export default function Inventory() {
                     <p className="text-xs text-slate-500">
                       {new Date(m.createdAt).toLocaleString('vi-VN')} · {m.actorName || 'N/A'}
                       {m.actorRole ? ` (${m.actorRole})` : ''}
+                      {m.referenceId && m.note?.includes('Bán hàng') && <><span> · </span><button type="button" className="text-sky-700 hover:underline" onClick={() => navigate(`/app/invoices?invoiceId=${encodeURIComponent(m.referenceId)}`)}>Mở đơn hàng</button></>}
+                      {m.referenceId && m.note?.includes('Nhập hàng') && <><span> · </span><button type="button" className="text-sky-700 hover:underline" onClick={() => navigate(`/app/purchases?purchaseId=${encodeURIComponent(m.referenceId)}`)}>Mở phiếu nhập</button></>}
                     </p>
                   </div>
                   <div className="text-right shrink-0">

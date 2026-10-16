@@ -32,6 +32,47 @@ const getCameraError = (error: unknown) => {
   return 'Không mở được camera. Hãy kiểm tra quyền truy cập rồi thử lại hoặc dùng máy quét mã vạch.';
 };
 
+type NativeBarcode = { rawValue?: string };
+type NativeBarcodeDetector = {
+  detect: (source: HTMLVideoElement) => Promise<NativeBarcode[]>;
+};
+type NativeBarcodeDetectorConstructor = new (options?: { formats?: string[] }) => NativeBarcodeDetector;
+
+const nativeBarcodeFormats = [
+  'aztec',
+  'code_128',
+  'code_39',
+  'code_93',
+  'codabar',
+  'data_matrix',
+  'ean_13',
+  'ean_8',
+  'itf',
+  'pdf417',
+  'qr_code',
+  'upc_a',
+  'upc_e',
+];
+
+const createNativeBarcodeDetector = async (): Promise<NativeBarcodeDetector | null> => {
+  const detectorConstructor = (window as Window & {
+    BarcodeDetector?: NativeBarcodeDetectorConstructor & {
+      getSupportedFormats?: () => Promise<string[]>;
+    };
+  }).BarcodeDetector;
+  if (!detectorConstructor) return null;
+
+  try {
+    const supportedFormats = detectorConstructor.getSupportedFormats
+      ? await detectorConstructor.getSupportedFormats()
+      : nativeBarcodeFormats;
+    const formats = nativeBarcodeFormats.filter((format) => supportedFormats.includes(format));
+    return formats.length ? new detectorConstructor({ formats }) : null;
+  } catch {
+    return null;
+  }
+};
+
 export function BarcodeScannerModal({
   open,
   title = 'Quét mã vạch',
@@ -46,6 +87,8 @@ export function BarcodeScannerModal({
   const onDetectedRef = useRef(onDetected);
   const [error, setError] = useState('');
   const [starting, setStarting] = useState(false);
+  const [scanStatus, setScanStatus] = useState<'starting' | 'scanning'>('starting');
+  const [scanEngine, setScanEngine] = useState<'native' | 'zxing' | null>(null);
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -60,9 +103,86 @@ export function BarcodeScannerModal({
     let stream: MediaStream | null = null;
     const video = videoRef.current;
 
+    const stopStream = (mediaStream: MediaStream | null) => {
+      mediaStream?.getTracks().forEach((track) => track.stop());
+    };
+
+    const getCameraStream = async () => {
+      const videoConstraints = {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      };
+      let nextStream: MediaStream;
+
+      try {
+        // Prefer the rear camera on phones. The exact constraint is important
+        // because some mobile browsers otherwise open the selfie camera even
+        // when the environment camera is available.
+        nextStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { ...videoConstraints, facingMode: { exact: 'environment' } },
+        });
+      } catch (cameraError) {
+        const name = cameraError instanceof DOMException ? cameraError.name : '';
+        if (name !== 'OverconstrainedError' && name !== 'ConstraintNotSatisfiedError') throw cameraError;
+        nextStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { ...videoConstraints, facingMode: { ideal: 'environment' } },
+        });
+      }
+
+      // Once permission is granted, choose a device explicitly when the
+      // browser exposes a rear-camera label but did not honor facingMode.
+      try {
+        const currentTrack = nextStream.getVideoTracks()[0];
+        const currentSettings = currentTrack?.getSettings();
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const rearCamera = devices.find((device) =>
+          device.kind === 'videoinput' && /back|rear|environment|camera sau|sau/i.test(device.label)
+        );
+        if (rearCamera?.deviceId && rearCamera.deviceId !== currentSettings?.deviceId) {
+          stopStream(nextStream);
+          nextStream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: { ...videoConstraints, deviceId: { exact: rearCamera.deviceId } },
+          });
+        }
+      } catch {
+        // Keep the already-open stream if device enumeration is unavailable.
+      }
+
+      // Keep autofocus running while the user moves the barcode into frame.
+      try {
+        const track = nextStream.getVideoTracks()[0];
+        const capabilities = track?.getCapabilities() as MediaTrackCapabilities & { focusMode?: string[] };
+        if (track && capabilities.focusMode?.includes('continuous')) {
+          await track.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] });
+        }
+      } catch {
+        // Focus controls are optional and not exposed by every mobile browser.
+      }
+
+      return nextStream;
+    };
+
+    const showDetectedCode = (rawCode: string) => {
+      const code = rawCode.trim();
+      if (!code || cancelled) return;
+
+      cancelled = true;
+      setScanStatus('scanning');
+      controls?.stop();
+      controlsRef.current?.stop();
+      stopStream(stream);
+      onDetectedRef.current(code);
+      onCloseRef.current();
+    };
+
     const startScanner = async () => {
       setError('');
       setStarting(true);
+      setScanStatus('starting');
+      setScanEngine(null);
       if (!video) return;
 
       if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
@@ -71,10 +191,18 @@ export function BarcodeScannerModal({
         return;
       }
 
-      const reader = new BrowserMultiFormatReader();
+      const reader = new BrowserMultiFormatReader(undefined, {
+        delayBetweenScanAttempts: 180,
+        delayBetweenScanSuccess: 180,
+      });
       reader.possibleFormats = [
+        BarcodeFormat.AZTEC,
+        BarcodeFormat.CODABAR,
+        BarcodeFormat.DATA_MATRIX,
         BarcodeFormat.EAN_13,
         BarcodeFormat.EAN_8,
+        BarcodeFormat.ITF,
+        BarcodeFormat.PDF_417,
         BarcodeFormat.CODE_128,
         BarcodeFormat.CODE_39,
         BarcodeFormat.UPC_A,
@@ -83,49 +211,64 @@ export function BarcodeScannerModal({
       ];
 
       try {
-        // Request the stream explicitly so permission is triggered by the
-        // user's click on "Bật camera lại" on Safari/WebView as well.
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: {
-            facingMode: { ideal: 'environment' },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-        });
+        stream = await getCameraStream();
         if (cancelled) {
-          stream.getTracks().forEach((track) => track.stop());
+          stopStream(stream);
           return;
         }
 
+        video.srcObject = stream;
+        video.muted = true;
+        video.playsInline = true;
+        await video.play();
+        setStarting(false);
+        setScanStatus('scanning');
+
+        const nativeDetector = await createNativeBarcodeDetector();
+        if (nativeDetector) {
+          setScanEngine('native');
+          const detectNative = async () => {
+            while (!cancelled && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+              try {
+                const results = await nativeDetector.detect(video);
+                const code = results.find((result) => result.rawValue?.trim())?.rawValue;
+                if (code) {
+                  showDetectedCode(code);
+                  return;
+                }
+              } catch {
+                // A frame can fail while the camera is adjusting focus/exposure.
+              }
+              await new Promise((resolve) => window.setTimeout(resolve, 120));
+            }
+          };
+          void detectNative();
+          return;
+        }
+
+        setScanEngine('zxing');
         controls = await reader.decodeFromStream(stream, video, (result, _decodeError, scanControls) => {
             if (cancelled || !result) return;
-            const code = result.getText().trim();
-            if (!code) return;
-
-            cancelled = true;
             scanControls.stop();
-            controls?.stop();
-            controlsRef.current?.stop();
-            onDetectedRef.current(code);
-            onCloseRef.current();
+            showDetectedCode(result.getText());
           });
 
         if (cancelled) controls.stop();
         else controlsRef.current = controls;
-        setStarting(false);
       } catch (scannerError) {
         if (!cancelled) {
-          stream?.getTracks().forEach((track) => track.stop());
+          stopStream(stream);
           setError(getCameraError(scannerError));
           setStarting(false);
+          setScanStatus('starting');
+          setScanEngine(null);
         }
       }
     };
 
     startScannerRef.current = () => {
       controls?.stop();
-      stream?.getTracks().forEach((track) => track.stop());
+      stopStream(stream);
       void startScanner();
     };
     void startScanner();
@@ -136,7 +279,7 @@ export function BarcodeScannerModal({
       controls?.stop();
       controlsRef.current?.stop();
       controlsRef.current = null;
-      stream?.getTracks().forEach((track) => track.stop());
+      stopStream(stream);
       if (video) video.srcObject = null;
     };
   }, [open]);
@@ -176,9 +319,14 @@ export function BarcodeScannerModal({
             <div className="pointer-events-none absolute inset-[14%_9%] rounded-xl border-2 border-white/90 shadow-[0_0_0_999px_rgba(15,23,42,0.28)]" />
             <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
               <span className="rounded-full bg-slate-950/70 px-3 py-1 text-[11px] font-medium text-white">
-                Giữ mã vạch nằm ngang trong khung
+                {scanStatus === 'starting' ? 'Đang mở camera...' : 'Đang nhận diện mã...'}
               </span>
             </div>
+            {scanStatus === 'scanning' && !error && (
+              <div className="pointer-events-none absolute inset-[14%_9%] overflow-hidden rounded-xl">
+                <div className="absolute inset-x-0 top-0 h-0.5 animate-[barcode-scanline_2.2s_ease-in-out_infinite] bg-sky-300 shadow-[0_0_14px_4px_rgba(125,211,252,0.75)]" />
+              </div>
+            )}
             {error && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-950/95 px-5 text-center">
                 <ScanLine className="h-8 w-8 text-amber-300" />
@@ -198,6 +346,11 @@ export function BarcodeScannerModal({
           </div>
 
           <p className="text-xs leading-5 text-slate-500">{description}</p>
+          {scanStatus === 'scanning' && !error && (
+            <p className="text-[11px] text-sky-700">
+              {scanEngine === 'native' ? 'Đang dùng bộ nhận diện của trình duyệt.' : 'Đang dùng bộ nhận diện tương thích đa định dạng.'}
+            </p>
+          )}
           <p className="text-[11px] leading-4 text-slate-400">
             Nếu camera không mở, bạn có thể nhập mã bằng tay hoặc dùng máy quét mã vạch dạng bàn phím.
           </p>

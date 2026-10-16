@@ -69,6 +69,24 @@ export const userPermissions = sqliteTable('user_permissions', {
   updatedAt: text('updated_at').notNull(),
 });
 
+export const roleProfiles = sqliteTable('role_profiles', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  code: text('code').notNull(),
+  name: text('name').notNull(),
+  description: text('description').notNull().default(''),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const roleProfilePermissions = sqliteTable('role_profile_permissions', {
+  id: text('id').primaryKey(),
+  roleProfileId: text('role_profile_id').notNull().references(() => roleProfiles.id),
+  permissionCode: text('permission_code').notNull().references(() => permissions.code),
+  allowed: integer('allowed', { mode: 'boolean' }).notNull().default(true),
+  updatedAt: text('updated_at').notNull(),
+});
+
 export const licenseInstances = sqliteTable('license_instances', {
   id: text('id').primaryKey(),
   instanceId: text('instance_id').notNull().unique(),

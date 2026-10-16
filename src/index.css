@@ -94,14 +94,55 @@
 }
 
 @layer utilities {
+  @keyframes barcode-scanline {
+    0%, 100% { transform: translateY(0); opacity: 0.55; }
+    50% { transform: translateY(calc(100% + 260px)); opacity: 1; }
+  }
+
   /* Dense desktop/mobile ERP mode: compact rows, low visual noise, inline management. */
   .erp-compact {
     --erp-row-height: 40px;
     --erp-gap: 8px;
+    --erp-font-size: 13px;
+    --erp-line-height: 18px;
+    --erp-control-height: 32px;
   }
 
   .erp-compact main {
-    font-size: 13px;
+    min-width: 0;
+    font-size: var(--erp-font-size);
+    line-height: var(--erp-line-height);
+  }
+
+  .erp-compact main > div,
+  .erp-compact main > div > * {
+    min-width: 0;
+  }
+
+  /* Shared type ramp for dense operational screens. */
+  .erp-compact [class~="text-sm"] {
+    font-size: 13px !important;
+    line-height: 18px !important;
+  }
+
+  .erp-compact [class~="text-base"] {
+    font-size: 14px !important;
+    line-height: 20px !important;
+  }
+
+  .erp-compact [class~="text-lg"] {
+    font-size: 16px !important;
+    line-height: 22px !important;
+  }
+
+  .erp-compact [class~="text-xl"] {
+    font-size: 18px !important;
+    line-height: 24px !important;
+  }
+
+  .erp-compact [class~="text-2xl"] {
+    font-size: 20px !important;
+    line-height: 26px !important;
   }
 
   .erp-compact .text-page-title {
@@ -122,13 +163,18 @@
 
   .erp-compact [class~="p-8"] { padding: 16px !important; }
   .erp-compact [class~="p-10"] { padding: 16px !important; }
+  .erp-compact [class~="p-2"] { padding: 6px !important; }
   .erp-compact [class~="p-6"] { padding: 12px !important; }
   .erp-compact [class~="p-5"] { padding: 12px !important; }
   .erp-compact [class~="p-4"] { padding: 10px !important; }
   .erp-compact [class~="p-3"] { padding: 8px !important; }
   .erp-compact [class~="px-8"] { padding-left: 16px !important; padding-right: 16px !important; }
+  .erp-compact [class~="px-4"] { padding-left: 12px !important; padding-right: 12px !important; }
+  .erp-compact [class~="px-3"] { padding-left: 8px !important; padding-right: 8px !important; }
   .erp-compact [class~="px-6"] { padding-left: 12px !important; padding-right: 12px !important; }
   .erp-compact [class~="px-5"] { padding-left: 12px !important; padding-right: 12px !important; }
+  .erp-compact [class~="py-2"] { padding-top: 6px !important; padding-bottom: 6px !important; }
+  .erp-compact [class~="py-3"] { padding-top: 8px !important; padding-bottom: 8px !important; }
   .erp-compact [class~="py-6"] { padding-top: 12px !important; padding-bottom: 12px !important; }
   .erp-compact [class~="py-5"] { padding-top: 10px !important; padding-bottom: 10px !important; }
   .erp-compact [class~="py-4"] { padding-top: 8px !important; padding-bottom: 8px !important; }
@@ -136,7 +182,12 @@
   .erp-compact [class~="gap-8"] { gap: 16px !important; }
   .erp-compact [class~="gap-6"] { gap: 12px !important; }
   .erp-compact [class~="gap-5"] { gap: 10px !important; }
+  .erp-compact [class~="gap-3"] { gap: 8px !important; }
+  .erp-compact [class~="gap-2"] { gap: 6px !important; }
   .erp-compact [class~="gap-4"] { gap: 8px !important; }
+  .erp-compact [class~="space-y-3"] > :not([hidden]) ~ :not([hidden]) { margin-top: 8px !important; }
+  .erp-compact [class~="space-y-2"] > :not([hidden]) ~ :not([hidden]) { margin-top: 6px !important; }
+  .erp-compact [class~="space-y-1"] > :not([hidden]) ~ :not([hidden]) { margin-top: 4px !important; }
   .erp-compact [class~="space-y-10"] > :not([hidden]) ~ :not([hidden]) { margin-top: 16px !important; }
   .erp-compact [class~="space-y-8"] > :not([hidden]) ~ :not([hidden]) { margin-top: 16px !important; }
   .erp-compact [class~="space-y-6"] > :not([hidden]) ~ :not([hidden]) { margin-top: 12px !important; }
@@ -282,6 +333,23 @@
 
   .pb-mobile-nav {
     padding-bottom: calc(80px + env(safe-area-inset-bottom));
+  }
+
+  .sidebar-footer-note {
+    color: #cbd5e1;
+    font-size: 10px;
+    line-height: 14px;
+    white-space: nowrap;
+  }
+
+  /* Desktop page canvas: keep the workspace continuous instead of showing a
+     large slate-colored band below short page content. Mobile keeps the
+     slate canvas for contrast with the fixed bottom navigation. */
+  @media (min-width: 1024px) {
+    .erp-compact main > div > .bg-slate-50,
+    .erp-compact main > div > .bg-slate-100\/60 {
+      background-color: #ffffff !important;
+    }
   }
   
   .glass {

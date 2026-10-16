@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { Search, Wallet, ArrowDownCircle, ArrowUpCircle, AlertCircle, CheckCircle, ChevronRight, TrendingUp, X, MessageCircleMore, Copy, ExternalLink, Tags } from 'lucide-react';
+import { Search, Wallet, ArrowDownCircle, ArrowUpCircle, AlertCircle, CheckCircle, ChevronRight, TrendingUp, X, MessageCircleMore, Copy, ExternalLink, Tags, Download } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
-import { formatCurrency } from '../lib/utils';
-import { customerCareApi, debtLedgerApi, customersApi } from '../lib/api';
+import { formatCurrency, normalizeSearchText } from '../lib/utils';
+import { customerCareApi, debtLedgerApi, customersApi, invoiceItemsApi, payableLedgerApi, supplierCreditsApi, suppliersApi } from '../lib/api';
 import { CustomerCareLog, DebtLedger } from '../types';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
@@ -14,9 +14,12 @@ export default function Debt() {
   const [searchParams] = useSearchParams();
   const [searchTerm, setSearchTerm] = useState('');
   const [showDebtModal, setShowDebtModal] = useState(false);
+  const [customerPickerSearch, setCustomerPickerSearch] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [ledgers, setLedgers] = useState<DebtLedger[]>([]);
   const [loadingLedgers, setLoadingLedgers] = useState(false);
+  const [expandedLedgerId, setExpandedLedgerId] = useState('');
+  const [ledgerItems, setLedgerItems] = useState<Record<string, any[]>>({});
   const [formError, setFormError] = useState('');
   const [showZaloReminderModal, setShowZaloReminderModal] = useState(false);
   const [zaloMessage, setZaloMessage] = useState('');
@@ -26,6 +29,12 @@ export default function Debt() {
   const [careLogs, setCareLogs] = useState<CustomerCareLog[]>([]);
   const [loadingCareLogs, setLoadingCareLogs] = useState(false);
   const [careFilter, setCareFilter] = useState<'all' | 'debt' | 'due_soon' | 'inactive_7' | 'inactive_30'>('all');
+  const [debtTab, setDebtTab] = useState<'customer' | 'supplier'>(() => searchParams.get('type') === 'supplier' ? 'supplier' : 'customer');
+  const [suppliers, setSuppliers] = useState<any[]>([]);
+  const [supplierPayables, setSupplierPayables] = useState<any[]>([]);
+  const [supplierCredits, setSupplierCredits] = useState<any[]>([]);
+  const [loadingSupplierDebt, setLoadingSupplierDebt] = useState(false);
+  const [supplierDebtError, setSupplierDebtError] = useState('');
   const [tagEditorCustomerId, setTagEditorCustomerId] = useState('');
   const [tagInput, setTagInput] = useState('');
   const [savingTags, setSavingTags] = useState(false);
@@ -35,6 +44,7 @@ export default function Debt() {
     type: 'decrease' as 'increase' | 'decrease',
     note: '',
     payFull: false,
+    sourceAccount: 'Tiền mặt',
   });
 
   const selectedDebtCustomer = useMemo(
@@ -42,13 +52,108 @@ export default function Debt() {
     [customers, debtForm.customerId]
   );
 
+  const customerDebtInvoices = useMemo(() => {
+    if (!debtForm.customerId || debtForm.type !== 'decrease') return [];
+    return invoices
+      .filter((invoice) => invoice.customerId === debtForm.customerId && invoice.debtAmount > 0 && invoice.status !== 'completed')
+      .map((invoice) => {
+        const paidAgainstInvoice = ledgers
+          .filter((entry) => entry.invoiceId === invoice.id && entry.type === 'decrease')
+          .reduce((sum, entry) => sum + entry.amount, 0);
+        return { invoice, remaining: Math.max(0, invoice.debtAmount - paidAgainstInvoice) };
+      })
+      .filter(({ remaining }) => remaining > 0)
+      .sort((a, b) => new Date(a.invoice.createdAt).getTime() - new Date(b.invoice.createdAt).getTime());
+  }, [debtForm.customerId, debtForm.type, invoices, ledgers]);
+
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<string[]>([]);
+
+  const pickerCustomers = useMemo(() => {
+    const query = normalizeSearchText(customerPickerSearch);
+    return customers
+      .filter((customer) => !query || normalizeSearchText(customer.name).includes(query) || normalizeSearchText(customer.phone).includes(query))
+      .sort((a, b) => b.totalDebt - a.totalDebt);
+  }, [customerPickerSearch, customers]);
+
   const debtCustomers = useMemo(() => {
     return customers.filter(c => c.totalDebt > 0);
   }, [customers]);
 
+  const supplierCreditBySupplier = useMemo(() => {
+    const balances = new Map<string, number>();
+    supplierCredits.forEach((entry) => balances.set(entry.supplierId, (balances.get(entry.supplierId) || 0) + (entry.type === 'increase' ? Number(entry.amount || 0) : -Number(entry.amount || 0))));
+    return balances;
+  }, [supplierCredits]);
+
+  const filteredSupplierRows = useMemo(() => {
+    const query = normalizeSearchText(searchTerm);
+    return suppliers
+      .filter((supplier) => Number(supplier.currentPayable || 0) > 0)
+      .filter((supplier) => !query || normalizeSearchText(`${supplier.code} ${supplier.name} ${supplier.phone || ''} ${supplier.taxCode || ''}`).includes(query))
+      .sort((a, b) => Number(b.currentPayable || 0) - Number(a.currentPayable || 0));
+  }, [searchTerm, suppliers]);
+
+  const totalSupplierPayable = useMemo(() => suppliers.reduce((sum, supplier) => sum + Math.max(0, Number(supplier.currentPayable || 0)), 0), [suppliers]);
+  const totalSupplierCredit = useMemo(() => {
+    let total = 0;
+    supplierCreditBySupplier.forEach((value) => { total += Math.max(0, Number(value)); });
+    return total;
+  }, [supplierCreditBySupplier]);
+  const supplierLedgerEntries = useMemo(() => [
+    ...supplierPayables.map((entry) => ({ ...entry, ledgerType: 'payable' as const })),
+    ...supplierCredits.map((entry) => ({ ...entry, ledgerType: 'credit' as const })),
+  ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()), [supplierCredits, supplierPayables]);
+
   const totalDebtAmount = useMemo(() => {
     return debtCustomers.reduce((sum, c) => sum + c.totalDebt, 0);
   }, [debtCustomers]);
+
+  const agingByCustomer = useMemo(() => {
+    const decreasesByInvoice = new Map<string, number>();
+    ledgers.filter((entry) => entry.type === 'decrease' && entry.invoiceId).forEach((entry) => {
+      decreasesByInvoice.set(entry.invoiceId!, (decreasesByInvoice.get(entry.invoiceId!) || 0) + entry.amount);
+    });
+    const result = new Map<string, { current: number; days1to30: number; days31to60: number; over60: number }>();
+    invoices.forEach((invoice) => {
+      if (!invoice.customerId || invoice.workflowStatus === 'cancelled' || invoice.status === 'completed') return;
+      const outstanding = Math.max(0, invoice.finalAmount - Number(invoice.paidAmount || 0) - (decreasesByInvoice.get(invoice.id) || 0));
+      if (!outstanding) return;
+      const ageDays = Math.max(0, Math.floor((Date.now() - new Date(invoice.createdAt).getTime()) / (24 * 60 * 60 * 1000)));
+      const bucket = result.get(invoice.customerId) || { current: 0, days1to30: 0, days31to60: 0, over60: 0 };
+      if (ageDays <= 30) bucket.days1to30 += outstanding;
+      else if (ageDays <= 60) bucket.days31to60 += outstanding;
+      else bucket.over60 += outstanding;
+      result.set(invoice.customerId, bucket);
+    });
+    return result;
+  }, [invoices, ledgers]);
+
+  const agingSummary = useMemo(() => {
+    const summary = { days1to30: 0, days31to60: 0, over60: 0 };
+    agingByCustomer.forEach((bucket) => {
+      summary.days1to30 += bucket.days1to30;
+      summary.days31to60 += bucket.days31to60;
+      summary.over60 += bucket.over60;
+    });
+    return summary;
+  }, [agingByCustomer]);
+
+  const exportDebtCsv = () => {
+    const rows = filteredDebtCustomers.map(({ customer, dueDate }) => {
+      const aging = agingByCustomer.get(customer.id) || { days1to30: 0, days31to60: 0, over60: 0 };
+      return [customer.name, customer.phone, customer.taxCode || '', customer.totalDebt, aging.days1to30, aging.days31to60, aging.over60, dueDate];
+    });
+    const csv = [['Khách hàng', 'Số điện thoại', 'MST', 'Còn nợ', '1-30 ngày', '31-60 ngày', 'Trên 60 ngày', 'Hạn thanh toán'], ...rows]
+      .map((row) => row.map((value) => `"${String(value ?? '').replaceAll('"', '""')}"`).join(','))
+      .join('\n');
+    const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `cong-no-${new Date().toISOString().slice(0, 10)}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
 
   const overdueDebtAmount = useMemo(() => {
     const maxDebtDays = activeTenant?.settings?.debtPolicy?.maxDebtDays || 30;
@@ -112,8 +217,8 @@ export default function Debt() {
   const filteredDebtCustomers = withDerivedFields
     .filter(({ customer, dueDate, lastPurchase }) => {
       const matchesSearch =
-        customer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        customer.phone.includes(searchTerm);
+        normalizeSearchText(customer.name).includes(normalizeSearchText(searchTerm)) ||
+        normalizeSearchText(customer.phone).includes(normalizeSearchText(searchTerm));
       if (!matchesSearch) return false;
       if (careFilter === 'all') return customer.totalDebt > 0;
       if (careFilter === 'debt') return customer.totalDebt > 0;
@@ -260,7 +365,10 @@ export default function Debt() {
       type,
       note: type === 'decrease' ? 'Thu công nợ' : 'Điều chỉnh tăng công nợ',
       payFull: false,
+      sourceAccount: 'Tiền mặt',
     });
+    setCustomerPickerSearch('');
+    setSelectedInvoiceIds([]);
     setShowDebtModal(true);
   };
 
@@ -273,22 +381,51 @@ export default function Debt() {
 
     setSubmitting(true);
     try {
-      const created = await debtLedgerApi.create({
+      const amountToCollect = debtForm.payFull && debtForm.type === 'decrease' && selectedDebtCustomer
+        ? selectedDebtCustomer.totalDebt
+        : debtForm.amount;
+      const note = [debtForm.note.trim(), debtForm.sourceAccount ? `Nguồn: ${debtForm.sourceAccount}` : ''].filter(Boolean).join(' · ');
+      const allocations: Array<{ invoiceId: string | null; amount: number }> = [];
+      let remainingAmount = amountToCollect;
+      for (const invoiceId of selectedInvoiceIds) {
+        const bill = customerDebtInvoices.find(({ invoice }) => invoice.id === invoiceId);
+        if (!bill || remainingAmount <= 0) continue;
+        const allocation = Math.min(remainingAmount, bill.remaining);
+        if (allocation > 0) allocations.push({ invoiceId, amount: allocation });
+        remainingAmount -= allocation;
+      }
+      if (allocations.length === 0) allocations.push({ invoiceId: null, amount: amountToCollect });
+      const createdEntries = await Promise.all(allocations.map(({ invoiceId, amount }) => debtLedgerApi.create({
         customerId: debtForm.customerId,
-        amount: debtForm.payFull && debtForm.type === 'decrease' && selectedDebtCustomer
-          ? selectedDebtCustomer.totalDebt
-          : debtForm.amount,
+        amount,
         type: debtForm.type,
-        note: debtForm.note.trim(),
-        invoiceId: null,
-      });
-      setLedgers((prev) => [created, ...prev]);
+        note,
+        invoiceId,
+      })));
+      setLedgers((prev) => [...createdEntries.reverse(), ...prev]);
       await refreshCustomers();
       setShowDebtModal(false);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Không thể lưu giao dịch công nợ.');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const toggleLedgerDetails = async (entry: DebtLedger) => {
+    if (!entry.invoiceId) return;
+    if (expandedLedgerId === entry.id) {
+      setExpandedLedgerId('');
+      return;
+    }
+    setExpandedLedgerId(entry.id);
+    if (!ledgerItems[entry.invoiceId]) {
+      try {
+        const items = await invoiceItemsApi.list(entry.invoiceId);
+        setLedgerItems((prev) => ({ ...prev, [entry.invoiceId as string]: items }));
+      } catch (err) {
+        setFormError(err instanceof Error ? err.message : 'Không thể tải chi tiết bill.');
+      }
     }
   };
 
@@ -319,6 +456,28 @@ export default function Debt() {
   }, []);
 
   useEffect(() => {
+    const loadSupplierDebt = async () => {
+      setLoadingSupplierDebt(true);
+      setSupplierDebtError('');
+      try {
+        const [supplierRows, payableRows, creditRows] = await Promise.all([
+          suppliersApi.list(),
+          payableLedgerApi.list(),
+          supplierCreditsApi.list(),
+        ]);
+        setSuppliers(supplierRows);
+        setSupplierPayables(payableRows);
+        setSupplierCredits(creditRows);
+      } catch (err) {
+        setSupplierDebtError(err instanceof Error ? err.message : 'Không thể tải công nợ nhà cung cấp.');
+      } finally {
+        setLoadingSupplierDebt(false);
+      }
+    };
+    void loadSupplierDebt();
+  }, []);
+
+  useEffect(() => {
     const loadCareLogs = async () => {
       setLoadingCareLogs(true);
       try {
@@ -334,94 +493,86 @@ export default function Debt() {
   }, []);
 
   return (
-    <div className="flex h-full flex-col bg-slate-50 animate-in fade-in duration-500 overflow-hidden">
+    <div className="erp-compact flex h-full flex-col overflow-hidden bg-slate-50 animate-in fade-in duration-500">
       {showDebtModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-lg border border-white bg-white p-6 shadow-2xl space-y-4">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-slate-900/60 p-4 backdrop-blur-sm">
+          <div className="my-6 flex max-h-[calc(100vh-3rem)] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-white bg-white shadow-2xl">
             <div className="flex items-center justify-between">
-              <h3 className="text-section-title">
+              <h3 className="text-section-title px-6 pt-5">
                 {debtForm.type === 'decrease' ? 'Thu công nợ' : 'Tăng công nợ'}
               </h3>
               <button
                 onClick={() => setShowDebtModal(false)}
                 aria-label="Đóng popup"
-                className="h-8 w-8 rounded-lg bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700 flex items-center justify-center transition-colors"
+                className="mr-5 mt-5 h-9 w-9 rounded-lg bg-slate-100 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-700"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
 
-            <div className="space-y-2">
-              <label>Khách hàng</label>
-              <select
-                value={debtForm.customerId}
-                onChange={(e) => setDebtForm((prev) => ({ ...prev, customerId: e.target.value }))}
-                className="w-full h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700"
-              >
-                {customers.map((customer) => (
-                  <option key={customer.id} value={customer.id}>
-                    {customer.name} - {customer.phone}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <div className="grid min-h-0 flex-1 gap-6 overflow-y-auto px-6 pb-6 pt-4 lg:grid-cols-[1.15fr_0.85fr]">
+              <div className="space-y-5">
+                <div className="space-y-2">
+                  <label>Khách hàng</label>
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                    <Input value={customerPickerSearch} onChange={(e) => setCustomerPickerSearch(e.target.value)} className="h-11 pl-9" placeholder="Tìm theo tên hoặc số điện thoại..." />
+                  </div>
+                  <select
+                    value={debtForm.customerId}
+                    onChange={(e) => {
+                      setDebtForm((prev) => ({ ...prev, customerId: e.target.value, amount: 0, payFull: false }));
+                      setSelectedInvoiceIds([]);
+                    }}
+                    className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
+                  >
+                    {pickerCustomers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name} - {customer.phone} · Nợ {formatCurrency(customer.totalDebt)}</option>)}
+                  </select>
+                </div>
 
-            <div className="space-y-2">
-              <label>Số tiền</label>
-              <Input
-                type="number"
-                min={1}
-                value={debtForm.amount || ''}
-                disabled={debtForm.type === 'decrease' && debtForm.payFull}
-                onChange={(e) => setDebtForm((prev) => ({ ...prev, amount: Number(e.target.value) }))}
-                className="h-11 rounded-lg bg-slate-50 border-none font-bold"
-                placeholder="Nhập số tiền"
-              />
-            </div>
+                {debtForm.type === 'decrease' && selectedDebtCustomer && (
+                  <div className="rounded-lg border border-sky-100 bg-sky-50/70 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm text-slate-600">Công nợ hiện tại</p>
+                      <p className="text-lg font-bold text-sky-700">{formatCurrency(selectedDebtCustomer.totalDebt)}</p>
+                    </div>
+                    <label className="mt-3 flex items-center gap-2 text-sm font-medium text-slate-700">
+                      <input type="checkbox" checked={debtForm.payFull} onChange={(e) => setDebtForm((prev) => ({ ...prev, payFull: e.target.checked, amount: e.target.checked ? selectedDebtCustomer.totalDebt : prev.amount, note: e.target.checked ? 'Thanh toán hết công nợ' : prev.note }))} />
+                      Thanh toán hết công nợ
+                    </label>
+                  </div>
+                )}
 
-            {debtForm.type === 'decrease' && selectedDebtCustomer && (
-              <div className="rounded-lg border border-sky-100 bg-sky-50 p-3 space-y-2">
-                <p className="text-sm text-slate-600">
-                  Công nợ hiện tại: <span className="font-semibold text-sky-700">{formatCurrency(selectedDebtCustomer.totalDebt)}</span>
-                </p>
-                <label className="flex items-center gap-2 text-sm text-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={debtForm.payFull}
-                    onChange={(e) =>
-                      setDebtForm((prev) => ({
-                        ...prev,
-                        payFull: e.target.checked,
-                        amount: e.target.checked ? selectedDebtCustomer.totalDebt : prev.amount,
-                        note: e.target.checked ? 'Thanh toán hết công nợ' : prev.note,
-                      }))
-                    }
-                  />
-                  Thanh toán hết công nợ
-                </label>
+                {debtForm.type === 'decrease' && (
+                  <div className="rounded-lg border border-slate-200">
+                    <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+                      <div><p className="text-sm font-semibold text-slate-800">Bill còn nợ</p><p className="text-xs text-slate-500">Chọn bill liên quan đến khoản thu</p></div>
+                      <button type="button" className="text-xs font-semibold text-sky-700 hover:underline" onClick={() => setSelectedInvoiceIds(customerDebtInvoices.map(({ invoice }) => invoice.id))}>Chọn tất cả</button>
+                    </div>
+                    <div className="max-h-56 overflow-y-auto">
+                      {customerDebtInvoices.length === 0 ? <p className="px-4 py-5 text-sm text-slate-500">Chưa có bill nợ chi tiết.</p> : customerDebtInvoices.map(({ invoice, remaining }) => (
+                        <label key={invoice.id} className="flex cursor-pointer items-center gap-3 border-b border-slate-100 px-4 py-3 last:border-0 hover:bg-slate-50">
+                          <input type="checkbox" checked={selectedInvoiceIds.includes(invoice.id)} onChange={() => setSelectedInvoiceIds((prev) => prev.includes(invoice.id) ? prev.filter((id) => id !== invoice.id) : [...prev, invoice.id])} />
+                          <span className="min-w-0 flex-1"><span role="link" tabIndex={0} className="block text-sm font-semibold text-sky-700 hover:underline" onClick={(event) => { event.preventDefault(); event.stopPropagation(); navigate(`/app/invoices?invoiceId=${encodeURIComponent(invoice.id)}`); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); navigate(`/app/invoices?invoiceId=${encodeURIComponent(invoice.id)}`); } }}>{invoice.documentNo || invoice.id}</span><span className="block text-xs text-slate-500">{new Date(invoice.createdAt).toLocaleDateString('vi-VN')} · {invoice.status === 'partial' ? 'Thanh toán một phần' : 'Chưa thanh toán'}</span></span>
+                          <span className="text-sm font-bold tabular-nums text-orange-700">{formatCurrency(remaining)}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
 
-            <div className="space-y-2">
-              <label>Ghi chú</label>
-              <Input
-                value={debtForm.note}
-                onChange={(e) => setDebtForm((prev) => ({ ...prev, note: e.target.value }))}
-                className="h-11 rounded-lg bg-slate-50 border-none font-bold"
-                placeholder="Nội dung giao dịch"
-              />
+              <div className="space-y-5">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-1">
+                  <div className="space-y-2"><label>Số tiền thu</label><Input type="number" min={1} value={debtForm.amount || ''} disabled={debtForm.type === 'decrease' && debtForm.payFull} onChange={(e) => setDebtForm((prev) => ({ ...prev, amount: Number(e.target.value) }))} className="h-12 bg-slate-50 text-lg font-bold" placeholder="Nhập số tiền" /></div>
+                  <div className="space-y-2"><label>Tài khoản nhận tiền</label><select value={debtForm.sourceAccount} onChange={(e) => setDebtForm((prev) => ({ ...prev, sourceAccount: e.target.value }))} className="h-12 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold"><option>Tiền mặt</option><option>Chuyển khoản ngân hàng</option><option>Ví điện tử</option></select></div>
+                </div>
+                {selectedInvoiceIds.length > 0 && <p className="text-xs text-slate-500">Đã chọn {selectedInvoiceIds.length} bill · Tổng bill: <span className="font-semibold text-slate-700">{formatCurrency(customerDebtInvoices.filter(({ invoice }) => selectedInvoiceIds.includes(invoice.id)).reduce((sum, item) => sum + item.remaining, 0))}</span></p>}
+                <div className="space-y-2"><label>Ghi chú</label><textarea value={debtForm.note} onChange={(e) => setDebtForm((prev) => ({ ...prev, note: e.target.value }))} className="min-h-32 w-full resize-y rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-medium outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100" placeholder="Nội dung giao dịch, người nộp tiền, diễn giải..." /></div>
+                {formError && <p className="text-sm text-rose-600">{formError}</p>}
+                <Button onClick={handleSubmitDebt} disabled={submitting} className={`h-12 w-full rounded-lg text-sm font-semibold ${debtForm.type === 'decrease' ? 'bg-sky-600 hover:bg-sky-700' : 'bg-orange-600 hover:bg-orange-700'}`}>{submitting ? 'Đang lưu...' : 'Lưu giao dịch'}</Button>
+              </div>
             </div>
-            {formError && <p className="text-sm text-rose-600">{formError}</p>}
-
-            <Button
-              onClick={handleSubmitDebt}
-              disabled={submitting}
-              className={`w-full h-11 rounded-lg text-sm font-semibold ${
-                debtForm.type === 'decrease' ? 'bg-sky-600 hover:bg-sky-700' : 'bg-orange-600 hover:bg-orange-700'
-              }`}
-            >
-              {submitting ? 'Đang lưu...' : 'Lưu giao dịch'}
-            </Button>
           </div>
         </div>
       )}
@@ -518,128 +669,89 @@ export default function Debt() {
         </div>
       )}
 
-      <div className="p-3 lg:p-8 bg-white border-b sticky top-0 z-40 flex flex-col lg:flex-row gap-2 lg:gap-6 items-start lg:items-center justify-between shadow-sm shrink-0">
-        <div className="hidden lg:flex items-center gap-5">
-          <div className="h-9 w-9 sm:h-12 sm:w-12 rounded-lg bg-orange-600 text-white flex items-center justify-center shadow-lg shadow-orange-900/20 transform -rotate-3 shrink-0">
-            <Wallet className="h-5 w-5 sm:h-6 sm:w-6" />
+      <div className="sticky top-0 z-40 flex shrink-0 flex-col items-start justify-between gap-2 border-b border-slate-200 bg-white p-3 shadow-sm lg:flex-row lg:items-center">
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-orange-600 text-white">
+            <Wallet className="h-4 w-4" />
           </div>
-          <div>
-            <h1 className="text-page-title">Công nợ</h1>
-            <p className="text-page-subtitle mt-1">{debtCustomers.length} khách nợ</p>
+          <div className="min-w-0">
+            <h1 className="text-base font-semibold text-slate-900">Công nợ</h1>
+            <p className="text-[11px] text-slate-500">{debtTab === 'customer' ? `${debtCustomers.length} khách nợ` : `${filteredSupplierRows.length} nhà cung cấp còn nợ`}</p>
+          </div>
+          <div className="ml-2 flex items-center rounded-md border border-slate-200 bg-slate-50 p-0.5">
+            <button type="button" onClick={() => setDebtTab('customer')} className={`h-7 rounded px-2.5 text-xs font-medium ${debtTab === 'customer' ? 'bg-white text-sky-700 shadow-sm' : 'text-slate-500'}`}>Khách hàng</button>
+            <button type="button" onClick={() => setDebtTab('supplier')} className={`h-7 rounded px-2.5 text-xs font-medium ${debtTab === 'supplier' ? 'bg-white text-amber-700 shadow-sm' : 'text-slate-500'}`}>Nhà cung cấp</button>
           </div>
         </div>
         
         <div className="grid w-full grid-cols-1 gap-2 sm:flex sm:w-auto sm:flex-row sm:gap-3">
           <div className="relative group w-full flex-1 lg:w-72">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-orange-600 transition-colors" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300 group-focus-within:text-orange-600 transition-colors" />
             <Input 
-              className="h-10 lg:h-11 rounded-lg border-none bg-slate-100/70 shadow-inner focus:ring-2 focus:ring-orange-500/20 transition-all font-semibold text-sm placeholder:text-slate-400" 
-              placeholder="Tìm khách nợ..." 
+              className="h-9 lg:h-10 rounded-lg border-none bg-slate-100/70 pl-9 shadow-inner focus:ring-2 focus:ring-orange-500/20 transition-all font-medium text-sm placeholder:text-slate-400"
+              placeholder={debtTab === 'customer' ? 'Tìm khách nợ...' : 'Tìm nhà cung cấp...'}
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
             />
           </div>
-          <div className="grid grid-cols-[1fr_auto] gap-2 sm:flex sm:items-center sm:gap-3">
-            <select
-              value={careFilter}
-              onChange={(e) => setCareFilter(e.target.value as typeof careFilter)}
-              className="h-10 lg:h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700"
-            >
-              <option value="all">Còn nợ</option>
-              <option value="due_soon">Sắp đến hạn</option>
-              <option value="inactive_7">7 ngày chưa mua</option>
-              <option value="inactive_30">30 ngày chưa mua</option>
-            </select>
-            <Button
-              onClick={() => openDebtModal('decrease')}
-              className="h-10 lg:h-11 px-3 lg:px-4 rounded-lg gap-2 font-semibold bg-sky-600 hover:bg-sky-700 shadow-lg shadow-sky-900/20 transition-all text-white shrink-0 text-sm"
-            >
-              <ArrowDownCircle className="h-4 w-4 sm:h-5 sm:w-5" />
-              <span className="hidden sm:inline">Thu nợ</span>
-            </Button>
+          <div className="grid w-full grid-cols-[1fr_auto] gap-2 sm:flex sm:w-auto sm:items-center sm:gap-2">
+            {debtTab === 'customer' && <select value={careFilter} onChange={(e) => setCareFilter(e.target.value as typeof careFilter)} className="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"><option value="all">Còn nợ</option><option value="due_soon">Sắp đến hạn</option><option value="inactive_7">7 ngày chưa mua</option><option value="inactive_30">30 ngày chưa mua</option></select>}
+            {debtTab === 'customer' && <Button onClick={() => openDebtModal('decrease')} className="h-8 rounded-md bg-sky-600 px-3 text-xs font-medium text-white hover:bg-sky-700"><ArrowDownCircle className="mr-1.5 h-3.5 w-3.5" />Thu nợ</Button>}
+            {debtTab === 'customer' && <Button variant="outline" onClick={exportDebtCsv} className="h-8 rounded-md px-3 text-xs"><Download className="mr-1.5 h-3.5 w-3.5" />Xuất CSV</Button>}
           </div>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 lg:p-10 space-y-6 lg:space-y-10">
+      {debtTab === 'customer' ? (
+        <div className="flex-1 overflow-y-auto space-y-4 p-4 lg:space-y-5 lg:p-6">
         
         {/* Debt Summary Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
-            <div className="bg-slate-900 p-5 rounded-lg shadow-xl space-y-4 relative overflow-hidden group">
-                <div className="relative z-10 space-y-2">
-                    <div className="h-10 w-10 bg-white/10 rounded-lg flex items-center justify-center backdrop-blur-md text-white group-hover:rotate-12 transition-transform duration-500">
-                        <TrendingUp className="h-5 w-5" />
-                    </div>
-                    <div className="space-y-1">
-                        <p className="text-xs text-white/70">Tổng dư nợ hệ thống</p>
-                        <h2 className="text-kpi-lg text-white">{formatCurrency(totalDebtAmount)}</h2>
-                    </div>
-                </div>
-            </div>
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+            <div className="rounded-lg border border-sky-200 bg-sky-50 p-3"><div className="flex items-center gap-2"><div className="flex h-8 w-8 items-center justify-center rounded-md bg-white/70 text-sky-700"><TrendingUp className="h-4 w-4" /></div><div><p className="text-[11px] text-sky-700">Tổng dư nợ khách hàng</p><p className="text-lg font-semibold tabular-nums text-sky-800">{formatCurrency(totalDebtAmount)}</p></div></div></div>
+            <div className="rounded-lg border border-orange-200 bg-orange-50 p-3"><div className="flex items-center gap-2"><div className="flex h-8 w-8 items-center justify-center rounded-md bg-white/70 text-orange-700"><AlertCircle className="h-4 w-4" /></div><div><p className="text-[11px] text-orange-700">Khoản nợ quá hạn</p><p className="text-lg font-semibold tabular-nums text-orange-800">{formatCurrency(overdueDebtAmount)}</p></div></div></div>
+            <div className="rounded-lg border border-slate-200 bg-white p-3"><p className="text-[11px] text-slate-500">Thao tác công nợ</p><div className="mt-2 grid grid-cols-2 gap-2"><button type="button" onClick={() => openDebtModal('decrease')} className="flex h-8 items-center justify-center gap-1 rounded-md border border-sky-100 bg-sky-50 text-xs font-medium text-sky-700 hover:bg-sky-100"><ArrowDownCircle className="h-3.5 w-3.5" />Giảm nợ</button><button type="button" onClick={() => openDebtModal('increase')} className="flex h-8 items-center justify-center gap-1 rounded-md border border-orange-100 bg-orange-50 text-xs font-medium text-orange-700 hover:bg-orange-100"><ArrowUpCircle className="h-3.5 w-3.5" />Tăng nợ</button></div></div>
+        </div>
 
-            <div className="bg-white p-5 rounded-lg shadow-lg shadow-slate-900/5 border border-white space-y-4 relative overflow-hidden group">
-                 <div className="relative z-10 space-y-2">
-                    <div className="h-10 w-10 bg-orange-50 rounded-lg flex items-center justify-center text-orange-600 shadow-inner group-hover:scale-110 transition-transform">
-                        <AlertCircle className="h-5 w-5" />
-                    </div>
-                    <div className="space-y-1">
-                        <p className="text-xs text-slate-500">Khoản nợ quá hạn</p>
-                        <h2 className="text-kpi-lg text-orange-600">{formatCurrency(overdueDebtAmount)}</h2>
-                    </div>
-                </div>
-            </div>
-
-            <div className="bg-white p-5 rounded-lg shadow-lg shadow-slate-900/5 border border-white space-y-3 flex flex-col justify-center">
-                 <div className="space-y-2 text-center">
-                    <div className="text-xs font-medium text-slate-500">Hành động nhanh</div>
-                    <div className="flex gap-2">
-                        <button
-                            onClick={() => openDebtModal('decrease')}
-                            className="flex-1 h-14 rounded-lg bg-slate-50 hover:bg-sky-50 transition-all flex flex-col items-center justify-center gap-1 group border border-transparent hover:border-sky-100"
-                        >
-                            <ArrowDownCircle className="h-4 w-4 text-sky-600 group-hover:scale-110 transition-transform" />
-                            <span className="text-xs font-medium text-slate-600">Giảm nợ</span>
-                        </button>
-                        <button
-                            onClick={() => openDebtModal('increase')}
-                            className="flex-1 h-14 rounded-lg bg-slate-50 hover:bg-orange-50 transition-all flex flex-col items-center justify-center gap-1 group border border-transparent hover:border-orange-100"
-                        >
-                            <ArrowUpCircle className="h-4 w-4 text-orange-600 group-hover:scale-110 transition-transform" />
-                            <span className="text-xs font-medium text-slate-600">Tăng nợ</span>
-                        </button>
-                    </div>
-                 </div>
-            </div>
+        <div className="grid grid-cols-3 gap-2 rounded-lg border border-slate-200 bg-white p-2.5">
+          <div className="border-r border-slate-100 px-2">
+            <p className="text-[11px] text-slate-500">1–30 ngày</p>
+            <p className="mt-1 text-sm font-semibold text-amber-600">{formatCurrency(agingSummary.days1to30)}</p>
+          </div>
+          <div className="border-r border-slate-100 px-2">
+            <p className="text-[11px] text-slate-500">31–60 ngày</p>
+            <p className="mt-1 text-sm font-semibold text-orange-600">{formatCurrency(agingSummary.days31to60)}</p>
+          </div>
+          <div className="px-2">
+            <p className="text-[11px] text-slate-500">Trên 60 ngày</p>
+            <p className="mt-1 text-sm font-semibold text-rose-600">{formatCurrency(agingSummary.over60)}</p>
+          </div>
         </div>
 
         {/* Debt List */}
-        <div className="bg-white rounded-lg shadow-xl shadow-slate-900/10 border border-white overflow-hidden">
-            <div className="p-5 sm:p-6 border-b border-slate-50 flex items-center justify-between">
-                <div className="space-y-1">
-                    <h3 className="text-section-title">Khách hàng nợ</h3>
-                    <p className="text-section-subtitle">Sắp xếp theo số dư nợ cao nhất</p>
-                </div>
+        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-3 py-2.5">
+                <div><h3 className="text-sm font-semibold text-slate-900">Khách hàng còn nợ</h3><p className="text-[11px] text-slate-500">Sắp xếp theo số dư công nợ cao nhất</p></div>
             </div>
 
             <div className="divide-y divide-slate-50">
                 {filteredDebtCustomers.map(({ customer, dueDate, lastPurchase, latestCare }) => (
                   <div
                     key={customer.id}
-                    className="erp-debt-row p-3 sm:p-5 hover:bg-orange-50/20 transition-all group cursor-pointer"
+                    className="erp-debt-row cursor-pointer p-2.5 transition-all group hover:bg-orange-50/30"
                     onClick={() => navigate(`/app/customers/${customer.id}`)}
                   >
                     <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 flex items-start gap-3">
-                        <div className="h-10 w-10 sm:h-12 sm:w-12 rounded-lg bg-slate-50 flex items-center justify-center text-slate-300 group-hover:bg-orange-600 group-hover:text-white transition-all duration-500 shrink-0">
-                          <Wallet className="h-5 w-5 sm:h-6 sm:w-6" />
+                      <div className="flex min-w-0 items-start gap-2">
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-slate-50 text-slate-300 transition-all duration-300 group-hover:bg-orange-600 group-hover:text-white">
+                          <Wallet className="h-4 w-4" />
                         </div>
-                        <div className="min-w-0 space-y-1">
+                        <div className="min-w-0 space-y-0.5">
                           <div className="flex items-center gap-2">
-                            <h4 className="text-sm sm:text-base font-semibold text-slate-900 truncate">{customer.name}</h4>
-                            <span className="text-[11px] font-medium bg-orange-100 text-orange-700 px-2 py-0.5 rounded-md">Nợ</span>
+                            <h4 className="truncate text-xs font-semibold text-slate-900">{customer.name}</h4>
+                            <span className="rounded-md bg-orange-100 px-1.5 py-0.5 text-[10px] font-medium text-orange-700">Nợ</span>
                           </div>
-                          <p className="text-xs text-slate-500 font-medium">{customer.phone}</p>
-                          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500">
+                          <p className="text-[11px] font-medium text-slate-500">{customer.phone}</p>
+                          <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-slate-500">
                             <span>Hạn: {new Date(dueDate).toLocaleDateString('vi-VN')}</span>
                             <span>Mua: {lastPurchase ? new Date(lastPurchase).toLocaleDateString('vi-VN') : 'Chưa có'}</span>
                             <span>CSKH: {latestCare?.status === 'paid' ? 'Đã trả' : latestCare?.status === 'promised' ? 'Hứa trả' : latestCare?.status === 'sent' ? 'Đã nhắc' : 'Chưa nhắc'}</span>
@@ -647,7 +759,7 @@ export default function Debt() {
                           {!!customer.tags?.length && (
                             <div className="flex flex-wrap gap-1 pt-0.5">
                               {customer.tags.slice(0, 3).map((tag) => (
-                                <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">{tag}</span>
+                                <span key={tag} className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">{tag}</span>
                               ))}
                             </div>
                           )}
@@ -656,18 +768,18 @@ export default function Debt() {
 
                       <div className="shrink-0 text-right">
                         <p className="text-[11px] text-slate-500">Dư nợ</p>
-                        <div className="text-base sm:text-xl font-semibold text-orange-600 tabular-nums">{formatCurrency(customer.totalDebt)}</div>
+                        <div className="text-sm font-semibold tabular-nums text-orange-600">{formatCurrency(customer.totalDebt)}</div>
                       </div>
                     </div>
 
-                    <div className="mt-3 flex items-center gap-2">
+                    <div className="mt-2 flex items-center gap-1.5">
                       <Button
                         onClick={(e) => {
                           e.stopPropagation();
                           openZaloReminder(customer.id);
                         }}
                         variant="outline"
-                        className="h-8 rounded-lg px-2.5 text-xs font-medium border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                        className="h-8 rounded-md border-emerald-200 px-2.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50"
                       >
                         <MessageCircleMore className="h-3.5 w-3.5 mr-1" /> Nhắc
                       </Button>
@@ -678,7 +790,7 @@ export default function Debt() {
                           setTagInput((customer.tags || []).join(', '));
                         }}
                         variant="outline"
-                        className="h-8 rounded-lg px-2.5 text-xs font-medium border-slate-200 text-slate-700 hover:bg-slate-50"
+                        className="h-8 rounded-md border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
                       >
                         <Tags className="h-3.5 w-3.5 mr-1" /> Tag
                       </Button>
@@ -687,11 +799,11 @@ export default function Debt() {
                           e.stopPropagation();
                           openDebtModal('decrease', customer.id);
                         }}
-                        className="h-8 rounded-lg px-3 text-xs font-medium bg-sky-600 hover:bg-sky-700"
+                        className="h-8 rounded-md bg-sky-600 px-3 text-xs font-medium hover:bg-sky-700"
                       >
                         Thu nợ
                       </Button>
-                      <div className="ml-auto h-8 w-8 rounded-lg bg-slate-50 text-slate-300 flex items-center justify-center group-hover:bg-orange-600 group-hover:text-white transition-all">
+                      <div className="ml-auto flex h-8 w-8 items-center justify-center rounded-md bg-slate-50 text-slate-300 transition-all group-hover:bg-orange-600 group-hover:text-white">
                         <ChevronRight className="h-4 w-4" />
                       </div>
                     </div>
@@ -699,40 +811,47 @@ export default function Debt() {
                 ))}
 
                 {filteredDebtCustomers.length === 0 && (
-                    <div className="p-40 text-center space-y-10 animate-pulse">
-                         <div className="inline-flex h-40 w-40 items-center justify-center rounded-lg bg-slate-50 text-slate-100 shadow-inner">
-                            <CheckCircle className="h-20 w-20 opacity-5" />
+                    <div className="space-y-2 p-10 text-center">
+                         <div className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-slate-50 text-slate-100">
+                            <CheckCircle className="h-6 w-6 opacity-20" />
                          </div>
                          <div className="space-y-2">
-                            <p className="text-slate-300 text-sm font-semibold">Danh sách công nợ trống</p>
-                            <p className="text-slate-300 text-xs">Tất cả khách hàng đã thanh toán đầy đủ</p>
+                            <p className="text-xs font-medium text-slate-500">Danh sách công nợ trống</p>
+                            <p className="text-[11px] text-slate-400">Tất cả khách hàng đã thanh toán đầy đủ</p>
                          </div>
                     </div>
                 )}
             </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow-xl shadow-slate-900/10 border border-white overflow-hidden">
-          <div className="p-5 sm:p-6 border-b border-slate-50">
-            <h3 className="text-section-title">Lịch sử công nợ</h3>
-          </div>
+        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-center border-b border-slate-100 bg-slate-50/60 px-3 py-2.5"><h3 className="text-sm font-semibold text-slate-900">Lịch sử công nợ khách hàng</h3></div>
           <div className="divide-y divide-slate-50">
             {loadingLedgers && (
               <div className="p-6 text-sm text-slate-500">Đang tải lịch sử...</div>
             )}
             {!loadingLedgers && ledgers.slice(0, 12).map((entry) => {
               const customer = customers.find((c) => c.id === entry.customerId);
+              const invoice = entry.invoiceId ? invoices.find((item) => item.id === entry.invoiceId) : null;
+              const details = entry.invoiceId ? ledgerItems[entry.invoiceId] : null;
               return (
-                <div key={entry.id} className="p-4 sm:p-5 flex items-center justify-between gap-4">
-                  <div className="space-y-1">
-                    <p className="text-sm font-semibold text-slate-900">{customer?.name || entry.customerId}</p>
-                    <p className="text-xs text-slate-500">
-                      {new Date(entry.createdAt).toLocaleString('vi-VN')} · {entry.note || 'Không có ghi chú'}
-                    </p>
-                  </div>
-                  <div className={`text-sm font-semibold ${entry.type === 'increase' ? 'text-orange-600' : 'text-sky-600'}`}>
-                    {entry.type === 'increase' ? '+' : '-'} {formatCurrency(entry.amount)}
-                  </div>
+                <div key={entry.id} className="border-b border-slate-50 last:border-0">
+                  <button type="button" onClick={() => toggleLedgerDetails(entry)} className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50">
+                    <div className="min-w-0 space-y-0.5">
+                      <p className="truncate text-xs font-semibold text-slate-900"><span role="link" tabIndex={0} className="cursor-pointer hover:text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); navigate(`/app/customers/${entry.customerId}`); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); navigate(`/app/customers/${entry.customerId}`); } }}>{customer?.name || entry.customerId}</span></p>
+                      <p className="truncate text-[11px] text-slate-500">{new Date(entry.createdAt).toLocaleString('vi-VN')} · {entry.note || 'Không có ghi chú'}{invoice ? <> · <span role="link" tabIndex={0} className="cursor-pointer text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); navigate(`/app/invoices?invoiceId=${encodeURIComponent(invoice.id)}`); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); navigate(`/app/invoices?invoiceId=${encodeURIComponent(invoice.id)}`); } }}>{invoice.documentNo || invoice.id}</span></> : null}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-3">
+                      <div className={`text-xs font-semibold ${entry.type === 'increase' ? 'text-orange-600' : 'text-sky-600'}`}>{entry.type === 'increase' ? '+' : '-'} {formatCurrency(entry.amount)}</div>
+                      {entry.invoiceId && <ChevronRight className={`h-4 w-4 text-slate-400 transition-transform ${expandedLedgerId === entry.id ? 'rotate-90' : ''}`} />}
+                    </div>
+                  </button>
+                  {expandedLedgerId === entry.id && entry.invoiceId && (
+                    <div className="mx-3 mb-3 rounded-md bg-slate-50 px-3 py-2 text-xs">
+                      <p className="mb-1 font-semibold text-slate-700">Chi tiết {invoice?.documentNo || 'bill'}</p>
+                      {!details ? <p className="text-slate-500">Đang tải chi tiết...</p> : details.length === 0 ? <p className="text-slate-500">Bill chưa có dòng hàng.</p> : details.map((item) => <div key={item.id} className="flex justify-between gap-3 border-t border-slate-200/70 py-1.5"><button type="button" className="truncate text-left text-slate-600 hover:text-sky-700 hover:underline" onClick={() => navigate(`/app/inventory?productId=${encodeURIComponent(item.productId)}`)}>{item.productName} × {item.quantity}</button><span className="shrink-0 font-medium text-slate-700">{formatCurrency(item.total || item.price * item.quantity)}</span></div>)}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -742,22 +861,20 @@ export default function Debt() {
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow-xl shadow-slate-900/10 border border-white overflow-hidden">
-          <div className="p-5 sm:p-6 border-b border-slate-50">
-            <h3 className="text-section-title">Lịch sử chăm sóc khách (Zalo)</h3>
-          </div>
+        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-100 bg-slate-50/60 px-3 py-2.5"><h3 className="text-sm font-semibold text-slate-900">Lịch sử chăm sóc khách (Zalo)</h3></div>
           <div className="divide-y divide-slate-50">
             {loadingCareLogs && <div className="p-6 text-sm text-slate-500">Đang tải lịch sử chăm sóc...</div>}
             {!loadingCareLogs && careLogs.slice(0, 20).map((log) => {
               const customer = customers.find((c) => c.id === log.customerId);
               return (
-                <div key={log.id} className="p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-                  <div className="space-y-1 min-w-0">
-                    <p className="text-sm font-semibold text-slate-900">{customer?.name || log.customerId}</p>
-                    <p className="text-xs text-slate-500 truncate">
+                <div key={log.id} className="flex flex-col justify-between gap-2 px-3 py-2.5 lg:flex-row lg:items-center">
+                  <div className="min-w-0 space-y-0.5">
+                    <button type="button" className="text-left text-xs font-semibold text-slate-900 hover:text-sky-700 hover:underline" onClick={() => navigate(`/app/customers/${log.customerId}`)}>{customer?.name || log.customerId}</button>
+                    <p className="truncate text-[11px] text-slate-500">
                       {new Date(log.createdAt).toLocaleString('vi-VN')} · {log.createdByName || log.createdBy} · {log.templateType}
                     </p>
-                    <p className="text-xs text-slate-600 line-clamp-2">{log.message}</p>
+                    <p className="line-clamp-2 text-[11px] text-slate-600">{log.message}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     <select
@@ -787,7 +904,24 @@ export default function Debt() {
             )}
           </div>
         </div>
-      </div>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto space-y-3 p-3 lg:p-4">
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3"><p className="text-[11px] text-amber-700">Tổng phải trả NCC</p><p className="mt-1 text-lg font-semibold tabular-nums text-amber-800">{formatCurrency(totalSupplierPayable)}</p><p className="mt-0.5 text-[11px] text-amber-700">{suppliers.filter((supplier) => Number(supplier.currentPayable || 0) > 0).length} nhà cung cấp còn nợ</p></div>
+            <div className="rounded-lg border border-slate-200 bg-white p-3"><p className="text-[11px] text-slate-500">Tổng giao dịch công nợ</p><p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{supplierLedgerEntries.length}</p><p className="mt-0.5 text-[11px] text-slate-500">Nhập hàng, thanh toán và trả hàng</p></div>
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3"><p className="text-[11px] text-emerald-700">Số dư được nhận</p><p className="mt-1 text-lg font-semibold tabular-nums text-emerald-800">{formatCurrency(totalSupplierCredit)}</p><p className="mt-0.5 text-[11px] text-emerald-700">Số dư từ phiếu trả nhà cung cấp</p></div>
+          </div>
+
+          {supplierDebtError && <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{supplierDebtError}</p>}
+
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_360px]">
+            <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm"><div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-3 py-2.5"><div><h2 className="text-sm font-semibold text-slate-900">Nhà cung cấp còn phải trả</h2><p className="text-[11px] text-slate-500">Sắp xếp theo số dư công nợ cao nhất</p></div><Button size="sm" variant="outline" onClick={() => navigate('/app/suppliers')} className="h-8 rounded-md px-2.5 text-xs">Quản lý NCC</Button></div><div className="divide-y divide-slate-100">{loadingSupplierDebt ? <p className="px-3 py-8 text-center text-xs text-slate-500">Đang tải công nợ nhà cung cấp...</p> : filteredSupplierRows.length ? filteredSupplierRows.map((supplier) => <button key={supplier.id} type="button" onClick={() => navigate(`/app/suppliers/${supplier.id}`)} className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors hover:bg-amber-50/50"><div className="flex min-w-0 items-center gap-2"><div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-amber-50 text-amber-700"><Wallet className="h-4 w-4" /></div><div className="min-w-0"><p className="truncate text-xs font-semibold text-slate-900">{supplier.name}</p><p className="truncate text-[11px] text-slate-500">{supplier.code} · {supplier.phone || 'Chưa có SĐT'}</p></div></div><div className="shrink-0 text-right"><p className="text-xs font-semibold tabular-nums text-amber-700">{formatCurrency(supplier.currentPayable || 0)}</p><p className="text-[11px] text-slate-500">{supplierCreditBySupplier.get(supplier.id) > 0 ? `Được nhận ${formatCurrency(supplierCreditBySupplier.get(supplier.id) || 0)}` : 'Công nợ phải trả'}</p></div><ChevronRight className="h-4 w-4 shrink-0 text-slate-300" /></button>) : <div className="px-3 py-10 text-center"><CheckCircle className="mx-auto h-8 w-8 text-emerald-300" /><p className="mt-2 text-xs font-medium text-slate-500">Không có nhà cung cấp còn công nợ.</p></div>}</div></section>
+
+            <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm"><div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-3 py-2.5"><h2 className="text-sm font-semibold text-slate-900">Lịch sử công nợ NCC</h2><span className="text-[11px] text-slate-500">{supplierLedgerEntries.length} giao dịch</span></div><div className="divide-y divide-slate-100">{loadingSupplierDebt ? <p className="px-3 py-8 text-center text-xs text-slate-500">Đang tải lịch sử...</p> : supplierLedgerEntries.length ? supplierLedgerEntries.slice(0, 20).map((entry) => { const supplier = suppliers.find((row) => row.id === entry.supplierId); const increase = entry.type === 'increase'; const credit = entry.ledgerType === 'credit'; return <div key={`${entry.ledgerType}-${entry.id}`} className="flex items-center justify-between gap-2 px-3 py-2"><div className="min-w-0"><button type="button" className="block truncate text-left text-xs font-medium text-slate-700 hover:text-sky-700 hover:underline" onClick={() => navigate(`/app/suppliers/${entry.supplierId}`)}>{supplier?.name || entry.supplierId}</button><p className="truncate text-[11px] text-slate-500">{new Date(entry.createdAt).toLocaleDateString('vi-VN')} · {entry.note || (credit ? 'Số dư được nhận' : increase ? 'Tăng công nợ' : 'Giảm công nợ')}{entry.purchaseId ? <> · <button type="button" className="text-sky-700 hover:underline" onClick={() => navigate(`/app/purchases?purchaseId=${encodeURIComponent(entry.purchaseId)}`)}>Mở phiếu nhập</button></> : null}</p></div><span className={`shrink-0 text-xs font-medium tabular-nums ${credit ? 'text-emerald-700' : increase ? 'text-amber-700' : 'text-emerald-700'}`}>{increase ? '+' : '-'}{formatCurrency(entry.amount || 0)}</span></div>; }) : <p className="px-3 py-10 text-center text-xs text-slate-500">Chưa có giao dịch công nợ nhà cung cấp.</p>}</div></section>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

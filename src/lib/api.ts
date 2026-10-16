@@ -75,6 +75,15 @@ export const permissionsApi = {
   saveForUser: (userId: string, permissions: Array<{ code: string; allowed: boolean }>) => request<any>(`/users/${userId}/permissions`, { method: 'PUT', body: { permissions } }),
 };
 
+export const rolesApi = {
+  list: () => request<any[]>('/roles'),
+  getPermissions: (code: string) => request<any[]>(`/roles/${encodeURIComponent(code)}/permissions`),
+  create: (data: { code: string; name: string; description?: string; permissions?: Array<{ code: string; allowed: boolean }> }) => request<any>('/roles', { method: 'POST', body: data }),
+  update: (code: string, data: { name?: string; description?: string }) => request<any>(`/roles/${encodeURIComponent(code)}`, { method: 'PATCH', body: data }),
+  savePermissions: (code: string, permissions: Array<{ code: string; allowed: boolean }>) => request<any>(`/roles/${encodeURIComponent(code)}/permissions`, { method: 'PUT', body: { permissions } }),
+  delete: (code: string) => request<any>(`/roles/${encodeURIComponent(code)}`, { method: 'DELETE' }),
+};
+
 // ─── Categories ────────────────────────────────────────────
 export const categoriesApi = {
   list: (tenantId?: string) => request<any[]>('/categories', { params: { tenantId: tenantId || '' } }),
@@ -181,7 +190,7 @@ export const invoicesApi = {
   cancel: (id: string, reason?: string) => request<any>(`/invoices/${id}/cancel`, { method: 'POST', body: { reason } }),
   timeline: (id: string) => request<any[]>(`/invoices/${id}/timeline`),
   returnable: (id: string) => request<any>(`/invoices/${id}/returnable`),
-  returns: () => request<any[]>('/sales-returns'),
+  returns: (invoiceId?: string) => request<any[]>('/sales-returns', { params: { invoiceId: invoiceId || '' } }),
   createReturn: (id: string, data: any) => request<any>(`/invoices/${id}/returns`, { method: 'POST', body: data }),
 };
 

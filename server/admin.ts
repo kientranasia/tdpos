@@ -9,6 +9,13 @@ import jwt from 'jsonwebtoken';
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-for-dev-only';
 const MONTHLY_SUBSCRIPTION_PRICE = 150000;
+const normalizeSearchText = (value: unknown) => String(value ?? '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/đ/g, 'd')
+  .replace(/Đ/g, 'D')
+  .toLowerCase()
+  .trim();
 
 const writeAuditLog = (adminId: string, action: string, entityType: string, entityId: string, tenantId?: string, meta?: Record<string, unknown>) => {
   db.insert(schema.auditLogs).values({
@@ -272,12 +279,12 @@ router.get('/tenants', (req, res) => {
     })) as any;
 
     if (search) {
-      const s = (search as string).toLowerCase();
+      const s = normalizeSearchText(search);
       allTenants = allTenants.filter(t =>
-        t.name.toLowerCase().includes(s) ||
-        t.id.toLowerCase().includes(s) ||
-        (t.email && t.email.toLowerCase().includes(s)) ||
-        (t.phone && t.phone.includes(s))
+        normalizeSearchText(t.name).includes(s) ||
+        normalizeSearchText(t.id).includes(s) ||
+        normalizeSearchText(t.email).includes(s) ||
+        normalizeSearchText(t.phone).includes(s)
       );
     }
 
@@ -526,10 +533,10 @@ router.get('/users', (req, res) => {
       allUsers = allUsers.filter(u => u.tenantId === tenantId);
     }
     if (search) {
-      const s = (search as string).toLowerCase();
+      const s = normalizeSearchText(search);
       allUsers = allUsers.filter(u =>
-        u.name.toLowerCase().includes(s) ||
-        u.email.toLowerCase().includes(s)
+        normalizeSearchText(u.name).includes(s) ||
+        normalizeSearchText(u.email).includes(s)
       );
     }
 

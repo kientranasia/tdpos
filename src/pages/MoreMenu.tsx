@@ -1,4 +1,4 @@
-import { ChevronRight, Receipt, Users, BookText, Settings, ClipboardList, BarChart3 } from 'lucide-react';
+import { ChevronRight, Receipt, Users, Truck, BookText, Settings, ClipboardList, BarChart3 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { isMenuAllowed } from '../lib/permissions';
@@ -12,10 +12,11 @@ export default function MoreMenu() {
       title: 'Giao dịch',
       items: [
         { label: 'Lịch sử đơn', desc: 'Theo dõi hóa đơn bán hàng', path: '/app/invoices', icon: Receipt },
-        { label: 'Đối tác', desc: 'Khách hàng và nhà cung cấp', path: '/app/customers', icon: Users },
+        { label: 'Khách hàng', desc: 'Quản lý hồ sơ và công nợ khách', path: '/app/customers', icon: Users },
+        { label: 'Nhà cung cấp', desc: 'Thông tin NCC và công nợ phải trả', path: '/app/suppliers', icon: Truck },
         { label: 'Sổ quỹ', desc: 'Thu chi và đối soát', path: '/app/cashbook', icon: BookText },
         { label: 'Báo cáo', desc: 'Doanh thu, tồn kho, công nợ', path: '/app/reports', icon: BarChart3 },
-        { label: 'Nhập hàng', desc: 'Nhập kho và công nợ NCC', path: '/app/purchases', icon: ClipboardList },
+        { label: 'Đơn nhập hàng', desc: 'Tạo phiếu nhập và trả hàng NCC', path: '/app/purchases', icon: ClipboardList },
       ],
     },
     {

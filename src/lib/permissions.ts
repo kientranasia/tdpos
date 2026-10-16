@@ -17,18 +17,37 @@ const roleRoutes: Record<string, AppRole[]> = {
   '/app/more': ['owner', 'manager', 'cashier', 'warehouse', 'accountant'],
 };
 
-export const canAccessPath = (role: AppRole | undefined, path: string) => {
+const routePermissions: Record<string, string> = {
+  '/app/dashboard': 'dashboard.view',
+  '/app/pos': 'sales.view',
+  '/app/invoices': 'sales.view',
+  '/app/inventory': 'inventory.view',
+  '/app/customers': 'partners.view',
+  '/app/debt': 'debt.view',
+  '/app/cashbook': 'cashbook.view',
+  '/app/reports': 'reports.view',
+  '/app/purchases': 'purchases.view',
+  '/app/suppliers': 'partners.view',
+  '/app/settings': 'settings.view',
+  '/app/more': 'dashboard.view',
+};
+
+export const canAccessPath = (role: AppRole | undefined, path: string, grantedPermissions?: string[] | null) => {
   if (!role) return false;
   const matched = Object.keys(roleRoutes).find((route) => path === route || path.startsWith(`${route}/`));
   if (!matched) return true;
+  if (grantedPermissions) {
+    if (role === 'owner') return true;
+    const permission = routePermissions[matched];
+    return permission ? grantedPermissions.includes(permission) : true;
+  }
   return roleRoutes[matched].includes(role);
 };
 
-export const firstAllowedPath = (role: AppRole | undefined) => {
+export const firstAllowedPath = (role: AppRole | undefined, grantedPermissions?: string[] | null) => {
   if (!role) return '/login';
-  if (role === 'cashier') return '/app/pos';
-  if (role === 'manager') return '/app/dashboard';
-  return '/app/dashboard';
+  const candidates = ['/app/dashboard', '/app/pos', '/app/inventory', '/app/purchases', '/app/customers', '/app/more'];
+  return candidates.find((path) => canAccessPath(role, path, grantedPermissions)) || '/app/more';
 };
 
-export const isMenuAllowed = (role: AppRole | undefined, path: string) => canAccessPath(role, path);
+export const isMenuAllowed = (role: AppRole | undefined, path: string, grantedPermissions?: string[] | null) => canAccessPath(role, path, grantedPermissions);
