@@ -30,6 +30,11 @@
     color-scheme: light;
   }
 
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
   body {
     @apply bg-slate-50 text-slate-900 font-sans antialiased text-sm leading-5;
     min-width: 0;
@@ -322,6 +327,26 @@
   .text-\[11px\] {
     font-size: 12px !important;
     line-height: 16px !important;
+  }
+
+  /* iOS Safari zooms the page when a focused form control is smaller than
+     16px. Keep the control text at the platform's no-zoom threshold while
+     preserving the compact surrounding layout and manual pinch zoom. */
+  @media (max-width: 767px) {
+    html body input,
+    html body select,
+    html body textarea,
+    html body .erp-compact input[class],
+    html body .erp-compact select[class],
+    html body .erp-compact textarea[class] {
+      font-size: 16px !important;
+      line-height: 20px !important;
+    }
+  }
+
+  .dashboard-revenue-label {
+    font-size: 9px !important;
+    line-height: 12px !important;
   }
 
   .tracking-widest,
