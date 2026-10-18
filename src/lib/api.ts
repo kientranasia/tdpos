@@ -88,6 +88,8 @@ export const rolesApi = {
 export const categoriesApi = {
   list: (tenantId?: string) => request<any[]>('/categories', { params: { tenantId: tenantId || '' } }),
   create: (data: any) => request<any>('/categories', { method: 'POST', body: data }),
+  update: (id: string, data: { name: string }) => request<any>(`/categories/${id}`, { method: 'PATCH', body: data }),
+  remove: (id: string) => request<any>(`/categories/${id}`, { method: 'DELETE' }),
 };
 
 // ─── Products ──────────────────────────────────────────────

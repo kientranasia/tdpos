@@ -1,18 +1,18 @@
 {
-  "name": "HKDCare - Quản lý kinh doanh",
-  "short_name": "HKDCare",
-  "description": "Quản lý bán hàng, hàng hóa, kho, công nợ và sổ quỹ.",
+  "name": "HKD Smart - Kinh Doanh Tinh Gọn",
+  "short_name": "HKD Smart",
+  "description": "Quản lý bán hàng, hàng hóa, kho, công nợ và sổ quỹ gọn gàng.",
   "lang": "vi",
   "start_url": "/app/dashboard",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#f8fafc",
-  "theme_color": "#0284c7",
+  "theme_color": "#243765",
   "icons": [
     {
-      "src": "/branding/hkdplus-icon.png",
-      "sizes": "1601x1601",
+      "src": "/branding/hkdsmart-icon.png",
+      "sizes": "1521x1521",
       "type": "image/png",
       "purpose": "any maskable"
     }

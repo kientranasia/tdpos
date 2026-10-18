@@ -877,6 +877,46 @@ app.post('/api/categories', (req, res) => {
   }
 });
 
+app.patch('/api/categories/:id', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.update')) return;
+    const category = db.select().from(schema.categories)
+      .where(and(eq(schema.categories.id, req.params.id), eq(schema.categories.tenantId, req.user.tenantId))).get();
+    if (!category) return res.status(404).json({ error: 'Không tìm thấy danh mục' });
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Tên danh mục là bắt buộc' });
+    const duplicate = db.select().from(schema.categories)
+      .where(and(eq(schema.categories.tenantId, req.user.tenantId), eq(schema.categories.name, name))).get();
+    if (duplicate && duplicate.id !== category.id) return res.status(409).json({ error: 'Tên danh mục đã tồn tại' });
+
+    db.transaction((tx) => {
+      tx.update(schema.categories).set({ name }).where(eq(schema.categories.id, category.id)).run();
+      tx.update(schema.products).set({ category: name }).where(and(eq(schema.products.tenantId, req.user.tenantId), eq(schema.products.category, category.name))).run();
+    });
+    res.json(db.select().from(schema.categories).where(eq(schema.categories.id, category.id)).get());
+  } catch (err) {
+    console.error('PATCH /api/categories/:id error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể đổi tên danh mục' });
+  }
+});
+
+app.delete('/api/categories/:id', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.delete')) return;
+    const category = db.select().from(schema.categories)
+      .where(and(eq(schema.categories.id, req.params.id), eq(schema.categories.tenantId, req.user.tenantId))).get();
+    if (!category) return res.status(404).json({ error: 'Không tìm thấy danh mục' });
+    const inUse = db.select({ id: schema.products.id }).from(schema.products)
+      .where(and(eq(schema.products.tenantId, req.user.tenantId), eq(schema.products.category, category.name))).get();
+    if (inUse) return res.status(409).json({ error: 'Danh mục đang được dùng bởi sản phẩm. Hãy đổi danh mục sản phẩm trước khi xóa.' });
+    db.delete(schema.categories).where(eq(schema.categories.id, category.id)).run();
+    res.json({ success: true });
+  } catch (err) {
+    console.error('DELETE /api/categories/:id error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể xóa danh mục' });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════
 // PRODUCTS
 // ═══════════════════════════════════════════════════════════
@@ -1798,6 +1838,13 @@ const priceListForCustomer = (tenantId: string, customerType?: string, requested
 
 const priceForProduct = (tenantId: string, product: any, unitName?: string, unitFactor = 1, requestedPriceListId?: string, customerType?: string, seen = new Set<string>()): { price: number; priceList: any } => {
   const priceList = priceListForCustomer(tenantId, customerType, requestedPriceListId);
+  const resolvedUnit = unitForProduct(tenantId, product, unitName, unitFactor);
+  const configuredPrice = priceList
+    ? db.select().from(schema.priceListItems).where(and(eq(schema.priceListItems.priceListId, priceList.id), eq(schema.priceListItems.productId, product.id), eq(schema.priceListItems.unitName, resolvedUnit.name))).get()
+    : null;
+  // A combo can have its own price in a price list. Fall back to the sum of
+  // component prices only when no explicit combo price has been configured.
+  if (configuredPrice) return { price: Number(configuredPrice.price), priceList };
   if (product.productType === 'combo') {
     if (seen.has(product.id)) throw new Error('Combo chứa vòng lặp thành phần');
     const components = productComponentsFor(tenantId, product.id);
@@ -1809,9 +1856,6 @@ const priceForProduct = (tenantId: string, product: any, unitName?: string, unit
     }, 0) * unitFactor;
     return { price, priceList };
   }
-  const resolvedUnit = unitForProduct(tenantId, product, unitName, unitFactor);
-  const item = priceList ? db.select().from(schema.priceListItems).where(and(eq(schema.priceListItems.priceListId, priceList.id), eq(schema.priceListItems.productId, product.id), eq(schema.priceListItems.unitName, resolvedUnit.name))).get() : null;
-  if (item) return { price: Number(item.price), priceList };
   const baseItem = priceList ? db.select().from(schema.priceListItems).where(and(eq(schema.priceListItems.priceListId, priceList.id), eq(schema.priceListItems.productId, product.id), eq(schema.priceListItems.unitName, product.unit))).get() : null;
   const basePrice = baseItem ? Number(baseItem.price) : Number(product.sellingPrice);
   return { price: basePrice * resolvedUnit.factor, priceList };
@@ -2502,6 +2546,7 @@ app.get('/api/stock-movements', (req, res) => {
 
     const relatedProductIds = Array.from(new Set(rows.map((r) => r.productId)));
     const relatedUserIds = Array.from(new Set(rows.map((r) => r.createdBy)));
+    const referenceIds = Array.from(new Set(rows.map((r) => r.referenceId).filter(Boolean)));
     const relatedProducts = relatedProductIds.length
       ? db.select().from(schema.products)
           .where(and(
@@ -2518,13 +2563,123 @@ app.get('/api/stock-movements', (req, res) => {
           ))
           .all()
       : [];
+    const relatedPurchases = referenceIds.length
+      ? db.select().from(schema.purchases)
+          .where(and(
+            eq(schema.purchases.tenantId, req.user.tenantId),
+            inArray(schema.purchases.id, referenceIds as string[])
+          ))
+          .all()
+      : [];
+    const relatedPurchaseReturns = referenceIds.length
+      ? db.select().from(schema.purchaseReturns)
+          .where(and(
+            eq(schema.purchaseReturns.tenantId, req.user.tenantId),
+            inArray(schema.purchaseReturns.id, referenceIds as string[])
+          ))
+          .all()
+      : [];
+    const relatedInvoices = referenceIds.length
+      ? db.select().from(schema.invoices)
+          .where(and(
+            eq(schema.invoices.tenantId, req.user.tenantId),
+            inArray(schema.invoices.id, referenceIds as string[])
+          ))
+          .all()
+      : [];
+    const relatedSalesReturns = referenceIds.length
+      ? db.select().from(schema.salesReturns)
+          .where(and(
+            eq(schema.salesReturns.tenantId, req.user.tenantId),
+            inArray(schema.salesReturns.id, referenceIds as string[])
+          ))
+          .all()
+      : [];
+
+    const purchaseIds = relatedPurchases.map((purchase) => purchase.id);
+    const purchaseReturnIds = relatedPurchaseReturns.map((purchaseReturn) => purchaseReturn.id);
+    const invoiceIds = relatedInvoices.map((invoice) => invoice.id);
+    const salesReturnIds = relatedSalesReturns.map((salesReturn) => salesReturn.id);
+    const purchaseItems = purchaseIds.length
+      ? db.select().from(schema.purchaseItems).where(inArray(schema.purchaseItems.purchaseId, purchaseIds)).all()
+      : [];
+    const purchaseReturnItems = purchaseReturnIds.length
+      ? db.select().from(schema.purchaseReturnItems).where(inArray(schema.purchaseReturnItems.returnId, purchaseReturnIds)).all()
+      : [];
+    const invoiceItems = invoiceIds.length
+      ? db.select().from(schema.invoiceItems).where(inArray(schema.invoiceItems.invoiceId, invoiceIds)).all()
+      : [];
+    const salesReturnItems = salesReturnIds.length
+      ? db.select().from(schema.salesReturnItems).where(inArray(schema.salesReturnItems.returnId, salesReturnIds)).all()
+      : [];
+
+    const supplierIds = Array.from(new Set([
+      ...relatedPurchases.map((purchase) => purchase.supplierId),
+      ...relatedPurchaseReturns.map((purchaseReturn) => purchaseReturn.supplierId),
+    ].filter(Boolean)));
+    const customerIds = Array.from(new Set([
+      ...relatedInvoices.map((invoice) => invoice.customerId),
+      ...relatedSalesReturns.map((salesReturn) => salesReturn.customerId),
+    ].filter(Boolean)));
+    const relatedSuppliers = supplierIds.length
+      ? db.select().from(schema.suppliers)
+          .where(and(
+            eq(schema.suppliers.tenantId, req.user.tenantId),
+            inArray(schema.suppliers.id, supplierIds as string[])
+          ))
+          .all()
+      : [];
+    const relatedCustomers = customerIds.length
+      ? db.select().from(schema.customers)
+          .where(and(
+            eq(schema.customers.tenantId, req.user.tenantId),
+            inArray(schema.customers.id, customerIds as string[])
+          ))
+          .all()
+      : [];
 
     const productMap = new Map(relatedProducts.map((p) => [p.id, p]));
     const userMap = new Map(relatedUsers.map((u) => [u.id, u]));
+    const purchaseMap = new Map(relatedPurchases.map((purchase) => [purchase.id, purchase]));
+    const purchaseReturnMap = new Map(relatedPurchaseReturns.map((purchaseReturn) => [purchaseReturn.id, purchaseReturn]));
+    const invoiceMap = new Map(relatedInvoices.map((invoice) => [invoice.id, invoice]));
+    const salesReturnMap = new Map(relatedSalesReturns.map((salesReturn) => [salesReturn.id, salesReturn]));
+    const supplierMap = new Map(relatedSuppliers.map((supplier) => [supplier.id, supplier]));
+    const customerMap = new Map(relatedCustomers.map((customer) => [customer.id, customer]));
+
+    const itemForProduct = (items: any[], referenceId: string | null, productId: string) => {
+      if (!referenceId) return undefined;
+      return items.find((item) => item.productId === productId && (
+        item.purchaseId === referenceId ||
+        item.returnId === referenceId ||
+        item.invoiceId === referenceId
+      )) || items.find((item) => (
+        item.purchaseId === referenceId ||
+        item.returnId === referenceId ||
+        item.invoiceId === referenceId
+      ));
+    };
 
     const enriched = rows.map((row) => {
       const product = productMap.get(row.productId);
       const actor = userMap.get(row.createdBy);
+      const purchase = row.referenceId ? purchaseMap.get(row.referenceId) : undefined;
+      const purchaseReturn = row.referenceId ? purchaseReturnMap.get(row.referenceId) : undefined;
+      const invoice = row.referenceId ? invoiceMap.get(row.referenceId) : undefined;
+      const salesReturn = row.referenceId ? salesReturnMap.get(row.referenceId) : undefined;
+      const purchaseItem = itemForProduct(purchaseItems, row.referenceId, row.productId);
+      const purchaseReturnItem = itemForProduct(purchaseReturnItems, row.referenceId, row.productId);
+      const invoiceItem = itemForProduct(invoiceItems, row.referenceId, row.productId);
+      const salesReturnItem = itemForProduct(salesReturnItems, row.referenceId, row.productId);
+      const reference = purchase || purchaseReturn || invoice || salesReturn;
+      const partner = purchase || purchaseReturn
+        ? supplierMap.get((purchase || purchaseReturn)?.supplierId || '')
+        : customerMap.get((invoice || salesReturn)?.customerId || '');
+      const referenceItem = purchaseItem || purchaseReturnItem || invoiceItem || salesReturnItem;
+      const fallbackTransactionPrice = row.type === 'in'
+        ? Number(product?.purchasePrice || 0)
+        : Number(product?.sellingPrice || 0);
+      const isCustomerTransaction = Boolean(invoice || salesReturn);
       return {
         ...row,
         productName: product?.name || 'Sản phẩm đã xóa',
@@ -2532,6 +2687,15 @@ app.get('/api/stock-movements', (req, res) => {
         productUnit: product?.unit || '',
         actorName: actor?.name || 'N/A',
         actorRole: actor?.role || '',
+        documentNo: reference?.documentNo || row.referenceId || '',
+        transactionType: purchase ? 'Nhập hàng'
+          : purchaseReturn ? 'Trả hàng NCC'
+            : invoice ? 'Bán hàng'
+              : salesReturn ? 'Khách trả hàng'
+                : row.type === 'adjust' ? 'Kiểm kê' : row.note || 'Điều chỉnh kho',
+        transactionPrice: Number(referenceItem?.price ?? fallbackTransactionPrice),
+        costPrice: Number(product?.purchasePrice || referenceItem?.price || 0),
+        partnerName: partner?.name || (isCustomerTransaction ? 'Khách lẻ' : row.type === 'adjust' ? actor?.name || '' : ''),
       };
     });
 

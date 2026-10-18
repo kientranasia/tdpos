@@ -7,7 +7,7 @@ type BeforeInstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 };
 
-const DISMISSED_KEY = 'hkdcare:pwa-install-dismissed-at';
+const DISMISSED_KEY = 'hkdsmart:pwa-install-dismissed-at';
 const DISMISS_COOLDOWN_MS = 14 * 24 * 60 * 60 * 1000;
 
 const isStandalone = () => (
@@ -105,7 +105,7 @@ export default function InstallAppPrompt() {
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
       role="dialog"
       aria-live="polite"
-      aria-label="Cài HKDCare trên điện thoại"
+      aria-label="Cài HKD Smart trên điện thoại"
     >
       <div className="rounded-2xl border border-sky-100 bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.18)]">
         <div className="flex items-start gap-3">
@@ -115,11 +115,11 @@ export default function InstallAppPrompt() {
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-2">
               <div>
-                <p className="text-sm font-semibold text-slate-900">Dùng HKDCare như một ứng dụng</p>
+                <p className="text-sm font-semibold text-slate-900">Dùng HKD Smart như một ứng dụng</p>
                 <p className="mt-1 text-xs leading-5 text-slate-600">
                   {isIos
                     ? 'Mở menu Chia sẻ, chọn “Thêm vào Màn hình chính” để tạo shortcut trên điện thoại.'
-                    : 'Thêm HKDCare vào màn hình chính để mở nhanh như app, vẫn dùng dữ liệu web hiện tại.'}
+                    : 'Thêm HKD Smart vào màn hình chính để mở nhanh như app, vẫn dùng dữ liệu web hiện tại.'}
                 </p>
               </div>
               <button type="button" onClick={dismiss} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Để sau">

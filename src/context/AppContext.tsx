@@ -26,6 +26,8 @@ interface AppContextType {
   addInvoice: (invoice: Invoice, items?: any[]) => void;
   addProduct: (product: Product) => Promise<boolean>;
   addCategory: (category: Category) => Promise<boolean>;
+  updateCategory: (categoryId: string, name: string) => Promise<boolean>;
+  deleteCategory: (categoryId: string) => Promise<boolean>;
   updateProduct: (productId: string, productUpdates: Partial<Product>) => Promise<boolean>;
   deleteProduct: (productId: string) => Promise<boolean>;
   updateCustomer: (customerId: string, updates: Partial<Customer>) => Promise<boolean>;
@@ -237,6 +239,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const updateCategory = useCallback(async (categoryId: string, name: string) => {
+    const previousCategories = categories;
+    const previousProducts = products;
+    const current = categories.find((category) => category.id === categoryId);
+    if (!current) return false;
+    setCategories((prev) => prev.map((category) => category.id === categoryId ? { ...category, name } : category));
+    setProducts((prev) => prev.map((product) => product.category === current.name ? { ...product, category: name } : product));
+    try {
+      await categoriesApi.update(categoryId, { name });
+      return true;
+    } catch (err) {
+      console.error('Failed to update category:', err);
+      setCategories(previousCategories);
+      setProducts(previousProducts);
+      return false;
+    }
+  }, [categories, products]);
+
+  const deleteCategory = useCallback(async (categoryId: string) => {
+    const previousCategories = categories;
+    setCategories((prev) => prev.filter((category) => category.id !== categoryId));
+    try {
+      await categoriesApi.remove(categoryId);
+      return true;
+    } catch (err) {
+      console.error('Failed to delete category:', err);
+      setCategories(previousCategories);
+      return false;
+    }
+  }, [categories]);
+
   const updateProduct = useCallback(async (productId: string, productUpdates: Partial<Product>) => {
     const prevProducts = products;
     setProducts(prev => prev.map(p =>
@@ -337,6 +370,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addInvoice,
       addProduct,
       addCategory,
+      updateCategory,
+      deleteCategory,
       updateProduct,
       deleteProduct,
       updateCustomer,

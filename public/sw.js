@@ -1,9 +1,9 @@
-const CACHE_NAME = 'hkdcare-shell-v1';
+const CACHE_NAME = 'hkdsmart-shell-v1';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
   '/manifest.webmanifest',
-  '/branding/hkdplus-icon.png',
+  '/branding/hkdsmart-icon.png',
 ];
 
 self.addEventListener('install', (event) => {
@@ -19,7 +19,7 @@ self.addEventListener('activate', (event) => {
     caches.keys()
       .then((keys) => Promise.all(
         keys
-          .filter((key) => key.startsWith('hkdcare-shell-') && key !== CACHE_NAME)
+          .filter((key) => (key.startsWith('hkdcare-shell-') || key.startsWith('hkdsmart-shell-')) && key !== CACHE_NAME)
           .map((key) => caches.delete(key)),
       ))
       .then(() => self.clients.claim()),

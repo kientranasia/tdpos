@@ -105,7 +105,7 @@ export default function LandingPage() {
       </main>
       <footer className="relative z-10 mt-auto border-t border-white/55 bg-white/45 backdrop-blur-sm">
         <div className="mx-auto flex min-h-14 w-full max-w-7xl items-center justify-between gap-4 px-4 text-xs text-slate-500 sm:px-6">
-          <span>HKDCare · Quản lý gọn, an tâm kinh doanh.</span>
+          <span>HKD Smart · Kinh Doanh Tinh Gọn.</span>
           <a href="https://trandao.vn" target="_blank" rel="noreferrer" className="shrink-0 text-slate-400 transition hover:text-sky-600 hover:underline">© TRANDAO Investment</a>
         </div>
       </footer>

@@ -352,15 +352,15 @@ export default function POS() {
   };
 
   const updateQuantity = (lineId: string, delta: number) => {
-    setCart(prev => prev.map(item => {
+    setCart(prev => prev.flatMap(item => {
       if (item.id === lineId) {
         const newQ = item.quantity + delta;
-        if (newQ <= 0) return item; 
-        if (newQ > item.maxStock) return item;
+        if (newQ <= 0) return [];
+        if (newQ > item.maxStock) return [item];
         return { ...item, quantity: newQ, total: totalForLine(item.price, newQ, item.discountPercent) };
       }
-      return item;
-    }).filter(item => item.quantity > 0));
+      return [item];
+    }));
   };
 
   const removeFromCart = (lineId: string) => {
@@ -467,7 +467,9 @@ export default function POS() {
       paymentMethod,
       accountId: paymentMethod === 'debt' ? null : selectedAccountId || null,
       status: paymentMethod === 'debt' ? 'unpaid' : 'completed',
-      workflowStatus: 'draft',
+      // POS checkout is already the completed sale flow. Posting it as closed
+      // makes stock, cashbook, debt and reports update immediately.
+      workflowStatus: 'closed',
       paymentStatus: paymentMethod === 'debt' ? 'unpaid' : 'paid',
       note: orderNote?.trim() || '',
       createdAt: new Date().toISOString()

@@ -59,7 +59,7 @@ const formatCompactCurrency = (amount: number) => {
 };
 
 export default function Inventory() {
-  const { products, addProduct, updateProduct, deleteProduct, activeTenant, categories, addCategory, refreshProducts } = useApp();
+  const { products, addProduct, updateProduct, deleteProduct, activeTenant, categories, addCategory, updateCategory, deleteCategory, refreshProducts } = useApp();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [searchTerm, setSearchTerm] = useState('');
@@ -73,11 +73,17 @@ export default function Inventory() {
   const [stockUpdatingProduct, setStockUpdatingProduct] = useState<Product | null>(null);
   
   const [newCategoryName, setNewCategoryName] = useState('');
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+  const [editingCategoryName, setEditingCategoryName] = useState('');
   const [newUnitName, setNewUnitName] = useState('');
   const [customUnits, setCustomUnits] = useState<string[]>([]);
   const [savingProduct, setSavingProduct] = useState(false);
   const [formError, setFormError] = useState('');
   const [stockMovements, setStockMovements] = useState<any[]>([]);
+  const [stockCardProduct, setStockCardProduct] = useState<Product | null>(null);
+  const [stockCardRows, setStockCardRows] = useState<any[]>([]);
+  const [stockCardLoading, setStockCardLoading] = useState(false);
+  const [stockCardError, setStockCardError] = useState('');
   const [stockCheckActual, setStockCheckActual] = useState<NumericDraft>(0);
   const [bulkCheckActuals, setBulkCheckActuals] = useState<Record<string, NumericDraft>>({});
   const [movementTypeFilter, setMovementTypeFilter] = useState<'all' | 'in' | 'out' | 'adjust'>('all');
@@ -90,6 +96,7 @@ export default function Inventory() {
   const [selectedImportRows, setSelectedImportRows] = useState<number[]>([]);
   const [showBarcodeScannerModal, setShowBarcodeScannerModal] = useState(false);
   const [variantBarcodeIndex, setVariantBarcodeIndex] = useState<number | null>(null);
+  const [componentBarcodeIndex, setComponentBarcodeIndex] = useState<number | null>(null);
   const [showPricingModal, setShowPricingModal] = useState(false);
   const [showInlinePriceListForm, setShowInlinePriceListForm] = useState(false);
   const [priceLists, setPriceLists] = useState<any[]>([]);
@@ -171,14 +178,18 @@ export default function Inventory() {
     return total + (Number(component.quantity) || 0) * Number(savedPrice?.price ?? componentProduct.sellingPrice ?? 0);
   }, 0);
 
-  const productFormBasePrice = (list: any, components = productComponentDrafts) => productForm.productType === 'combo'
-    ? comboBasePriceForList(list, components)
-    : Number(productPriceDrafts[list?.id] ?? productForm.sellingPrice ?? 0);
+  const productFormBasePrice = (list: any, components = productComponentDrafts) => {
+    const draft = list?.id ? productPriceDrafts[list.id] : undefined;
+    if (draft !== undefined && draft !== '') return Number(draft) || 0;
+    return productForm.productType === 'combo'
+      ? comboBasePriceForList(list, components)
+      : Number(productForm.sellingPrice || 0);
+  };
 
   const loadProductPriceDrafts = (lists: any[], product: Product | null = null) => {
     setProductPriceDrafts(Object.fromEntries(lists.map((list: any) => {
       const saved = product ? list.items?.find((item: any) => item.productId === product.id && item.unitName === product.unit) : undefined;
-      return [list.id, Number(saved?.price ?? product?.sellingPrice ?? 0)];
+      return [list.id, product ? Number(saved?.price ?? product.sellingPrice ?? 0) : undefined];
     })));
   };
 
@@ -459,6 +470,27 @@ export default function Inventory() {
     setShowStockModal(true);
   };
 
+  const openStockCard = async (product: Product) => {
+    setStockCardProduct(product);
+    setStockCardRows([]);
+    setStockCardError('');
+    setStockCardLoading(true);
+    try {
+      const rows = await stockMovementsApi.list(product.id);
+      setStockCardRows(rows);
+    } catch (err) {
+      setStockCardError(err instanceof Error ? err.message : 'Không thể tải thẻ kho.');
+    } finally {
+      setStockCardLoading(false);
+    }
+  };
+
+  const closeStockCard = () => {
+    setStockCardProduct(null);
+    setStockCardRows([]);
+    setStockCardError('');
+  };
+
   const handleDeleteProduct = async (product: Product) => {
     setFormError('');
     const confirmed = window.confirm(`Xóa mặt hàng "${product.name}"?`);
@@ -483,6 +515,26 @@ export default function Inventory() {
     }
     setNewCategoryName('');
     setShowCategoryModal(false);
+  };
+
+  const handleRenameCategory = async (categoryId: string) => {
+    const name = editingCategoryName.trim();
+    if (!name) return;
+    const success = await updateCategory(categoryId, name);
+    if (!success) {
+      setFormError('Không thể đổi tên danh mục. Tên có thể đã tồn tại hoặc bạn chưa có quyền.');
+      return;
+    }
+    setEditingCategoryId(null);
+    setEditingCategoryName('');
+    setFormError('');
+  };
+
+  const handleDeleteCategory = async (category: { id: string; name: string }) => {
+    if (!window.confirm(`Xóa danh mục "${category.name}"?`)) return;
+    const success = await deleteCategory(category.id);
+    if (!success) setFormError('Không thể xóa danh mục đang được sử dụng hoặc bạn chưa có quyền.');
+    else if (productForm.category === category.name) setProductForm((previous) => ({ ...previous, category: categories.find((item) => item.id !== category.id)?.name || '' }));
   };
 
   const handleAddUnit = () => {
@@ -712,6 +764,7 @@ export default function Inventory() {
   const closeBarcodeScannerModal = () => {
     setShowBarcodeScannerModal(false);
     setVariantBarcodeIndex(null);
+    setComponentBarcodeIndex(null);
   };
 
   const downloadTemplates = () => {
@@ -848,6 +901,14 @@ export default function Inventory() {
     return { label: 'Kiểm kê', tone: 'bg-amber-50 text-amber-700' };
   };
 
+  const stockCardSummary = useMemo(() => stockCardRows.reduce((summary, row) => {
+    const quantity = Number(row.quantity) || 0;
+    if (row.type === 'in') summary.in += quantity;
+    else if (row.type === 'out') summary.out += quantity;
+    else summary.adjust += quantity;
+    return summary;
+  }, { in: 0, out: 0, adjust: 0 }), [stockCardRows]);
+
   return (
     <div className="flex h-full flex-col bg-slate-50 animate-in fade-in duration-500 overflow-hidden relative">
       <BarcodeScannerModal
@@ -857,6 +918,15 @@ export default function Inventory() {
         onDetected={(code) => {
           if (variantBarcodeIndex !== null) {
             setProductVariantDrafts((previous) => previous.map((row, index) => index === variantBarcodeIndex ? { ...row, barcode: code } : row));
+          } else if (componentBarcodeIndex !== null) {
+            const normalizedCode = normalizeSearchText(code);
+            const matched = products.find((product) => normalizeSearchText(product.barcode) === normalizedCode || product.units?.some((unit) => normalizeSearchText(unit.barcode) === normalizedCode));
+            if (matched && matched.productType !== 'combo') {
+              setProductComponentDrafts((previous) => previous.map((row, index) => index === componentBarcodeIndex ? { ...row, componentProductId: matched.id } : row));
+              setFormError('');
+            } else {
+              setFormError(`Không tìm thấy sản phẩm thường với mã ${code}.`);
+            }
           } else {
             setProductForm((prev) => ({ ...prev, barcode: code }));
           }
@@ -1272,9 +1342,8 @@ export default function Inventory() {
                          <Input
                            type="number"
                            min="0"
-                           value={productForm.productType === 'combo' ? calculated : (productPriceDrafts[list.id] ?? 0)}
+                           value={productForm.productType === 'combo' ? (productPriceDrafts[list.id] ?? calculated ?? 0) : (productPriceDrafts[list.id] ?? 0)}
                            onChange={(e) => setProductPriceDrafts((previous) => ({ ...previous, [list.id]: parseNumericDraft(e.target.value) }))}
-                           disabled={productForm.productType === 'combo'}
                            className="h-9 pr-9 text-sm font-semibold tabular-nums"
                          />
                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">đ</span>
@@ -1282,7 +1351,7 @@ export default function Inventory() {
                      </div>;
                    })}
                  </div>
-                 {productForm.productType === 'combo' && <p className="text-[11px] text-slate-500">Giá combo = tổng giá các sản phẩm thành phần theo từng bảng giá.</p>}
+                 {productForm.productType === 'combo' && <p className="text-[11px] text-slate-500">Giá gợi ý là tổng giá thành phần. Có thể nhập giá combo riêng; giá thành phần không bị thay đổi.</p>}
                </div>
 
                {productForm.productType === 'standard' ? (
@@ -1320,10 +1389,15 @@ export default function Inventory() {
                    {productComponentDrafts.length === 0 && <p className="rounded-md bg-white/70 px-3 py-1.5 text-[11px] text-amber-700">Hãy thêm sách, vật tư hoặc sản phẩm đơn vào gói combo.</p>}
                    <div className="space-y-1.5">
                      {productComponentDrafts.map((component, index) => <div key={`${component.componentProductId}-${index}`} className="grid gap-2 md:grid-cols-[1fr_110px_auto]">
-                       <select value={component.componentProductId} onChange={(e) => setProductComponentDrafts(productComponentDrafts.map((row, i) => i === index ? { ...row, componentProductId: e.target.value } : row))} className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs">
-                         <option value="">Chọn sản phẩm</option>
-                         {products.filter((p) => p.productType !== 'combo' && p.id !== editingProduct?.id).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.unit}</option>)}
-                       </select>
+                       <div className="flex min-w-0 gap-1">
+                         <select value={component.componentProductId} onChange={(e) => setProductComponentDrafts(productComponentDrafts.map((row, i) => i === index ? { ...row, componentProductId: e.target.value } : row))} className="h-9 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-xs">
+                           <option value="">Chọn sản phẩm</option>
+                           {products.filter((p) => p.productType !== 'combo' && p.id !== editingProduct?.id).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.unit}</option>)}
+                         </select>
+                         <button type="button" aria-label="Quét mã sản phẩm thành phần" title="Quét mã sản phẩm thành phần" onClick={() => { setComponentBarcodeIndex(index); setVariantBarcodeIndex(null); setShowBarcodeScannerModal(true); }} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-sky-50 hover:text-sky-700">
+                           <Barcode className="h-4 w-4" />
+                         </button>
+                       </div>
                        <Input type="number" min="0.01" value={component.quantity} onChange={(e) => setProductComponentDrafts((previous) => previous.map((row, i) => i === index ? { ...row, quantity: parseNumericDraft(e.target.value) } : row))} className="h-9 text-xs" placeholder="Số lượng" />
                        <button type="button" onClick={() => setProductComponentDrafts(productComponentDrafts.filter((_, i) => i !== index))} className="flex h-9 items-center justify-center text-rose-500"><Trash2 className="h-4 w-4" /></button>
                      </div>)}
@@ -1431,7 +1505,119 @@ export default function Inventory() {
               >
                 TẠO DANH MỤC
               </Button>
+              <div className="border-t border-slate-100 pt-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-[11px] font-semibold text-slate-500">Danh mục hiện có</p>
+                  <span className="text-[10px] text-slate-400">{categories.length}</span>
+                </div>
+                <div className="max-h-48 space-y-1 overflow-y-auto">
+                  {categories.map((category) => editingCategoryId === category.id ? (
+                    <div key={category.id} className="flex items-center gap-1.5 rounded-md bg-slate-50 p-1.5">
+                      <Input value={editingCategoryName} onChange={(event) => setEditingCategoryName(event.target.value)} className="h-8 min-w-0 flex-1 text-xs" autoFocus />
+                      <button type="button" onClick={() => void handleRenameCategory(category.id)} className="rounded-md px-2 py-1 text-[11px] font-medium text-sky-700 hover:bg-sky-100">Lưu</button>
+                      <button type="button" onClick={() => { setEditingCategoryId(null); setEditingCategoryName(''); }} className="rounded-md px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-200">Hủy</button>
+                    </div>
+                  ) : (
+                    <div key={category.id} className="flex items-center justify-between gap-2 rounded-md border border-slate-100 px-2.5 py-1.5">
+                      <span className="min-w-0 truncate text-xs text-slate-700">{category.name}</span>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button type="button" onClick={() => { setEditingCategoryId(category.id); setEditingCategoryName(category.name); setFormError(''); }} className="rounded-md px-2 py-1 text-[11px] text-sky-700 hover:bg-sky-50">Đổi tên</button>
+                        <button type="button" onClick={() => void handleDeleteCategory(category)} className="rounded-md p-1 text-rose-500 hover:bg-rose-50" aria-label={`Xóa danh mục ${category.name}`}><Trash2 className="h-3.5 w-3.5" /></button>
+                      </div>
+                    </div>
+                  ))}
+                  {!categories.length && <p className="py-2 text-center text-[11px] text-slate-400">Chưa có danh mục.</p>}
+                </div>
+                {formError && <p className="mt-2 rounded-md bg-rose-50 px-2.5 py-2 text-[11px] text-rose-700">{formError}</p>}
+              </div>
            </div>
+        </div>
+      )}
+
+      {/* Stock Card Modal */}
+      {stockCardProduct && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/60 p-2 backdrop-blur-sm sm:p-4">
+          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-white bg-white shadow-2xl">
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-100 bg-slate-50/80 px-3 py-3 sm:px-5">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sky-600 text-white">
+                    <ArrowUpDown className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 className="truncate text-sm font-semibold text-slate-900 sm:text-base">Thẻ kho</h2>
+                    <p className="truncate text-[11px] text-slate-500">{stockCardProduct.name} · {stockCardProduct.sku}</p>
+                  </div>
+                </div>
+              </div>
+              <button type="button" onClick={closeStockCard} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-200 hover:text-slate-700" aria-label="Đóng thẻ kho">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-5">
+              <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="rounded-lg border border-slate-200 bg-white p-2.5">
+                  <p className="text-[10px] text-slate-500">Tồn hiện tại</p>
+                  <p className="mt-0.5 text-base font-semibold tabular-nums text-slate-900">{Number(stockCardProduct.availableStock ?? stockCardProduct.stock)} <span className="text-xs font-normal text-slate-500">{stockCardProduct.unit}</span></p>
+                </div>
+                <div className="rounded-lg border border-emerald-100 bg-emerald-50/60 p-2.5">
+                  <p className="text-[10px] text-emerald-700">Tổng nhập</p>
+                  <p className="mt-0.5 text-base font-semibold tabular-nums text-emerald-800">+{stockCardSummary.in}</p>
+                </div>
+                <div className="rounded-lg border border-rose-100 bg-rose-50/60 p-2.5">
+                  <p className="text-[10px] text-rose-700">Tổng xuất</p>
+                  <p className="mt-0.5 text-base font-semibold tabular-nums text-rose-800">-{stockCardSummary.out}</p>
+                </div>
+                <div className="rounded-lg border border-amber-100 bg-amber-50/60 p-2.5">
+                  <p className="text-[10px] text-amber-700">Điều chỉnh</p>
+                  <p className="mt-0.5 text-base font-semibold tabular-nums text-amber-800">±{stockCardSummary.adjust}</p>
+                </div>
+              </div>
+
+              {stockCardError && <p className="mb-3 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700">{stockCardError}</p>}
+              {stockCardLoading ? (
+                <div className="rounded-lg border border-slate-200 p-8 text-center text-sm text-slate-500">Đang tải lịch sử kho…</div>
+              ) : stockCardRows.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-slate-200 p-8 text-center text-sm text-slate-500">Chưa có giao dịch kho cho sản phẩm này.</div>
+              ) : (
+                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                  <table className="min-w-[880px] w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-[11px] font-semibold text-slate-500">
+                      <tr>
+                        <th className="whitespace-nowrap px-3 py-2">Chứng từ</th>
+                        <th className="whitespace-nowrap px-3 py-2">Thời gian</th>
+                        <th className="whitespace-nowrap px-3 py-2">Loại giao dịch</th>
+                        <th className="whitespace-nowrap px-3 py-2 text-right">Giá GD</th>
+                        <th className="whitespace-nowrap px-3 py-2 text-right">Giá vốn</th>
+                        <th className="whitespace-nowrap px-3 py-2 text-right">Số lượng</th>
+                        <th className="whitespace-nowrap px-3 py-2 text-right">Tồn cuối</th>
+                        <th className="whitespace-nowrap px-3 py-2">Đối tác</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {stockCardRows.map((row) => {
+                        const meta = movementMeta(row.type);
+                        const quantityPrefix = row.type === 'in' ? '+' : row.type === 'out' ? '-' : '±';
+                        return (
+                          <tr key={row.id} className="whitespace-nowrap hover:bg-slate-50/80">
+                            <td className="px-3 py-2 font-mono text-sky-700">{row.documentNo || row.referenceId || '—'}</td>
+                            <td className="px-3 py-2 text-slate-600">{new Date(row.createdAt).toLocaleString('vi-VN')}</td>
+                            <td className="px-3 py-2"><span className={`rounded-md px-2 py-1 text-[11px] font-medium ${meta.tone}`}>{row.transactionType || meta.label}</span></td>
+                            <td className="px-3 py-2 text-right tabular-nums text-slate-700">{formatCompactCurrency(row.transactionPrice)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-slate-700">{formatCompactCurrency(row.costPrice)}</td>
+                            <td className={`px-3 py-2 text-right font-semibold tabular-nums ${row.type === 'in' ? 'text-emerald-700' : row.type === 'out' ? 'text-rose-700' : 'text-amber-700'}`}>{quantityPrefix}{row.quantity} {row.productUnit || stockCardProduct.unit}</td>
+                            <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-900">{row.afterStock} {row.productUnit || stockCardProduct.unit}</td>
+                            <td className="max-w-[180px] truncate px-3 py-2 text-slate-600" title={row.partnerName || ''}>{row.partnerName || '—'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -1714,6 +1900,19 @@ export default function Inventory() {
                   </div>
                     <div className="flex items-center gap-2">
                     <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void openStockCard(product);
+                      }}
+                      className="h-8 w-8 rounded-md bg-sky-50 text-sky-700 flex items-center justify-center"
+                      aria-label={`Mở thẻ kho ${product.name}`}
+                      title="Thẻ kho"
+                    >
+                      <ArrowUpDown className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         openEditProduct(product);
@@ -1837,6 +2036,15 @@ export default function Inventory() {
                     </td>
                     <td className="px-2 py-1.5 align-middle">
                       <div className="flex justify-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => void openStockCard(product)}
+                          className="h-8 w-8 rounded-md bg-sky-50 text-sky-700 hover:bg-sky-100 transition-colors"
+                          title="Thẻ kho"
+                        >
+                          <ArrowUpDown className="h-4 w-4" />
+                        </Button>
                         <Button 
                           variant="ghost" 
                           size="sm" 

@@ -7,9 +7,9 @@ export default function BrandMark({ compact = false, className = '' }: BrandMark
   if (!compact) {
     return (
       <img
-        src="/branding/hkdcare-logo.png"
-        alt="HKDCare — Quản lý gọn, an tâm kinh doanh"
-        className={`h-10 w-auto max-w-[210px] object-contain object-left ${className}`}
+        src="/branding/hkdsmart-logo.png"
+        alt="HKD Smart — Kinh Doanh Tinh Gọn"
+        className={`block h-9 w-auto max-w-[min(210px,calc(100vw-160px))] object-contain object-left ${className}`}
       />
     );
   }
@@ -17,8 +17,8 @@ export default function BrandMark({ compact = false, className = '' }: BrandMark
   return (
     <span className={`inline-flex items-center gap-2 ${className}`}>
       <img
-        src="/branding/hkdplus-icon.png"
-        alt="HKDCare"
+        src="/branding/hkdsmart-icon.png"
+        alt="HKD Smart"
         className="h-9 w-9 shrink-0 rounded-lg object-cover"
       />
     </span>

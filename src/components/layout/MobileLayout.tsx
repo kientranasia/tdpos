@@ -67,7 +67,7 @@ export default function MobileLayout() {
   const getHeaderTitle = () => {
     if (location.pathname.startsWith('/app/more')) return 'Nhiều hơn';
     const item = visibleMenuItems.find(item => item.path === location.pathname);
-    return item ? item.label : 'HKDCare';
+    return item ? item.label : 'HKD Smart';
   };
 
   const lowStockCount = activeTenant?.accessBlocked
@@ -250,7 +250,7 @@ export default function MobileLayout() {
           {!isCollapsed && (
             <div className="mt-1 text-center animate-in fade-in duration-700">
               <p className="sidebar-footer-note">
-                © HKDCare · Quản lý gọn, an tâm kinh doanh
+                © HKD Smart · Kinh Doanh Tinh Gọn
               </p>
             </div>
           )}

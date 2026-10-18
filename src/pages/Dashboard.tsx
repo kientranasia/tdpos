@@ -42,7 +42,7 @@ export default function Dashboard() {
 
   return <div className="flex h-full flex-col overflow-hidden bg-slate-50">
     <header className="flex shrink-0 flex-wrap items-center gap-2.5 border-b border-slate-200 bg-white px-3 py-2.5 sm:flex-nowrap sm:py-3">
-      <div className="flex min-w-0 flex-1 items-center gap-2.5"><div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sky-600 text-white shadow-sm sm:h-9 sm:w-9"><LayoutDashboard className="h-4 w-4" /></div><div className="min-w-0"><h1 className="text-sm font-semibold leading-tight text-slate-900 sm:text-base">Tổng quan</h1><p className="mt-0.5 truncate text-[10px] leading-tight text-slate-500 sm:text-[11px]">{activeTenant?.name || 'HKDCare'} · vận hành hôm nay</p></div></div>
+      <div className="flex min-w-0 flex-1 items-center gap-2.5"><div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sky-600 text-white shadow-sm sm:h-9 sm:w-9"><LayoutDashboard className="h-4 w-4" /></div><div className="min-w-0"><h1 className="text-sm font-semibold leading-tight text-slate-900 sm:text-base">Tổng quan</h1><p className="mt-0.5 truncate text-[10px] leading-tight text-slate-500 sm:text-[11px]">{activeTenant?.name || 'HKD Smart'} · vận hành hôm nay</p></div></div>
       <div className="flex w-full gap-1.5 sm:ml-auto sm:w-auto sm:gap-2"><Button size="sm" variant="outline" className="h-8 flex-1 px-2 text-xs sm:h-9 sm:flex-none sm:px-3" onClick={() => navigate('/app/invoices')}>Chứng từ</Button><Button size="sm" className="h-8 flex-1 px-2 text-xs sm:h-9 sm:flex-none sm:px-3" onClick={() => navigate('/app/pos')}>Tạo đơn bán</Button></div>
     </header>
     <main className="flex-1 overflow-auto p-2 md:p-3">

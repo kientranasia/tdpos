@@ -217,7 +217,7 @@ export default function TenantSetup() {
                         </div>
                         <div className="space-y-2">
                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-1">Logo cửa hàng</label>
-                          <div className="h-32 rounded-lg border-2 border-dashed border-slate-200 flex flex-col items-center justify-center text-slate-400 hover:border-sky-400 hover:bg-sky-50 transition-all cursor-pointer">
+                          <div className="h-32 rounded-lg border-2 border-dashed border-slate-200 flex flex-col items-center justify-center text-slate-600 hover:border-sky-400 hover:bg-sky-50 hover:text-sky-700 transition-all cursor-pointer">
                             <Upload className="h-6 w-6 mb-1" />
                             <span className="text-[10px] font-black uppercase tracking-widest">Tải ảnh lên</span>
                           </div>
@@ -462,7 +462,7 @@ export default function TenantSetup() {
                   </div>
                   <div className="space-y-4">
                     <h2 className="text-5xl font-black text-slate-900 font-display tracking-tighter uppercase italic leading-none">CỬA HÀNG ĐÃ SẴN SÀNG!</h2>
-                    <p className="text-slate-500 font-medium text-lg max-w-md mx-auto">Mọi thiết lập đã hoàn tất. HKDCare đã sẵn sàng cho hộ kinh doanh.</p>
+                    <p className="text-slate-500 font-medium text-lg max-w-md mx-auto">Mọi thiết lập đã hoàn tất. HKD Smart đã sẵn sàng cho hộ kinh doanh.</p>
                   </div>
 
                   <div className="bg-sky-50 p-10 rounded-lg w-full max-w-md space-y-6">

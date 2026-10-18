@@ -170,7 +170,7 @@ export default function Settings() {
       const license = await licenseApi.activate(licenseToken.trim());
       setSystemStatus((prev: any) => ({ ...prev, license }));
       setLicenseToken('');
-      setOperationMessage('Đã kích hoạt license HKDCare.');
+      setOperationMessage('Đã kích hoạt license HKD Smart.');
     } catch (err) { setOperationMessage(err instanceof Error ? err.message : 'Không thể kích hoạt license.'); }
   };
 
@@ -427,7 +427,7 @@ export default function Settings() {
             </div>
           </div>
           <div className="rounded-lg border border-slate-200 p-3">
-            <div className="mb-2 flex items-center justify-between"><div><p className="font-medium text-slate-900">Dữ liệu thuế</p><p className="text-xs text-slate-500">Chỉ lưu cấu hình để xuất dữ liệu; HKDCare không tự kết luận nghĩa vụ thuế.</p></div><Button size="sm" variant="outline" onClick={saveTaxProfile}>Lưu</Button></div>
+            <div className="mb-2 flex items-center justify-between"><div><p className="font-medium text-slate-900">Dữ liệu thuế</p><p className="text-xs text-slate-500">Chỉ lưu cấu hình để xuất dữ liệu; HKD Smart không tự kết luận nghĩa vụ thuế.</p></div><Button size="sm" variant="outline" onClick={saveTaxProfile}>Lưu</Button></div>
             <div className="grid grid-cols-1 gap-2 md:grid-cols-3"><Input value={taxProfile.taxCode} onChange={(e) => setTaxProfile((prev) => ({ ...prev, taxCode: e.target.value }))} placeholder="Mã số thuế" /><Input value={taxProfile.taxMethod} onChange={(e) => setTaxProfile((prev) => ({ ...prev, taxMethod: e.target.value }))} placeholder="Phương pháp quản lý thuế" /><Input type="number" min="0" max="100" value={taxProfile.defaultTaxRate} onChange={(e) => setTaxProfile((prev) => ({ ...prev, defaultTaxRate: Number(e.target.value) || 0 }))} placeholder="Thuế suất mặc định (%)" /></div>
           </div>
           <div className="rounded-lg border border-slate-200 p-3">
