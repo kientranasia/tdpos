@@ -43,19 +43,47 @@ export default function MobileLayout() {
     navigate('/login');
   };
 
-  const menuItems = [
-    { icon: Home, label: 'Tổng quan', shortLabel: 'Tổng quan', path: '/app/dashboard' },
-    { icon: ShoppingCart, label: 'Bán hàng', shortLabel: 'Bán hàng', path: '/app/pos' },
-    { icon: Receipt, label: 'Lịch sử đơn', shortLabel: 'Đơn', path: '/app/invoices' },
-    { icon: Package, label: 'Mặt hàng', shortLabel: 'Hàng', path: '/app/inventory' },
-    { icon: ClipboardList, label: 'Đơn nhập hàng', shortLabel: 'Nhập', path: '/app/purchases' },
-    { icon: Users, label: 'Khách hàng', shortLabel: 'Khách', path: '/app/customers' },
-    { icon: Truck, label: 'Nhà cung cấp', shortLabel: 'NCC', path: '/app/suppliers' },
-    { icon: Wallet, label: 'Công nợ', shortLabel: 'Nợ', path: '/app/debt' },
-    { icon: BookText, label: 'Sổ quỹ', shortLabel: 'Quỹ', path: '/app/cashbook' },
-    { icon: BarChart3, label: 'Báo cáo', shortLabel: 'BC', path: '/app/reports' },
+  const menuSections = [
+    {
+      label: 'Tổng quan',
+      items: [
+        { icon: Home, label: 'Tổng quan', shortLabel: 'Tổng quan', path: '/app/dashboard' },
+      ],
+    },
+    {
+      label: 'Bán hàng',
+      items: [
+        { icon: ShoppingCart, label: 'Bán hàng', shortLabel: 'Bán hàng', path: '/app/pos' },
+        { icon: Receipt, label: 'Lịch sử đơn', shortLabel: 'Đơn', path: '/app/invoices' },
+      ],
+    },
+    {
+      label: 'Hàng hóa',
+      items: [
+        { icon: Package, label: 'Mặt hàng', shortLabel: 'Hàng', path: '/app/inventory' },
+        { icon: ClipboardList, label: 'Đơn nhập hàng', shortLabel: 'Nhập', path: '/app/purchases' },
+      ],
+    },
+    {
+      label: 'Đối tác',
+      items: [
+        { icon: Users, label: 'Khách hàng', shortLabel: 'Khách', path: '/app/customers' },
+        { icon: Truck, label: 'Nhà cung cấp', shortLabel: 'NCC', path: '/app/suppliers' },
+      ],
+    },
+    {
+      label: 'Tài chính',
+      items: [
+        { icon: Wallet, label: 'Công nợ', shortLabel: 'Nợ', path: '/app/debt' },
+        { icon: BookText, label: 'Sổ quỹ', shortLabel: 'Quỹ', path: '/app/cashbook' },
+        { icon: BarChart3, label: 'Báo cáo', shortLabel: 'BC', path: '/app/reports' },
+      ],
+    },
   ];
-  const visibleMenuItems = menuItems.filter((item) => isMenuAllowed(currentUser.role, item.path, permissions));
+  const visibleMenuSections = menuSections
+    .map((section) => ({ ...section, items: section.items.filter((item) => isMenuAllowed(currentUser.role, item.path, permissions)) }))
+    .filter((section) => section.items.length > 0);
+  const visibleMenuItems = visibleMenuSections.flatMap((section) => section.items);
   const footerMenuItems = [
     { icon: Home, label: 'Tổng quan', shortLabel: 'Tổng quan', path: '/app/dashboard' },
     { icon: Package, label: 'Hàng hóa', shortLabel: 'Hàng hóa', path: '/app/inventory' },
@@ -75,7 +103,7 @@ export default function MobileLayout() {
     : products.filter((p) => p.trackStock && p.stock <= p.lowStockThreshold).length;
 
   return (
-    <div className={`erp-compact flex h-screen flex-col bg-slate-50 ${isCollapsed ? 'lg:pl-16' : 'lg:pl-60'} transition-all duration-300 font-sans`}>
+    <div className={`erp-compact flex h-screen min-h-0 flex-col bg-white ${isCollapsed ? 'lg:pl-14' : 'lg:pl-52'} transition-all duration-300 font-sans`}>
       {/* Header cho Mobile + Tablet */}
       <header className="sticky top-0 z-[110] h-14 md:h-16 items-center justify-between brand-topbar px-4 md:px-5 lg:hidden flex">
         <button onClick={() => navigate('/')} className="flex min-w-0 items-center" title="Trung tâm điều khiển">
@@ -141,61 +169,52 @@ export default function MobileLayout() {
       </header>
 
       {/* Sidebar cho Desktop */}
-      <aside className={`fixed inset-y-0 left-0 hidden ${isCollapsed ? 'w-14' : 'w-52'} flex-col bg-white lg:flex border-r border-slate-200/60 shadow-[4px_0_24px_rgba(0,0,0,0.02)] z-50 transition-all duration-300`}>
-        <div className={`flex h-14 items-center border-b border-slate-50 ${isCollapsed ? 'justify-center px-1' : 'justify-between px-3'}`}>
+      <aside className={`fixed inset-y-0 left-0 hidden ${isCollapsed ? 'w-14' : 'w-52'} flex-col overflow-visible bg-white lg:flex border-r border-slate-200/60 shadow-[4px_0_24px_rgba(0,0,0,0.02)] z-50 transition-all duration-300`}>
+        <div className={`relative flex h-[72px] items-center border-b border-slate-50 ${isCollapsed ? 'justify-center px-1' : 'px-4'}`}>
           <button type="button" onClick={() => navigate('/')} className="flex items-center overflow-hidden" title="Trung tâm điều khiển">
             {isCollapsed ? (
               <BrandMark compact />
             ) : (
-              <BrandMark />
+              <BrandMark className="!h-8 !max-w-[153px]" />
             )}
           </button>
-          {!isCollapsed && (
-            <button
-              onClick={() => setIsCollapsed(!isCollapsed)}
-              className="h-8 w-8 rounded-lg text-slate-500 hover:text-sky-700 transition-all flex items-center justify-center"
-              title="Thu gọn menu"
-            >
-              <PanelLeftClose className="h-4 w-4" />
-            </button>
-          )}
         </div>
 
-        <nav className="mt-1 flex-1 space-y-0.5 overflow-y-auto p-1.5">
-          {visibleMenuItems.map((item) => (
-            <NavLink
-              key={item.path}
-              to={item.path}
-              title={isCollapsed ? item.label : ''}
-              className={({ isActive }) =>
-                `flex items-center ${isCollapsed ? 'justify-center' : 'gap-1.5'} rounded-md px-2 py-1.5 text-[10px] font-medium tracking-normal transition-all duration-200 group ${
-                  isActive
-                    ? 'bg-sky-600 text-white shadow-xl shadow-sky-900/30'
-                    : 'text-slate-400 hover:bg-slate-50 hover:text-slate-900'
-                }`
-              }
-            >
-              <item.icon className={`h-3.5 w-3.5 group-hover:scale-110 transition-transform ${isCollapsed ? '' : 'shrink-0'}`} />
-              {!isCollapsed && <span className="truncate">{item.label}</span>}
-            </NavLink>
+        <nav className="mt-2 flex-1 space-y-1 overflow-y-auto p-1.5">
+          {visibleMenuSections.map((section) => (
+            <div key={section.label} className="space-y-0.5">
+              {!isCollapsed && <p className="px-2.5 pb-1 pt-2 text-[0.625rem] font-semibold tracking-[0.08em] text-slate-500">{section.label}</p>}
+              {section.items.map((item) => (
+                <NavLink
+                  key={item.path}
+                  to={item.path}
+                  title={isCollapsed ? item.label : ''}
+                  className={({ isActive }) =>
+                    `flex items-center ${isCollapsed ? 'justify-center' : 'gap-1.5'} rounded-md px-2 py-1.5 text-[0.6875rem] font-medium tracking-normal transition-all duration-200 group ${
+                      isActive
+                        ? 'bg-sky-600 text-white shadow-xl shadow-sky-900/30'
+                        : 'text-slate-400 hover:bg-slate-50 hover:text-slate-900'
+                    }`
+                  }
+                >
+                  <item.icon className={`h-3.5 w-3.5 group-hover:scale-110 transition-transform ${isCollapsed ? '' : 'shrink-0'}`} />
+                  {!isCollapsed && <span className="truncate">{item.label}</span>}
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
 
         <div className="relative mt-auto border-t border-slate-50 bg-slate-50/30 p-1.5">
-          {isCollapsed && (
-            <button
-              type="button"
-              onClick={() => {
-                setShowAccountMenu(false);
-                setIsCollapsed(false);
-              }}
-              className="mx-auto mb-1 flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 shadow-sm transition-all hover:border-sky-200 hover:text-sky-600"
-              title="Mở rộng menu"
-              aria-label="Mở rộng menu"
-            >
-              <PanelLeftOpen className="h-3.5 w-3.5" />
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setIsCollapsed((collapsed) => !collapsed)}
+            className="absolute -right-4 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition-all hover:border-sky-200 hover:text-sky-700"
+            title={isCollapsed ? 'Mở rộng menu' : 'Thu gọn menu'}
+            aria-label={isCollapsed ? 'Mở rộng menu' : 'Thu gọn menu'}
+          >
+            {isCollapsed ? <PanelLeftOpen className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -258,7 +277,7 @@ export default function MobileLayout() {
       </aside>
 
       {/* Nội dung chính */}
-      <main className="flex min-h-0 flex-1 overflow-y-auto w-full bg-slate-50 relative pb-mobile-nav lg:bg-white lg:pb-0">
+      <main className="flex min-h-0 flex-1 overflow-y-auto w-full bg-white relative pb-mobile-nav lg:pb-0">
         <div className="w-full h-full min-h-0">
           <Outlet />
         </div>

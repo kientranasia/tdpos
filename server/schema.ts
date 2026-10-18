@@ -137,6 +137,13 @@ export const categories = sqliteTable('categories', {
   description: text('description'),
 });
 
+export const units = sqliteTable('units', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  name: text('name').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+
 // ─── Products ──────────────────────────────────────────────
 export const products = sqliteTable('products', {
   id: text('id').primaryKey(),

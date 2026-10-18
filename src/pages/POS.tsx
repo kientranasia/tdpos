@@ -665,7 +665,7 @@ export default function POS() {
           <CheckCircle className="h-14 w-14 text-sky-600" />
         </div>
         <h2 className="text-3xl font-semibold text-slate-900 mb-3">Đã tạo bill</h2>
-        <p className="text-slate-500 mb-10 text-base">Bill <span className="text-sky-700 font-semibold">{lastInvoiceId}</span> đã lưu nháp, chờ kiểm bill và chốt xuất kho.</p>
+        <p className="text-slate-500 mb-10 text-base">Bill <span className="text-sky-700 font-semibold">{lastInvoiceId}</span> đã ghi nhận vào lịch sử đơn, tồn kho và sổ quỹ.</p>
         
         <div className="flex flex-col gap-4 w-full max-w-sm">
           <Button 
@@ -852,7 +852,7 @@ export default function POS() {
   }
 
   return (
-    <div className="erp-compact flex min-h-0 flex-col h-full lg:flex-row lg:items-start bg-slate-50 overflow-y-auto lg:overflow-hidden font-sans relative">
+    <div className="erp-compact flex min-h-0 flex-col h-full lg:flex-row lg:items-stretch bg-slate-50 overflow-y-auto lg:overflow-hidden font-sans relative">
       <BarcodeScannerModal
         open={showScannerModal}
         title="Quét mã để thêm vào giỏ"
@@ -897,7 +897,7 @@ export default function POS() {
       )}
 
       {/* Product List Section */}
-      <div className="w-full lg:flex-1 lg:self-start flex flex-col min-h-0 border-b lg:border-b-0 lg:border-r border-slate-200/50 bg-white relative shrink-0">
+      <div className="w-full lg:flex-1 lg:self-stretch flex flex-col min-h-0 border-b lg:border-b-0 lg:border-r border-slate-200/50 bg-white relative shrink-0">
         <div className="p-3 sm:p-4 lg:p-2 space-y-3 lg:space-y-1.5 bg-white sticky top-0 z-40 border-b border-slate-200 shadow-sm shrink-0">
           <div className="hidden lg:flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">

@@ -325,23 +325,8 @@
   .text-\[9px\],
   .text-\[10px\],
   .text-\[11px\] {
-    font-size: 12px !important;
-    line-height: 16px !important;
-  }
-
-  /* iOS Safari zooms the page when a focused form control is smaller than
-     16px. Keep the control text at the platform's no-zoom threshold while
-     preserving the compact surrounding layout and manual pinch zoom. */
-  @media (max-width: 767px) {
-    html body input,
-    html body select,
-    html body textarea,
-    html body .erp-compact input[class],
-    html body .erp-compact select[class],
-    html body .erp-compact textarea[class] {
-      font-size: 16px !important;
-      line-height: 20px !important;
-    }
+    font-size: 11px !important;
+    line-height: 15px !important;
   }
 
   .dashboard-revenue-label {
@@ -360,15 +345,36 @@
     font-weight: 700 !important;
   }
 
+  /* Keep the operational app typography uniform and compact. */
+  .erp-compact,
+  .erp-compact :where(*) {
+    font-size: 11px !important;
+    line-height: 15px !important;
+  }
+
+  /* iOS Safari zooms the page when a focused form control is smaller than
+     16px. Keep controls at the platform's no-zoom threshold on mobile. */
+  @media (max-width: 767px) {
+    html body input,
+    html body select,
+    html body textarea,
+    html body .erp-compact input[class],
+    html body .erp-compact select[class],
+    html body .erp-compact textarea[class] {
+      font-size: 16px !important;
+      line-height: 20px !important;
+    }
+  }
+
   .pb-safe {
     padding-bottom: env(safe-area-inset-bottom);
   }
 
-  .pb-mobile-nav {
-    padding-bottom: calc(80px + env(safe-area-inset-bottom));
-  }
-
   @media (max-width: 1023px) {
+    .pb-mobile-nav {
+      padding-bottom: calc(80px + env(safe-area-inset-bottom));
+    }
+
     .erp-compact.h-screen {
       height: 100dvh;
       min-height: 100dvh;
@@ -386,9 +392,21 @@
      large slate-colored band below short page content. Mobile keeps the
      slate canvas for contrast with the fixed bottom navigation. */
   @media (min-width: 1024px) {
+    .erp-compact main,
+    .erp-compact main > div,
     .erp-compact main > div > .bg-slate-50,
     .erp-compact main > div > .bg-slate-100\/60 {
       background-color: #ffffff !important;
+    }
+
+    .erp-compact main.landing-main {
+      background-color: transparent !important;
+      backdrop-filter: blur(3px);
+      -webkit-backdrop-filter: blur(3px);
+    }
+
+    .erp-compact main.landing-main > div {
+      background-color: transparent !important;
     }
   }
   

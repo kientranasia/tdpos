@@ -62,38 +62,25 @@ try {
   assert(customer.response.status === 201, `Tạo khách lifecycle thất bại: ${JSON.stringify(customer.body)}`);
   created.customerId = customer.body.id;
 
-  const draft = await request('/api/invoices', {
+  const createdInvoice = await request('/api/invoices', {
     method: 'POST', headers: auth,
-    body: JSON.stringify({ customerId: created.customerId, totalAmount: 450, discount: 0, taxAmount: 0, finalAmount: 450, paidAmount: 0, debtAmount: 450, paymentMethod: 'debt', items: [{ productId: created.productId, productName: 'Hàng lifecycle kiểm thử', quantity: 3, price: 150, taxRate: 0, total: 450 }] }),
+    // The stale client value is intentionally sent to verify the server no
+    // longer creates a reviewable draft after payment.
+    body: JSON.stringify({ customerId: created.customerId, totalAmount: 450, discount: 0, taxAmount: 0, finalAmount: 450, paidAmount: 450, debtAmount: 0, paymentMethod: 'cash', status: 'completed', workflowStatus: 'draft', items: [{ productId: created.productId, productName: 'Hàng lifecycle kiểm thử', quantity: 3, price: 150, taxRate: 0, total: 450 }] }),
   });
-  assert(draft.response.status === 201 && draft.body.workflowStatus === 'draft', `Bill chưa ở nháp: ${JSON.stringify(draft.body)}`);
-  created.invoiceId = draft.body.id;
-  const reservationDb = new Database(dbPath);
-  const reservation = reservationDb.prepare('SELECT quantity, status FROM stock_reservations WHERE invoice_id = ?').get(created.invoiceId);
-  reservationDb.close();
-  assert(Number(reservation?.quantity) === 3 && reservation.status === 'reserved', 'Chưa tạo giữ tồn cho bill nháp');
-
-  const checked = await request(`/api/invoices/${created.invoiceId}/check`, { method: 'POST', headers: auth, body: '{}' });
-  assert(checked.response.ok && checked.body.workflowStatus === 'checked', 'Kiểm bill thất bại');
-  const detail = await request(`/api/invoices/${created.invoiceId}`, { headers: auth });
-  const picked = await request(`/api/invoices/${created.invoiceId}/pick`, {
-    method: 'POST', headers: auth,
-    body: JSON.stringify({ items: [{ id: detail.body.items[0].id, pickedQuantity: 2 }] }),
-  });
-  assert(picked.response.ok && picked.body.workflowStatus === 'ready_to_close', 'Lấy hàng thiếu thất bại');
-  const closed = await request(`/api/invoices/${created.invoiceId}/close`, { method: 'POST', headers: auth, body: '{}' });
-  assert(closed.response.ok && closed.body.workflowStatus === 'closed', 'Chốt bill thất bại');
-  const afterClose = await request(`/api/products/${created.productId}`, { headers: auth });
-  assert(Number(afterClose.body.stock) === 3, 'Chốt bill không trừ đúng số lượng thực lấy');
-
-  const payment = await request('/api/payments', { method: 'POST', headers: auth, body: JSON.stringify({ customerId: created.customerId, amount: 100, paymentMethod: 'cash', note: 'Thu lifecycle' }) });
-  assert(payment.response.status === 201, `Tạo phiếu thu thất bại: ${JSON.stringify(payment.body)}`);
-  created.paymentId = payment.body.id;
-  const allocation = await request(`/api/payments/${created.paymentId}/allocations`, { method: 'POST', headers: auth, body: JSON.stringify({ allocations: [{ invoiceId: created.invoiceId, amount: 100 }] }) });
-  assert(allocation.response.ok, `Phân bổ phiếu thu thất bại: ${JSON.stringify(allocation.body)}`);
-  const timeline = await request(`/api/invoices/${created.invoiceId}/timeline`, { headers: auth });
-  assert(timeline.response.ok && timeline.body.some((entry) => entry.action === 'invoice.close'), 'Thiếu audit lifecycle');
-  console.log(JSON.stringify({ ok: true, flow: 'invoice-lifecycle-payment-allocation', invoiceId: created.invoiceId, paymentId: created.paymentId }));
+  assert(createdInvoice.response.status === 201 && createdInvoice.body.workflowStatus === 'closed' && createdInvoice.body.status === 'completed', `Bill chưa được ghi nhận ngay: ${JSON.stringify(createdInvoice.body)}`);
+  created.invoiceId = createdInvoice.body.id;
+  const postingDb = new Database(dbPath);
+  const reservation = postingDb.prepare('SELECT quantity, status FROM stock_reservations WHERE invoice_id = ?').get(created.invoiceId);
+  const stockMovement = postingDb.prepare('SELECT quantity, type FROM stock_movements WHERE reference_id = ?').get(created.invoiceId);
+  const cashbookEntry = postingDb.prepare('SELECT amount, type, category FROM cashbook_entries WHERE reference_id = ?').get(created.invoiceId);
+  postingDb.close();
+  assert(!reservation, 'Bill thanh toán không được tạo giữ tồn');
+  assert(Number(stockMovement?.quantity) === 3 && stockMovement.type === 'out', 'Thanh toán chưa trừ tồn kho ngay');
+  assert(Number(cashbookEntry?.amount) === 450 && cashbookEntry.type === 'income' && cashbookEntry.category === 'Bán hàng', 'Thanh toán chưa ghi sổ quỹ ngay');
+  const afterCheckout = await request(`/api/products/${created.productId}`, { headers: auth });
+  assert(Number(afterCheckout.body.stock) === 2, 'Thanh toán không cập nhật tồn kho đúng số lượng');
+  console.log(JSON.stringify({ ok: true, flow: 'checkout-posts-invoice-stock-and-cashbook', invoiceId: created.invoiceId }));
 } finally {
   cleanup();
 }

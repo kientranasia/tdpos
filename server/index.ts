@@ -4,7 +4,7 @@ import cors from 'cors';
 import morgan from 'morgan';
 import { db } from './db';
 import * as schema from './schema';
-import { eq, desc, and, like, sql, inArray } from 'drizzle-orm';
+import { eq, desc, and, like, sql, inArray, ne } from 'drizzle-orm';
 import { v4 as uuid } from 'uuid';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -918,6 +918,107 @@ app.delete('/api/categories/:id', (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
+// UNITS OF MEASURE
+// ═══════════════════════════════════════════════════════════
+
+const syncUnitCatalog = (tenantId: string) => {
+  const baseUnits = db.select({ name: schema.products.unit }).from(schema.products)
+    .where(eq(schema.products.tenantId, tenantId)).all();
+  const variantUnits = db.select({ name: schema.productUnits.name }).from(schema.productUnits)
+    .where(eq(schema.productUnits.tenantId, tenantId)).all();
+  const names = new Set([...baseUnits, ...variantUnits].map((row) => String(row.name || '').trim()).filter(Boolean));
+  for (const name of names) {
+    const exists = db.select({ id: schema.units.id }).from(schema.units)
+      .where(and(eq(schema.units.tenantId, tenantId), eq(schema.units.name, name))).get();
+    if (!exists) db.insert(schema.units).values({ id: uuid(), tenantId, name, createdAt: new Date().toISOString() }).run();
+  }
+};
+
+app.get('/api/units', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.view')) return;
+    syncUnitCatalog(req.user.tenantId);
+    const rows = db.select().from(schema.units).where(eq(schema.units.tenantId, req.user.tenantId)).all();
+    const baseUnits = db.select({ name: schema.products.unit }).from(schema.products)
+      .where(eq(schema.products.tenantId, req.user.tenantId)).all();
+    const variantUnits = db.select({ name: schema.productUnits.name }).from(schema.productUnits)
+      .where(eq(schema.productUnits.tenantId, req.user.tenantId)).all();
+    const usage = new Map<string, number>();
+    [...baseUnits, ...variantUnits].forEach((row) => {
+      const name = String(row.name || '').trim();
+      if (name) usage.set(name, (usage.get(name) || 0) + 1);
+    });
+    res.json(rows.map((row) => ({ ...row, inUseCount: usage.get(row.name) || 0 })));
+  } catch (err) {
+    console.error('GET /api/units error:', err);
+    res.status(500).json({ error: 'Không thể tải đơn vị tính' });
+  }
+});
+
+app.post('/api/units', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.create')) return;
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Tên đơn vị tính là bắt buộc' });
+    const duplicate = db.select().from(schema.units)
+      .where(eq(schema.units.tenantId, req.user.tenantId)).all()
+      .find((row) => row.name.trim().toLowerCase() === name.toLowerCase());
+    if (duplicate) return res.status(409).json({ error: 'Đơn vị tính đã tồn tại' });
+    const unit = { id: uuid(), tenantId: req.user.tenantId, name, createdAt: new Date().toISOString() };
+    db.insert(schema.units).values(unit).run();
+    res.status(201).json({ ...unit, inUseCount: 0 });
+  } catch (err) {
+    console.error('POST /api/units error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể tạo đơn vị tính' });
+  }
+});
+
+app.patch('/api/units/:id', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.update')) return;
+    const unit = db.select().from(schema.units)
+      .where(and(eq(schema.units.id, req.params.id), eq(schema.units.tenantId, req.user.tenantId))).get();
+    if (!unit) return res.status(404).json({ error: 'Không tìm thấy đơn vị tính' });
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Tên đơn vị tính là bắt buộc' });
+    const duplicate = db.select().from(schema.units)
+      .where(eq(schema.units.tenantId, req.user.tenantId)).all()
+      .find((row) => row.id !== unit.id && row.name.trim().toLowerCase() === name.toLowerCase());
+    if (duplicate) return res.status(409).json({ error: 'Đơn vị tính đã tồn tại' });
+
+    db.transaction((tx) => {
+      tx.update(schema.units).set({ name }).where(eq(schema.units.id, unit.id)).run();
+      tx.update(schema.products).set({ unit: name }).where(and(eq(schema.products.tenantId, req.user.tenantId), eq(schema.products.unit, unit.name))).run();
+      tx.update(schema.productUnits).set({ name }).where(and(eq(schema.productUnits.tenantId, req.user.tenantId), eq(schema.productUnits.name, unit.name))).run();
+      tx.update(schema.priceListItems).set({ unitName: name }).where(and(eq(schema.priceListItems.tenantId, req.user.tenantId), eq(schema.priceListItems.unitName, unit.name))).run();
+    });
+    res.json({ ...unit, name });
+  } catch (err) {
+    console.error('PATCH /api/units/:id error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể đổi tên đơn vị tính' });
+  }
+});
+
+app.delete('/api/units/:id', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.delete')) return;
+    const unit = db.select().from(schema.units)
+      .where(and(eq(schema.units.id, req.params.id), eq(schema.units.tenantId, req.user.tenantId))).get();
+    if (!unit) return res.status(404).json({ error: 'Không tìm thấy đơn vị tính' });
+    const inUse = db.select({ id: schema.products.id }).from(schema.products)
+      .where(and(eq(schema.products.tenantId, req.user.tenantId), eq(schema.products.unit, unit.name))).get()
+      || db.select({ id: schema.productUnits.id }).from(schema.productUnits)
+        .where(and(eq(schema.productUnits.tenantId, req.user.tenantId), eq(schema.productUnits.name, unit.name))).get();
+    if (inUse) return res.status(409).json({ error: 'Đơn vị tính đang được dùng bởi sản phẩm hoặc biến thể. Hãy đổi đơn vị trước khi xóa.' });
+    db.delete(schema.units).where(eq(schema.units.id, unit.id)).run();
+    res.json({ success: true });
+  } catch (err) {
+    console.error('DELETE /api/units/:id error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể xóa đơn vị tính' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
 // PRODUCTS
 // ═══════════════════════════════════════════════════════════
 
@@ -1025,7 +1126,18 @@ app.patch('/api/price-lists/:id', (req, res) => {
     if (!ensurePermission(req, res, 'inventory.manage_pricing')) return;
     const list = db.select().from(schema.priceLists).where(and(eq(schema.priceLists.id, req.params.id), eq(schema.priceLists.tenantId, req.user.tenantId))).get();
     if (!list) return res.status(404).json({ error: 'Không tìm thấy bảng giá' });
-    const { id: _id, tenantId: _tenantId, isDefault, ...updates } = req.body || {};
+    const name = req.body?.name === undefined ? list.name : String(req.body.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Tên bảng giá là bắt buộc' });
+    const duplicate = db.select().from(schema.priceLists)
+      .where(eq(schema.priceLists.tenantId, req.user.tenantId)).all()
+      .find((row) => row.id !== list.id && row.name.trim().toLowerCase() === name.toLowerCase());
+    if (duplicate) return res.status(409).json({ error: 'Tên bảng giá đã tồn tại' });
+    const isDefault = req.body?.isDefault;
+    const updates = {
+      name,
+      ...(req.body?.customerType !== undefined ? { customerType: String(req.body.customerType) } : {}),
+      ...(req.body?.active !== undefined ? { active: Boolean(req.body.active) } : {}),
+    };
     if (isDefault) db.update(schema.priceLists).set({ isDefault: false }).where(eq(schema.priceLists.tenantId, req.user.tenantId)).run();
     db.update(schema.priceLists).set({ ...updates, ...(isDefault !== undefined ? { isDefault: Boolean(isDefault) } : {}) }).where(eq(schema.priceLists.id, list.id)).run();
     res.json(db.select().from(schema.priceLists).where(eq(schema.priceLists.id, list.id)).get());
@@ -1863,6 +1975,7 @@ const priceForProduct = (tenantId: string, product: any, unitName?: string, unit
 
 app.get('/api/invoices', (req, res) => {
   try {
+    autoCloseLegacyInvoices(req);
     const { customerId, status } = req.query;
     const tenantUsers = db.select().from(schema.users)
       .where(eq(schema.users.tenantId, req.user.tenantId)).all();
@@ -1892,6 +2005,7 @@ app.get('/api/invoices', (req, res) => {
 
 app.get('/api/invoices/:id', (req, res) => {
   try {
+    autoCloseLegacyInvoices(req);
     const tenantUsers = db.select().from(schema.users)
       .where(eq(schema.users.tenantId, req.user.tenantId)).all();
     const userNameById = new Map(tenantUsers.map((u) => [u.id, u.name]));
@@ -1915,7 +2029,10 @@ app.post('/api/invoices', (req, res) => {
     const { items, ...invoiceData } = req.body;
     const invoiceId = invoiceData.id || uuid();
     const documentNo = String(invoiceData.documentNo || nextDocumentNo(req.user.tenantId, 'sale', 'HD'));
-    const workflowStatus = invoiceData.workflowStatus || (invoiceData.status ? 'closed' : 'draft');
+    // A sale is posted at checkout. Keep the review/picking workflow for
+    // legacy records only; new POS invoices must immediately affect stock,
+    // cashbook, debt and reports.
+    const workflowStatus = 'closed' as const;
     const paymentStatus = invoiceData.paymentStatus || (invoiceData.status === 'completed' ? 'paid' : invoiceData.status === 'partial' ? 'partial' : 'unpaid');
     const customer = invoiceData.customerId ? db.select().from(schema.customers).where(and(eq(schema.customers.id, invoiceData.customerId), eq(schema.customers.tenantId, req.user.tenantId))).get() : null;
     const normalizedItems = Array.isArray(items) ? items.map((raw: any) => {
@@ -2086,7 +2203,7 @@ const writeAudit = (req: Request, action: string, entityId: string, meta: Record
   }).run();
 };
 
-const postDraftInvoice = (req: Request, invoiceId: string, confirmedItems: any[]) => {
+function postDraftInvoice(req: Request, invoiceId: string, confirmedItems: any[]) {
   const invoice = invoiceById(req.user.tenantId, invoiceId);
   if (!invoice) throw new Error('Invoice not found');
   const now = new Date().toISOString();
@@ -2132,7 +2249,28 @@ const postDraftInvoice = (req: Request, invoiceId: string, confirmedItems: any[]
     db.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'income', amount: adjustedPaidAmount, category: 'Bán hàng', note: `Thu từ hóa đơn ${invoiceId}`, referenceId: invoiceId, accountId: resolvedAccountId, createdAt: now, createdBy: req.user.id }).run();
   }
   return db.update(schema.invoices).set({ totalAmount: confirmedTotal, finalAmount: adjustedFinalAmount, paidAmount: adjustedPaidAmount, debtAmount: adjustedDebtAmount, accountId: resolvedAccountId, status: adjustedLegacyStatus, workflowStatus: 'closed', paymentStatus: adjustedPaymentStatus, closedBy: req.user.id, closedAt: now, version: invoice.version + 1 }).where(eq(schema.invoices.id, invoiceId)).returning().get();
-};
+}
+
+function autoCloseLegacyInvoices(req: Request) {
+  const legacyInvoices = db.select().from(schema.invoices)
+    .where(and(
+      eq(schema.invoices.tenantId, req.user.tenantId),
+      ne(schema.invoices.workflowStatus, 'closed'),
+      ne(schema.invoices.workflowStatus, 'cancelled'),
+    )).all();
+
+  for (const invoice of legacyInvoices) {
+    try {
+      const items = db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoice.id)).all();
+      postDraftInvoice(req, invoice.id, items);
+      writeAudit(req, 'invoice.auto_close', invoice.id, { reason: 'Bỏ luồng kiểm bill khi tải lịch sử đơn' });
+    } catch (error) {
+      // Keep the record available for diagnostics if an old bill cannot be
+      // posted safely (for example, a later stock change made it invalid).
+      console.error(`Không thể tự chốt hóa đơn cũ ${invoice.id}:`, error);
+    }
+  }
+}
 
 app.patch('/api/invoices/:id', (req, res) => {
   try {

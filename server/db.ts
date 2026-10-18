@@ -403,6 +403,13 @@ sqlite.exec(`
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS units (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS price_lists (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL REFERENCES tenants(id),

@@ -92,6 +92,13 @@ export const categoriesApi = {
   remove: (id: string) => request<any>(`/categories/${id}`, { method: 'DELETE' }),
 };
 
+export const unitsApi = {
+  list: () => request<any[]>('/units'),
+  create: (data: { name: string }) => request<any>('/units', { method: 'POST', body: data }),
+  update: (id: string, data: { name: string }) => request<any>(`/units/${id}`, { method: 'PATCH', body: data }),
+  remove: (id: string) => request<any>(`/units/${id}`, { method: 'DELETE' }),
+};
+
 // ─── Products ──────────────────────────────────────────────
 export const productsApi = {
   list: (tenantId?: string, filters?: { category?: string; search?: string }) =>

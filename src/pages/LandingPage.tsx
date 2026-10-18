@@ -35,7 +35,7 @@ export default function LandingPage() {
   const accountLabel = currentUser?.name || currentUser?.email || 'Tài khoản';
 
   return (
-    <div className="erp-compact relative flex min-h-screen flex-col overflow-hidden bg-slate-50 text-slate-900">
+    <div className="erp-compact relative flex min-h-screen flex-col overflow-hidden bg-slate-50 text-slate-900 lg:h-screen lg:min-h-0">
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 bg-cover bg-center opacity-75"
@@ -44,7 +44,7 @@ export default function LandingPage() {
       <div aria-hidden="true" className="pointer-events-none absolute left-[12%] top-[20%] h-48 w-48 animate-[pulse_8s_ease-in-out_infinite] rounded-full bg-sky-300/10 blur-3xl" />
       <div aria-hidden="true" className="pointer-events-none absolute bottom-[18%] right-[14%] h-56 w-56 animate-[pulse_11s_ease-in-out_infinite] rounded-full bg-yellow-200/10 blur-3xl" />
       <header className="relative z-10 sticky top-0 border-b border-white/55 bg-white/45 backdrop-blur-sm">
-        <div className="mx-auto flex h-20 max-w-7xl items-center justify-between px-6 sm:px-8">
+        <div className="mx-auto flex h-20 max-w-7xl items-center justify-between px-6 sm:px-8 lg:h-16 lg:px-6">
           <button type="button" onClick={() => navigate('/')} className="flex items-center gap-3">
             <BrandMark />
           </button>
@@ -62,9 +62,9 @@ export default function LandingPage() {
         </div>
       </header>
 
-      <main className="relative z-10 mx-auto flex w-full max-w-7xl flex-1 overflow-hidden px-4 pb-10 pt-10 sm:px-6 lg:pb-12 lg:pt-12">
-        <div className="relative w-full">
-        <section className="mb-6 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+      <main className="landing-main relative z-10 mx-auto flex min-h-0 w-full max-w-7xl flex-1 overflow-y-auto px-4 pb-10 pt-10 sm:px-6 lg:overflow-hidden lg:pb-4 lg:pt-4">
+        <div className="relative h-full w-full">
+        <section className="mb-6 flex flex-col justify-between gap-3 sm:flex-row sm:items-end lg:mb-4 lg:gap-2">
           <div>
             <p className="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-sky-700">Trung Tâm Điều Khiển</p>
             <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Bạn muốn làm gì hôm nay?</h1>
@@ -75,13 +75,13 @@ export default function LandingPage() {
           </button>
         </section>
 
-        <section aria-labelledby="quick-actions" className="mb-8">
-          <div className="mb-3 flex items-center gap-2"><Plus className="h-4 w-4 text-sky-600" /><h2 id="quick-actions" className="text-sm font-semibold text-slate-800">Thao tác nhanh</h2></div>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <section aria-labelledby="quick-actions" className="mb-8 lg:mb-4">
+          <div className="mb-3 flex items-center gap-2 lg:mb-2"><Plus className="h-4 w-4 text-sky-600" /><h2 id="quick-actions" className="text-sm font-semibold text-slate-800">Thao tác nhanh</h2></div>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-2">
             {quickActions.map((item) => {
               const Icon = item.icon;
-              return <button type="button" key={item.path} onClick={() => navigate(item.path)} className={`group flex min-h-[128px] flex-col items-center justify-center gap-3 rounded-lg border border-white/70 p-4 text-center shadow-sm backdrop-blur-md transition duration-300 hover:-translate-y-1 hover:scale-[1.01] hover:border-sky-300 hover:bg-white/70 hover:shadow-lg ${item.surface === 'bg-white' ? 'bg-white/38' : item.surface}`}>
-                <span className={`flex h-12 w-12 items-center justify-center rounded-lg border ${item.tone}`}><Icon className="h-6 w-6" /></span>
+              return <button type="button" key={item.path} onClick={() => navigate(item.path)} className={`group flex min-h-[128px] flex-col items-center justify-center gap-3 rounded-lg border border-white/70 p-4 text-center shadow-sm backdrop-blur-md transition duration-300 hover:-translate-y-1 hover:scale-[1.01] hover:border-sky-300 hover:bg-white/70 hover:shadow-lg lg:min-h-[100px] lg:gap-2 lg:p-2 ${item.surface === 'bg-white' ? 'bg-white/38' : item.surface}`}>
+                <span className={`flex h-12 w-12 items-center justify-center rounded-lg border lg:h-9 lg:w-9 ${item.tone}`}><Icon className="h-6 w-6 lg:h-5 lg:w-5" /></span>
                 <span className="w-full"><span className="block text-sm font-semibold text-slate-900">{item.label}</span><span className="mt-0.5 block text-xs text-slate-500">{item.description}</span></span>
               </button>;
             })}
@@ -89,12 +89,12 @@ export default function LandingPage() {
         </section>
 
         <section aria-labelledby="modules">
-          <div className="mb-3 flex items-center gap-2"><Package className="h-4 w-4 text-slate-500" /><h2 id="modules" className="text-sm font-semibold text-slate-800">Phân hệ quản lý</h2></div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          <div className="mb-3 flex items-center gap-2 lg:mb-2"><Package className="h-4 w-4 text-slate-500" /><h2 id="modules" className="text-sm font-semibold text-slate-800">Phân hệ quản lý</h2></div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 lg:gap-2">
             {modules.map((item) => {
               const Icon = item.icon;
-              return <button type="button" key={item.path} onClick={() => navigate(item.path)} className={`group flex min-h-[132px] flex-col items-center justify-center gap-3 rounded-lg border border-white/70 p-4 text-center shadow-sm backdrop-blur-md transition duration-300 hover:-translate-y-1 hover:scale-[1.01] hover:border-sky-300 hover:shadow-lg ${item.surface}`}>
-                <span className={`flex h-10 w-10 items-center justify-center rounded-md border ${item.tone}`}><Icon className="h-5 w-5" /></span>
+              return <button type="button" key={item.path} onClick={() => navigate(item.path)} className={`group flex min-h-[132px] flex-col items-center justify-center gap-3 rounded-lg border border-white/70 p-4 text-center shadow-sm backdrop-blur-md transition duration-300 hover:-translate-y-1 hover:scale-[1.01] hover:border-sky-300 hover:shadow-lg lg:min-h-[104px] lg:gap-2 lg:p-2 ${item.surface}`}>
+                <span className={`flex h-10 w-10 items-center justify-center rounded-md border lg:h-8 lg:w-8 ${item.tone}`}><Icon className="h-5 w-5 lg:h-4 lg:w-4" /></span>
                 <span className="w-full min-w-0"><span className="block text-sm font-semibold leading-5 text-slate-900">{item.label}</span><span className="mt-1 block text-xs leading-4 text-slate-500">{item.description}</span></span>
               </button>;
             })}
@@ -104,17 +104,17 @@ export default function LandingPage() {
         </div>
       </main>
       <footer className="relative z-10 mt-auto border-t border-white/55 bg-white/45 backdrop-blur-sm">
-        <div className="mx-auto flex min-h-14 w-full max-w-7xl items-center justify-between gap-4 px-4 text-xs text-slate-500 sm:px-6">
+        <div className="mx-auto flex min-h-14 w-full max-w-7xl items-center justify-between gap-4 px-4 text-xs text-slate-500 sm:px-6 lg:min-h-10 lg:px-6">
           <span>HKD Smart · Kinh Doanh Tinh Gọn.</span>
           <a
             href="https://trandao.vn"
             target="_blank"
             rel="noreferrer"
             aria-label="Một sản phẩm của TRANDAO Investment"
-            className="inline-flex shrink-0 items-center gap-2 rounded-md bg-slate-900/80 px-2.5 py-1.5 text-[11px] font-medium text-white/85 shadow-sm transition hover:bg-slate-900 hover:text-white"
+            className="inline-flex shrink-0 items-center gap-2 text-[11px] font-medium text-slate-700/80 transition hover:text-slate-950"
           >
             <span className="whitespace-nowrap">Một sản phẩm của</span>
-            <img src="/branding/trandao-investment-logo-white.png" alt="TRANDAO Investment" className="h-4 w-auto max-w-[108px] object-contain" />
+            <img src="/branding/trandao-investment-logo-black.png" alt="TRANDAO Investment" className="h-4 w-auto max-w-[108px] object-contain" />
           </a>
         </div>
       </footer>

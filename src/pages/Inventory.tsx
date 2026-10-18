@@ -7,7 +7,7 @@ import { Button } from '../components/ui/Button';
 import { formatCurrency, normalizeSearchText } from '../lib/utils';
 import { Product } from '../types';
 import { v4 as uuid } from 'uuid';
-import { productsApi, stockMovementsApi, priceListsApi, productUnitsApi, productComponentsApi } from '../lib/api';
+import { productsApi, stockMovementsApi, priceListsApi, productUnitsApi, productComponentsApi, unitsApi } from '../lib/api';
 import * as XLSX from 'xlsx';
 import { BarcodeScannerModal } from '../components/barcode/BarcodeScannerModal';
 
@@ -100,18 +100,31 @@ export default function Inventory() {
   const [showPricingModal, setShowPricingModal] = useState(false);
   const [showInlinePriceListForm, setShowInlinePriceListForm] = useState(false);
   const [priceLists, setPriceLists] = useState<any[]>([]);
+  const [editingPriceListId, setEditingPriceListId] = useState<string | null>(null);
+  const [editingPriceListDraft, setEditingPriceListDraft] = useState({ name: '', customerType: 'all' });
   const [productVariantDrafts, setProductVariantDrafts] = useState<Array<{ name: string; factor: NumericDraft; barcode: string }>>([]);
   const [productComponentDrafts, setProductComponentDrafts] = useState<Array<{ componentProductId: string; quantity: NumericDraft }>>([]);
   const [productPriceDrafts, setProductPriceDrafts] = useState<Record<string, NumericDraft>>({});
   const [newPriceList, setNewPriceList] = useState({ name: '', customerType: 'all' });
   const [pricingMessage, setPricingMessage] = useState('');
+  const [catalogUnits, setCatalogUnits] = useState<any[]>([]);
+  const [editingUnitId, setEditingUnitId] = useState<string | null>(null);
+  const [editingUnitName, setEditingUnitName] = useState('');
+  const [unitMessage, setUnitMessage] = useState('');
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const unitOptions = useMemo(() => {
     const defaults = ['Cái', 'Chai', 'Thùng', 'Hộp', 'Gói', 'Bộ', 'Kg', 'Lít'];
     const dynamicUnits = products.map((p) => p.unit).filter(Boolean);
-    return Array.from(new Set([...defaults, ...customUnits, ...dynamicUnits]));
-  }, [customUnits, products]);
+    return Array.from(new Set([...defaults, ...customUnits, ...catalogUnits.map((unit) => unit.name), ...dynamicUnits, ...products.flatMap((product) => (product.units || []).map((unit: any) => unit.name))]));
+  }, [catalogUnits, customUnits, products]);
+
+  useEffect(() => {
+    if (!activeTenant) return;
+    void unitsApi.list()
+      .then((units) => setCatalogUnits(units))
+      .catch(() => setCatalogUnits([]));
+  }, [activeTenant]);
 
   const [productForm, setProductForm] = useState<ProductFormState>({
     name: '',
@@ -460,6 +473,63 @@ export default function Inventory() {
     }
   };
 
+  const beginEditPriceList = (list: any) => {
+    setEditingPriceListId(list.id);
+    setEditingPriceListDraft({ name: list.name, customerType: list.customerType || 'all' });
+    setPricingMessage('');
+  };
+
+  const savePriceList = async () => {
+    if (!editingPriceListId || !editingPriceListDraft.name.trim()) return;
+    try {
+      await priceListsApi.update(editingPriceListId, {
+        name: editingPriceListDraft.name.trim(),
+        customerType: editingPriceListDraft.customerType,
+      });
+      const lists = await priceListsApi.list(true);
+      setPriceLists(lists);
+      setEditingPriceListId(null);
+      setPricingMessage('Đã cập nhật bảng giá.');
+    } catch (err) {
+      setPricingMessage(err instanceof Error ? err.message : 'Không thể cập nhật bảng giá.');
+    }
+  };
+
+  const deletePriceList = async (list: any) => {
+    if (list.isDefault) {
+      setPricingMessage('Không thể xóa bảng giá mặc định.');
+      return;
+    }
+    if (!window.confirm(`Xóa bảng giá "${list.name}"? Các giá đã nhập trong bảng này cũng sẽ bị xóa.`)) return;
+    try {
+      await priceListsApi.remove(list.id);
+      const lists = await priceListsApi.list(true);
+      setPriceLists(lists);
+      setPricingMessage('Đã xóa bảng giá.');
+    } catch (err) {
+      setPricingMessage(err instanceof Error ? err.message : 'Không thể xóa bảng giá.');
+    }
+  };
+
+  const refreshUnitCatalog = async () => {
+    try {
+      const units = await unitsApi.list();
+      setCatalogUnits(units);
+      return units;
+    } catch (err) {
+      setUnitMessage(err instanceof Error ? err.message : 'Không thể tải đơn vị tính.');
+      return [];
+    }
+  };
+
+  const openUnitManager = async () => {
+    setUnitMessage('');
+    setEditingUnitId(null);
+    setEditingUnitName('');
+    await refreshUnitCatalog();
+    setShowUnitModal(true);
+  };
+
   const openStockEntry = (product: Product) => {
     setStockUpdatingProduct(product);
     setUpdateForm({
@@ -537,15 +607,52 @@ export default function Inventory() {
     else if (productForm.category === category.name) setProductForm((previous) => ({ ...previous, category: categories.find((item) => item.id !== category.id)?.name || '' }));
   };
 
-  const handleAddUnit = () => {
+  const handleAddUnit = async () => {
     const normalized = newUnitName.trim();
     if (!normalized) return;
-    if (!unitOptions.includes(normalized)) {
-      setCustomUnits((prev) => [...prev, normalized]);
+    try {
+      const unit = await unitsApi.create({ name: normalized });
+      setCatalogUnits((previous) => [...previous, unit]);
+      if (!unitOptions.includes(normalized)) {
+        setCustomUnits((prev) => [...prev, normalized]);
+      }
+      setProductForm((prev) => ({ ...prev, unit: normalized }));
+      setNewUnitName('');
+      setUnitMessage('Đã thêm đơn vị tính.');
+    } catch (err) {
+      setUnitMessage(err instanceof Error ? err.message : 'Không thể thêm đơn vị tính.');
     }
-    setProductForm((prev) => ({ ...prev, unit: normalized }));
-    setNewUnitName('');
-    setShowUnitModal(false);
+  };
+
+  const saveUnitName = async () => {
+    if (!editingUnitId || !editingUnitName.trim()) return;
+    try {
+      const currentUnit = catalogUnits.find((unit) => unit.id === editingUnitId);
+      const updated = await unitsApi.update(editingUnitId, { name: editingUnitName.trim() });
+      setCatalogUnits((previous) => previous.map((unit) => unit.id === editingUnitId ? { ...unit, ...updated } : unit));
+      if (currentUnit?.name === productForm.unit) setProductForm((previous) => ({ ...previous, unit: updated.name }));
+      setEditingUnitId(null);
+      setEditingUnitName('');
+      await refreshProducts();
+      setUnitMessage('Đã đổi tên đơn vị tính.');
+    } catch (err) {
+      setUnitMessage(err instanceof Error ? err.message : 'Không thể đổi tên đơn vị tính.');
+    }
+  };
+
+  const deleteUnit = async (unit: any) => {
+    if (Number(unit.inUseCount) > 0) {
+      setUnitMessage('Đơn vị đang được dùng bởi sản phẩm hoặc biến thể. Hãy đổi đơn vị trước khi xóa.');
+      return;
+    }
+    if (!window.confirm(`Xóa đơn vị tính "${unit.name}"?`)) return;
+    try {
+      await unitsApi.remove(unit.id);
+      setCatalogUnits((previous) => previous.filter((item) => item.id !== unit.id));
+      setUnitMessage('Đã xóa đơn vị tính.');
+    } catch (err) {
+      setUnitMessage(err instanceof Error ? err.message : 'Không thể xóa đơn vị tính.');
+    }
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1049,6 +1156,39 @@ export default function Inventory() {
                 <ListFilter className="h-4 w-4" />
                 Kiểm kê
               </Button>
+              <Button
+                variant="outline"
+                className="h-11 w-full justify-start gap-2"
+                onClick={() => {
+                  setShowMobileActionSheet(false);
+                  setShowCategoryModal(true);
+                }}
+              >
+                <Layers className="h-4 w-4" />
+                Quản lý danh mục
+              </Button>
+              <Button
+                variant="outline"
+                className="h-11 w-full justify-start gap-2"
+                onClick={() => {
+                  setShowMobileActionSheet(false);
+                  void openUnitManager();
+                }}
+              >
+                <Tag className="h-4 w-4" />
+                Quản lý đơn vị tính
+              </Button>
+              <Button
+                variant="outline"
+                className="h-11 w-full justify-start gap-2"
+                onClick={() => {
+                  setShowMobileActionSheet(false);
+                  void openPricing();
+                }}
+              >
+                <Settings2 className="h-4 w-4" />
+                Quản lý bảng giá
+              </Button>
             </div>
           </div>
         </div>
@@ -1201,7 +1341,7 @@ export default function Inventory() {
                           onClick={() => setShowCategoryModal(true)}
                           className="text-[11px] font-semibold text-sky-600 hover:text-sky-700"
                         >
-                          + Thêm mới
+                          Quản lý
                         </button>
                     </div>
                     <select 
@@ -1239,10 +1379,10 @@ export default function Inventory() {
                     <div className="flex items-center justify-between px-1">
                       <label className="text-[11px] font-semibold text-slate-500">Đơn vị tính</label>
                       <button
-                        onClick={() => setShowUnitModal(true)}
+                        onClick={() => void openUnitManager()}
                         className="text-[11px] font-semibold text-sky-600 hover:text-sky-700"
                       >
-                        + Thêm mới
+                        Quản lý
                       </button>
                     </div>
                     <select
@@ -1451,10 +1591,38 @@ export default function Inventory() {
                   <span className="text-[11px] font-medium text-slate-400">{priceLists.length} bảng</span>
                 </div>
                 <div className="divide-y divide-slate-100">
-                  {priceLists.map((list: any) => <div key={list.id} className="flex items-center justify-between gap-3 px-3 py-2">
-                    <span className="min-w-0 truncate text-xs font-medium text-slate-700">{list.name}</span>
-                    <span className="shrink-0 text-[11px] text-slate-400">{list.isDefault ? 'Mặc định' : list.customerType === 'loyal' ? 'Thân thiết' : list.customerType === 'retail' ? 'Bán lẻ' : 'Mọi nhóm khách'}</span>
-                  </div>)}
+                  {priceLists.map((list: any) => editingPriceListId === list.id ? (
+                    <div key={list.id} className="space-y-2 bg-slate-50 px-3 py-2">
+                      <Input
+                        autoFocus
+                        value={editingPriceListDraft.name}
+                        onChange={(event) => setEditingPriceListDraft((previous) => ({ ...previous, name: event.target.value }))}
+                        className="h-8 bg-white text-xs"
+                      />
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={editingPriceListDraft.customerType}
+                          onChange={(event) => setEditingPriceListDraft((previous) => ({ ...previous, customerType: event.target.value }))}
+                          className="h-8 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-xs"
+                        >
+                          <option value="all">Mọi nhóm khách</option><option value="retail">Bán lẻ</option><option value="loyal">Khách thân thiết</option>
+                        </select>
+                        <Button type="button" className="h-8 px-2 text-xs" onClick={() => void savePriceList()}>Lưu</Button>
+                        <Button type="button" variant="outline" className="h-8 px-2 text-xs" onClick={() => setEditingPriceListId(null)}>Hủy</Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div key={list.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-medium text-slate-700">{list.name}</p>
+                        <p className="text-[11px] text-slate-400">{list.isDefault ? 'Mặc định' : list.customerType === 'loyal' ? 'Thân thiết' : list.customerType === 'retail' ? 'Bán lẻ' : 'Mọi nhóm khách'}</p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button type="button" onClick={() => beginEditPriceList(list)} className="rounded-md p-1.5 text-sky-700 hover:bg-sky-50" aria-label={`Sửa bảng giá ${list.name}`} title="Sửa bảng giá"><Edit3 className="h-3.5 w-3.5" /></button>
+                        <button type="button" onClick={() => void deletePriceList(list)} disabled={Boolean(list.isDefault)} className="rounded-md p-1.5 text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Xóa bảng giá ${list.name}`} title={list.isDefault ? 'Không thể xóa bảng giá mặc định' : 'Xóa bảng giá'}><Trash2 className="h-3.5 w-3.5" /></button>
+                      </div>
+                    </div>
+                  ))}
                   {priceLists.length === 0 && <p className="px-3 py-3 text-xs text-slate-500">Chưa có bảng giá nào.</p>}
                 </div>
               </div>
@@ -1484,14 +1652,14 @@ export default function Inventory() {
                    <div className="h-10 w-10 rounded-lg bg-sky-600 text-white flex items-center justify-center">
                       <Layers className="h-5 w-5" />
                    </div>
-                   <h3 className="font-black text-slate-900 uppercase italic tracking-tight">Thêm danh mục</h3>
+                   <h3 className="font-semibold text-slate-900">Quản lý nhóm sản phẩm</h3>
                 </div>
                 <button onClick={() => setShowCategoryModal(false)} className="text-slate-300 hover:text-red-500">
                    <X className="h-5 w-5" />
                 </button>
               </div>
               <div className="space-y-2">
-                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">TÊN DANH MỤC MỚI</label>
+                <label className="text-[9px] font-semibold text-slate-400 uppercase tracking-widest ml-1">TÊN NHÓM SẢN PHẨM MỚI</label>
                 <Input 
                    value={newCategoryName}
                    onChange={e => setNewCategoryName(e.target.value)}
@@ -1503,11 +1671,11 @@ export default function Inventory() {
                 onClick={handleAddCategory}
                 className="w-full h-12 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-black uppercase tracking-widest"
               >
-                TẠO DANH MỤC
+                TẠO NHÓM
               </Button>
               <div className="border-t border-slate-100 pt-3">
                 <div className="mb-2 flex items-center justify-between">
-                  <p className="text-[11px] font-semibold text-slate-500">Danh mục hiện có</p>
+                  <p className="text-[11px] font-semibold text-slate-500">Nhóm sản phẩm hiện có</p>
                   <span className="text-[10px] text-slate-400">{categories.length}</span>
                 </div>
                 <div className="max-h-48 space-y-1 overflow-y-auto">
@@ -1624,30 +1792,60 @@ export default function Inventory() {
       {/* Unit Modal */}
       {showUnitModal && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
-          <div className="max-h-[calc(100dvh-1rem)] w-full max-w-sm space-y-5 overflow-y-auto rounded-lg border border-white bg-white p-4 shadow-2xl sm:space-y-6 sm:p-6">
+          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-md flex-col overflow-hidden rounded-lg border border-white bg-white p-4 shadow-2xl sm:p-6">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="h-10 w-10 rounded-lg bg-sky-600 text-white flex items-center justify-center">
                   <Layers className="h-5 w-5" />
                 </div>
-                <h3 className="font-black text-slate-900 uppercase italic tracking-tight">Thêm đơn vị tính</h3>
+                <div>
+                  <h3 className="font-semibold text-slate-900">Quản lý đơn vị tính</h3>
+                  <p className="text-[11px] text-slate-500">Đơn vị cơ sở và biến thể dùng trong sản phẩm</p>
+                </div>
               </div>
               <button onClick={() => setShowUnitModal(false)} className="text-slate-300 hover:text-red-500">
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="space-y-2">
-              <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">ĐƠN VỊ MỚI</label>
-              <Input
-                value={newUnitName}
-                onChange={e => setNewUnitName(e.target.value)}
-                className="h-12 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700"
-                placeholder="VD: Cuộn, Bộ, Mét"
-              />
+            <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto">
+              <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+                <p className="mb-2 text-xs font-semibold text-slate-700">Thêm đơn vị tính</p>
+                <div className="flex gap-2">
+                  <Input value={newUnitName} onChange={(event) => setNewUnitName(event.target.value)} className="h-9 min-w-0 flex-1 bg-white text-xs" placeholder="Ví dụ: Cuộn, Mét, Thùng" />
+                  <Button type="button" onClick={() => void handleAddUnit()} disabled={!newUnitName.trim()} className="h-9 px-3 text-xs">Thêm</Button>
+                </div>
+              </div>
+              <div className="rounded-lg border border-slate-200">
+                <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
+                  <p className="text-xs font-semibold text-slate-700">Đơn vị đã khai báo</p>
+                  <span className="text-[11px] text-slate-400">{catalogUnits.length}</span>
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {catalogUnits.map((unit: any) => editingUnitId === unit.id ? (
+                    <div key={unit.id} className="flex items-center gap-2 bg-slate-50 px-3 py-2">
+                      <Input autoFocus value={editingUnitName} onChange={(event) => setEditingUnitName(event.target.value)} className="h-8 min-w-0 flex-1 bg-white text-xs" />
+                      <button type="button" onClick={() => void saveUnitName()} className="rounded-md px-2 py-1 text-[11px] font-medium text-sky-700 hover:bg-sky-100">Lưu</button>
+                      <button type="button" onClick={() => { setEditingUnitId(null); setEditingUnitName(''); }} className="rounded-md px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-200">Hủy</button>
+                    </div>
+                  ) : (
+                    <div key={unit.id} className="flex items-center justify-between gap-2 px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-medium text-slate-700">{unit.name}</p>
+                        {Number(unit.inUseCount) > 0 && <p className="text-[10px] text-slate-400">Đang dùng ở {unit.inUseCount} sản phẩm/biến thể</p>}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button type="button" onClick={() => { setEditingUnitId(unit.id); setEditingUnitName(unit.name); setUnitMessage(''); }} className="rounded-md p-1.5 text-sky-700 hover:bg-sky-50" aria-label={`Sửa đơn vị ${unit.name}`} title="Sửa đơn vị"><Edit3 className="h-3.5 w-3.5" /></button>
+                        <button type="button" onClick={() => void deleteUnit(unit)} disabled={Number(unit.inUseCount) > 0} className="rounded-md p-1.5 text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Xóa đơn vị ${unit.name}`} title={Number(unit.inUseCount) > 0 ? 'Hãy đổi đơn vị đang sử dụng trước' : 'Xóa đơn vị'}><Trash2 className="h-3.5 w-3.5" /></button>
+                      </div>
+                    </div>
+                  ))}
+                  {!catalogUnits.length && <p className="px-3 py-4 text-center text-[11px] text-slate-400">Chưa có đơn vị được lưu. Các đơn vị của sản phẩm sẽ tự xuất hiện sau khi lưu.</p>}
+                </div>
+              </div>
+              {unitMessage && <p className="rounded-md bg-sky-50 px-3 py-2 text-[11px] text-sky-700">{unitMessage}</p>}
+              <p className="text-[11px] text-slate-500">Biến thể bán hàng được chỉnh sửa hoặc xóa trong phần <b>Biến thể đơn vị bán</b> khi mở sửa sản phẩm.</p>
             </div>
-            <Button onClick={handleAddUnit} className="w-full h-12 rounded-lg bg-sky-600 hover:bg-sky-700 font-black uppercase tracking-widest">
-              Lưu đơn vị
-            </Button>
+            <div className="mt-4 flex justify-end border-t border-slate-100 pt-3"><Button type="button" variant="outline" className="h-9 px-3 text-xs" onClick={() => setShowUnitModal(false)}>Đóng</Button></div>
           </div>
         </div>
       )}
@@ -1791,6 +1989,18 @@ export default function Inventory() {
               <span className="hidden min-[390px]:inline">Tác vụ</span>
             </Button>
           </div>
+          <Button variant="outline" onClick={() => setShowCategoryModal(true)} className="hidden lg:inline-flex h-9 px-3 rounded-lg text-xs gap-1.5">
+            <Layers className="h-4 w-4" />
+            Danh mục
+          </Button>
+          <Button variant="outline" onClick={openUnitManager} className="hidden lg:inline-flex h-9 px-3 rounded-lg text-xs gap-1.5">
+            <Tag className="h-4 w-4" />
+            Đơn vị tính
+          </Button>
+          <Button variant="outline" onClick={openPricing} className="hidden lg:inline-flex h-9 px-3 rounded-lg text-xs gap-1.5">
+            <Settings2 className="h-4 w-4" />
+            Bảng giá
+          </Button>
           <Button
             variant="outline"
             onClick={() => fileInputRef.current?.click()}

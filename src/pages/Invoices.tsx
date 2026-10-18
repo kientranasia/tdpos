@@ -25,8 +25,6 @@ export default function Invoices() {
   const [showMobileSearch, setShowMobileSearch] = useState(false);
   const [showFilterSheet, setShowFilterSheet] = useState(false);
   const [showInvoiceActions, setShowInvoiceActions] = useState(false);
-  const [lifecycleBusy, setLifecycleBusy] = useState(false);
-  const [lifecycleError, setLifecycleError] = useState('');
   const [showReturnModal, setShowReturnModal] = useState(false);
   const [returnLines, setReturnLines] = useState<Array<{ invoiceItemId: string; productName: string; quantity: number; maxQuantity: number; price: number }>>([]);
   const [returnAccountId, setReturnAccountId] = useState('');
@@ -129,42 +127,6 @@ export default function Invoices() {
     if (status === 'completed') return { label: 'Đã thanh toán', tone: 'status-chip-success' };
     if (status === 'partial') return { label: 'Thanh toán một phần', tone: 'status-chip-warning' };
     return { label: 'Chưa thanh toán', tone: 'status-chip-danger' };
-  };
-
-  const workflowMeta = (status?: Invoice['workflowStatus']) => {
-    switch (status) {
-      case 'draft': return { label: 'Nháp', tone: 'status-chip-info' };
-      case 'checked': return { label: 'Đã kiểm', tone: 'status-chip-warning' };
-      case 'picking': return { label: 'Đang lấy hàng', tone: 'status-chip-warning' };
-      case 'ready_to_close': return { label: 'Chờ chốt', tone: 'status-chip-warning' };
-      case 'cancelled': return { label: 'Đã hủy', tone: 'status-chip-danger' };
-      default: return { label: 'Đã chốt', tone: 'status-chip-success' };
-    }
-  };
-
-  const runLifecycleAction = async (action: 'check' | 'pick' | 'close' | 'cancel', invoiceId: string) => {
-    setLifecycleBusy(true);
-    setLifecycleError('');
-    try {
-      if (action === 'check') await invoicesApi.check(invoiceId);
-      if (action === 'pick') {
-        const items = selectedInvoiceId === invoiceId ? selectedInvoiceItems : await invoiceItemsApi.list(invoiceId);
-        await invoicesApi.pick(invoiceId, items.map((item) => ({
-          id: item.id,
-          pickedQuantity: Number(item.pickedQuantity ?? item.orderedQuantity ?? item.quantity),
-        })));
-      }
-      if (action === 'close') await invoicesApi.close(invoiceId);
-      if (action === 'cancel') {
-        if (!window.confirm('Hủy bill này? Tồn đang giữ sẽ được giải phóng.')) return;
-        await invoicesApi.cancel(invoiceId, 'Hủy theo thao tác người dùng');
-      }
-      await refreshInvoices();
-    } catch (error) {
-      setLifecycleError(error instanceof Error ? error.message : 'Không thể cập nhật trạng thái bill.');
-    } finally {
-      setLifecycleBusy(false);
-    }
   };
 
   const openReturnModal = async (invoice: Invoice) => {
@@ -535,7 +497,6 @@ export default function Invoices() {
                 <div className="mb-2 md:mb-0">
                   <button type="button" className="text-left text-sm font-semibold text-sky-700 hover:underline" onClick={() => setSelectedInvoiceId(inv.id)}>#{inv.documentNo || inv.id}</button>
                   <span className={`status-chip mt-1 ${meta.tone}`}>{meta.label}</span>
-                  <span className={`status-chip mt-1 ml-1 ${workflowMeta(inv.workflowStatus).tone}`}>{workflowMeta(inv.workflowStatus).label}</span>
                   {returnSummary && <p className="mt-1 text-xs font-medium text-orange-700">Đã trả {formatCurrency(returnSummary.total)} · {returnSummary.count} phiếu</p>}
                 </div>
                 {inv.customerId ? <button type="button" className="mb-2 text-left text-sm text-sky-700 hover:underline md:mb-0" onClick={() => navigate(`/app/customers/${inv.customerId}`)}>{customerName}</button> : <p className="mb-2 text-sm text-slate-800 md:mb-0">{customerName}</p>}
@@ -548,16 +509,6 @@ export default function Invoices() {
                   <p className="text-xs text-slate-500">Tạo bởi: {inv.createdByName || inv.createdBy || 'N/A'}</p>
                 </div>
                 <div className="flex items-center justify-end gap-1">
-                  {inv.workflowStatus && inv.workflowStatus !== 'closed' && inv.workflowStatus !== 'cancelled' && (
-                    <Button
-                      variant="outline"
-                      className="h-8 px-2 text-xs"
-                      disabled={lifecycleBusy}
-                      onClick={() => void runLifecycleAction(inv.workflowStatus === 'draft' ? 'check' : inv.workflowStatus === 'checked' ? 'pick' : 'close', inv.id)}
-                    >
-                      {inv.workflowStatus === 'draft' ? 'Kiểm bill' : inv.workflowStatus === 'checked' ? 'Lấy hàng' : 'Chốt bill'}
-                    </Button>
-                  )}
                   {inv.workflowStatus === 'closed' && <Button variant="outline" className="h-8 px-2 text-xs" onClick={() => { setSelectedInvoiceId(inv.id); void openReturnModal(inv); }}><RotateCcw className="mr-1 h-3.5 w-3.5" />Trả hàng</Button>}
                   <Button variant="ghost" size="icon" onClick={() => printInvoice(inv.id)}>
                     <Printer className="h-4 w-4" />
@@ -758,7 +709,6 @@ export default function Invoices() {
                 <span className="text-slate-500">Trạng thái</span>
                 <div className="flex gap-1">
                   <span className={`status-chip ${statusMeta(effectiveStatusOf(selectedInvoice)).tone}`}>{statusMeta(effectiveStatusOf(selectedInvoice)).label}</span>
-                  <span className={`status-chip ${workflowMeta(selectedInvoice.workflowStatus).tone}`}>{workflowMeta(selectedInvoice.workflowStatus).label}</span>
                 </div>
               </div>
               <div className="flex items-center justify-between">
@@ -786,21 +736,7 @@ export default function Invoices() {
               )}
             </div>
 
-            {lifecycleError && <p className="mt-3 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700">{lifecycleError}</p>}
             <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
-              {selectedInvoice.workflowStatus && selectedInvoice.workflowStatus !== 'closed' && selectedInvoice.workflowStatus !== 'cancelled' && (
-                <>
-                  <Button
-                    variant="outline"
-                    className="h-10 text-sm"
-                    disabled={lifecycleBusy}
-                    onClick={() => void runLifecycleAction(selectedInvoice.workflowStatus === 'draft' ? 'check' : selectedInvoice.workflowStatus === 'checked' ? 'pick' : 'close', selectedInvoice.id)}
-                  >
-                    {selectedInvoice.workflowStatus === 'draft' ? 'Kiểm bill' : selectedInvoice.workflowStatus === 'checked' ? 'Bắt đầu lấy hàng' : 'Chốt bill'}
-                  </Button>
-                  <Button variant="outline" className="h-10 text-sm text-rose-700" disabled={lifecycleBusy} onClick={() => void runLifecycleAction('cancel', selectedInvoice.id)}>Hủy bill</Button>
-                </>
-              )}
               {selectedInvoice.customerId && (
                 <Button variant="outline" className="h-10 text-sm" onClick={() => navigate(`/app/customers/${selectedInvoice.customerId}`)}>
                   <User className="mr-2 h-4 w-4" />
