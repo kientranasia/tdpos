@@ -106,7 +106,16 @@ export default function LandingPage() {
       <footer className="relative z-10 mt-auto border-t border-white/55 bg-white/45 backdrop-blur-sm">
         <div className="mx-auto flex min-h-14 w-full max-w-7xl items-center justify-between gap-4 px-4 text-xs text-slate-500 sm:px-6">
           <span>HKD Smart · Kinh Doanh Tinh Gọn.</span>
-          <a href="https://trandao.vn" target="_blank" rel="noreferrer" className="shrink-0 text-slate-400 transition hover:text-sky-600 hover:underline">© TRANDAO Investment</a>
+          <a
+            href="https://trandao.vn"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Một sản phẩm của TRANDAO Investment"
+            className="inline-flex shrink-0 items-center gap-2 rounded-md bg-slate-900/80 px-2.5 py-1.5 text-[11px] font-medium text-white/85 shadow-sm transition hover:bg-slate-900 hover:text-white"
+          >
+            <span className="whitespace-nowrap">Một sản phẩm của</span>
+            <img src="/branding/trandao-investment-logo-white.png" alt="TRANDAO Investment" className="h-4 w-auto max-w-[108px] object-contain" />
+          </a>
         </div>
       </footer>
     </div>
