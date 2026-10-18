@@ -334,7 +334,7 @@ export default function Customers() {
 
       {isOpenCreateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
-          <form onSubmit={handleCreateCustomer} className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5">
+          <form onSubmit={handleCreateCustomer} className="max-h-[calc(100dvh-1rem)] w-full max-w-md overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 sm:p-5">
             <h3 className="text-base font-semibold text-slate-900">Thêm khách hàng</h3>
             <div className="mt-4 space-y-3">
               <Input

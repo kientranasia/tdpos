@@ -287,12 +287,12 @@ export function BarcodeScannerModal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/75 p-3 backdrop-blur-sm sm:p-4">
+    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/75 p-2 backdrop-blur-sm sm:p-4">
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="barcode-scanner-title"
-        className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+        className="flex max-h-[calc(100dvh-1rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
       >
         <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 sm:px-5 sm:py-4">
           <div className="flex min-w-0 items-center gap-2">
@@ -313,7 +313,7 @@ export function BarcodeScannerModal({
           </button>
         </div>
 
-        <div className="space-y-3 p-3 sm:p-4">
+        <div className="min-h-0 space-y-3 overflow-y-auto p-3 sm:p-4">
           <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-slate-950">
             <video ref={videoRef} className="h-full w-full object-cover" muted playsInline autoPlay />
             <div className="pointer-events-none absolute inset-[14%_9%] rounded-xl border-2 border-white/90 shadow-[0_0_0_999px_rgba(15,23,42,0.28)]" />

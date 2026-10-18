@@ -887,7 +887,7 @@ export default function Invoices() {
       )}
       {showReturnModal && selectedInvoice && (
         <div className="fixed inset-0 z-[180] flex items-center justify-center bg-slate-900/60 p-4">
-          <div className="w-full max-w-2xl space-y-4 rounded-lg bg-white p-5 shadow-2xl">
+          <div className="max-h-[calc(100dvh-1rem)] w-full max-w-2xl space-y-4 overflow-y-auto rounded-lg bg-white p-4 shadow-2xl sm:p-5">
             <div className="flex items-center justify-between"><div><h2 className="font-semibold text-slate-900">Tạo phiếu trả hàng</h2><p className="text-xs text-slate-500">Hóa đơn #{selectedInvoice.id} · Chọn từng món và số lượng cần trả</p></div><button onClick={() => setShowReturnModal(false)}><X className="h-5 w-5 text-slate-400" /></button></div>
             <div className="rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-800">Phiếu trả hàng được liên kết với hóa đơn gốc, cập nhật lại tồn kho và ghi nhận hoàn tiền trong sổ quỹ.</div>
             <div className="space-y-2">{returnLines.map((line, index) => <div key={line.invoiceItemId} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded-md border border-slate-100 p-3"><div><p className="font-medium text-slate-900">{line.productName}</p><p className="text-xs text-slate-500">Còn có thể trả: {line.maxQuantity}</p></div><Input type="number" min="0" max={line.maxQuantity} value={line.quantity || ''} disabled={line.maxQuantity <= 0} onChange={(e) => setReturnLines(returnLines.map((row, i) => i === index ? { ...row, quantity: Math.min(row.maxQuantity, Number(e.target.value) || 0) } : row))} className="h-9 w-24" /><span className="text-sm text-slate-600">{formatCurrency(line.quantity * line.price)}</span></div>)}</div>

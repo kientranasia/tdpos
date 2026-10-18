@@ -866,7 +866,7 @@ export default function Inventory() {
 
       {showImportPreviewModal && (
         <div className="fixed inset-0 z-[130] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="w-full max-w-5xl rounded-lg border border-slate-200 bg-white shadow-2xl overflow-hidden">
+          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl">
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
               <h3 className="text-base font-semibold text-slate-900">Preview Import Sản phẩm</h3>
               <button onClick={() => setShowImportPreviewModal(false)} className="text-slate-400 hover:text-slate-700">
@@ -886,7 +886,7 @@ export default function Inventory() {
                 </button>
               </div>
             </div>
-            <div className="max-h-[60vh] overflow-auto">
+            <div className="min-h-0 flex-1 overflow-auto">
               <table className="w-full text-left text-sm">
                 <thead className="bg-slate-50 sticky top-0">
                   <tr>
@@ -931,7 +931,7 @@ export default function Inventory() {
                 </tbody>
               </table>
             </div>
-            <div className="px-5 py-4 border-t border-slate-100 flex justify-end gap-2">
+            <div className="flex shrink-0 justify-end gap-2 border-t border-slate-100 px-5 py-4">
               <Button variant="outline" onClick={() => setShowImportPreviewModal(false)}>Hủy</Button>
               <Button onClick={applyImportPreview} disabled={importing}>
                 {importing ? 'Đang import...' : 'Xác nhận import'}
@@ -987,14 +987,14 @@ export default function Inventory() {
       {/* Product Modal */}
       {showBulkCheckModal && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="w-full max-w-3xl rounded-lg border border-slate-200 bg-white shadow-2xl overflow-hidden">
+          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl">
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
               <h3 className="text-base font-semibold text-slate-900">Kiểm kê hàng loạt</h3>
               <button onClick={() => setShowBulkCheckModal(false)} className="text-slate-400 hover:text-slate-700">
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="max-h-[60vh] overflow-y-auto divide-y divide-slate-100">
+            <div className="min-h-0 flex-1 overflow-y-auto divide-y divide-slate-100">
               {visibleProducts.map((p) => (
                 <div key={p.id} className="px-5 py-3 grid grid-cols-12 items-center gap-3">
                   <div className="col-span-5">
@@ -1015,7 +1015,7 @@ export default function Inventory() {
                 </div>
               ))}
             </div>
-            <div className="px-5 py-4 border-t border-slate-100 flex justify-end gap-2">
+            <div className="flex shrink-0 justify-end gap-2 border-t border-slate-100 px-5 py-4">
               <Button variant="outline" onClick={() => setShowBulkCheckModal(false)}>Hủy</Button>
               <Button onClick={handleBulkCheckApply}>Áp dụng kiểm kê</Button>
             </div>
@@ -1362,7 +1362,7 @@ export default function Inventory() {
 
       {showPricingModal && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/60 p-3 backdrop-blur-sm">
-          <div className="w-full max-w-xl overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
               <div className="flex items-center gap-2.5">
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-50 text-sky-700"><Settings2 className="h-4 w-4" /></div>
@@ -1370,7 +1370,7 @@ export default function Inventory() {
               </div>
               <button onClick={() => setShowPricingModal(false)} className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X className="h-4 w-4" /></button>
             </div>
-            <div className="space-y-3 p-4">
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
               <div className="rounded-lg border border-slate-200">
                 <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
                   <div><h3 className="text-xs font-semibold text-slate-900">Bảng giá hiện có</h3><p className="text-[11px] text-slate-500">Giá từng sản phẩm được nhập trong form sản phẩm.</p></div>
@@ -1404,7 +1404,7 @@ export default function Inventory() {
       {/* Category Modal */}
       {showCategoryModal && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
-           <div className="bg-white w-full max-w-sm rounded-lg shadow-2xl border border-white overflow-hidden p-8 space-y-6">
+           <div className="max-h-[calc(100dvh-1rem)] w-full max-w-sm space-y-5 overflow-y-auto rounded-lg border border-white bg-white p-4 shadow-2xl sm:space-y-6 sm:p-6">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                    <div className="h-10 w-10 rounded-lg bg-sky-600 text-white flex items-center justify-center">
@@ -1438,7 +1438,7 @@ export default function Inventory() {
       {/* Unit Modal */}
       {showUnitModal && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-sm rounded-lg shadow-2xl border border-white overflow-hidden p-8 space-y-6">
+          <div className="max-h-[calc(100dvh-1rem)] w-full max-w-sm space-y-5 overflow-y-auto rounded-lg border border-white bg-white p-4 shadow-2xl sm:space-y-6 sm:p-6">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="h-10 w-10 rounded-lg bg-sky-600 text-white flex items-center justify-center">
@@ -1469,7 +1469,7 @@ export default function Inventory() {
       {/* Stock Entry Modal */}
       {showStockModal && stockUpdatingProduct && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-md rounded-lg shadow-2xl border border-white overflow-hidden animate-in slide-in-from-bottom-8 duration-500">
+          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-md flex-col overflow-y-auto rounded-lg border border-white bg-white shadow-2xl animate-in slide-in-from-bottom-8 duration-500">
              <div className="p-8 border-b border-slate-50 bg-slate-900">
                 <div className="flex justify-between items-start">
                    <div className="space-y-2">

@@ -496,7 +496,7 @@ export default function Debt() {
     <div className="erp-compact flex h-full flex-col overflow-hidden bg-slate-50 animate-in fade-in duration-500">
       {showDebtModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-slate-900/60 p-4 backdrop-blur-sm">
-          <div className="my-6 flex max-h-[calc(100vh-3rem)] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-white bg-white shadow-2xl">
+          <div className="my-2 flex max-h-[calc(100dvh-1rem)] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-white bg-white shadow-2xl sm:my-6 sm:max-h-[calc(100dvh-3rem)]">
             <div className="flex items-center justify-between">
               <h3 className="text-section-title px-6 pt-5">
                 {debtForm.type === 'decrease' ? 'Thu công nợ' : 'Tăng công nợ'}
@@ -579,7 +579,7 @@ export default function Debt() {
 
       {showZaloReminderModal && selectedZaloCustomer && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-lg border border-white bg-white p-6 shadow-2xl space-y-4">
+          <div className="max-h-[calc(100dvh-1rem)] w-full max-w-lg space-y-4 overflow-y-auto rounded-lg border border-white bg-white p-4 shadow-2xl sm:p-6">
             <div className="flex items-center justify-between">
               <h3 className="text-section-title">Nhắc nợ qua Zalo</h3>
               <button
@@ -653,7 +653,7 @@ export default function Debt() {
 
       {tagEditorCustomerId && (
         <div className="fixed inset-0 z-[109] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-lg border border-white bg-white p-6 shadow-2xl space-y-4">
+          <div className="max-h-[calc(100dvh-1rem)] w-full max-w-md space-y-4 overflow-y-auto rounded-lg border border-white bg-white p-4 shadow-2xl sm:p-6">
             <div className="flex items-center justify-between">
               <h3 className="text-section-title">Tag khách hàng</h3>
               <button onClick={() => setTagEditorCustomerId('')} className="h-8 w-8 rounded-lg bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center">

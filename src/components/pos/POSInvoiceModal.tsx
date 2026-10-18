@@ -148,9 +148,9 @@ export const POSInvoiceModal = forwardRef(({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="bg-white w-full max-w-lg rounded-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-200 sm:p-4">
+      <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-lg flex-col overflow-hidden rounded-lg bg-white shadow-2xl sm:max-h-[90vh]">
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white p-3 sm:p-6">
           <div className="flex items-center gap-3">
              <div className="h-10 w-10 rounded-lg bg-sky-50 text-sky-600 flex items-center justify-center">
                <Printer className="h-5 w-5" />
@@ -175,12 +175,12 @@ export const POSInvoiceModal = forwardRef(({
           />
         </div>
 
-        <div className="p-8 bg-white border-t border-slate-100 flex gap-4">
-          <Button variant="outline" className="flex-1 h-14 rounded-lg font-black uppercase tracking-widest bg-slate-50 border-none text-slate-600 hover:bg-slate-100 transition-all" onClick={onExportImage}>
-            <Download className="h-5 w-5 mr-2" /> Lưu ảnh
+        <div className="flex gap-2 border-t border-slate-100 bg-white p-3 sm:gap-4 sm:p-6">
+          <Button variant="outline" className="h-12 flex-1 rounded-lg bg-slate-50 text-xs font-black uppercase tracking-widest text-slate-600 transition-all hover:bg-slate-100 sm:h-14 sm:text-sm" onClick={onExportImage}>
+            <Download className="mr-2 h-4 w-4 sm:h-5 sm:w-5" /> Lưu ảnh
           </Button>
-          <Button className="flex-1 h-14 rounded-lg font-black uppercase tracking-widest bg-sky-600 hover:bg-sky-700 shadow-xl shadow-sky-900/20" onClick={onPrint}>
-            <Printer className="h-5 w-5 mr-2" /> In phiếu
+          <Button className="h-12 flex-1 rounded-lg bg-sky-600 text-xs font-black uppercase tracking-widest shadow-xl shadow-sky-900/20 hover:bg-sky-700 sm:h-14 sm:text-sm" onClick={onPrint}>
+            <Printer className="mr-2 h-4 w-4 sm:h-5 sm:w-5" /> In phiếu
           </Button>
         </div>
       </div>

@@ -864,7 +864,7 @@ export default function POS() {
 
       {variantProduct && (
         <div className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/35 p-3 backdrop-blur-[2px] sm:items-center" onMouseDown={() => setVariantProduct(null)}>
-          <div role="dialog" aria-modal="true" aria-label={`Chọn quy cách bán ${variantProduct.name}`} className="w-full max-w-md overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+          <div role="dialog" aria-modal="true" aria-label={`Chọn quy cách bán ${variantProduct.name}`} className="flex max-h-[calc(100dvh-1rem)] w-full max-w-md flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
             <div className="flex items-start justify-between border-b border-slate-100 px-4 py-3">
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">Sản phẩm có biến thể</p>
@@ -873,7 +873,7 @@ export default function POS() {
               </div>
               <button type="button" aria-label="Đóng chọn biến thể" onClick={() => setVariantProduct(null)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X className="h-4 w-4" /></button>
             </div>
-            <div className="max-h-[min(55vh,360px)] space-y-2 overflow-y-auto p-3">
+            <div className="min-h-0 space-y-2 overflow-y-auto p-3">
               {productUnits(variantProduct).map((unit) => {
                 const factor = Number(unit.factor) || 1;
                 const available = maxQuantityForUnit(variantProduct, factor);
@@ -1297,7 +1297,7 @@ export default function POS() {
 
       {showCustomerPicker && (
         <div className="fixed inset-0 z-[125] flex items-center justify-center bg-slate-900/40 p-3" onClick={() => { setShowCustomerPicker(false); setShowAddCustomer(false); }}>
-          <div className="w-full max-w-md overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-md flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
               <div>
                 <h3 className="text-sm font-semibold text-slate-900">{showAddCustomer ? 'Thêm khách hàng' : 'Chọn khách hàng'}</h3>
@@ -1317,7 +1317,7 @@ export default function POS() {
                 </div>
               </div>
             ) : (
-              <div className="p-4">
+              <div className="min-h-0 overflow-y-auto p-4">
                 <div className="flex gap-2">
                   <div className="relative flex-1">
                     <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />

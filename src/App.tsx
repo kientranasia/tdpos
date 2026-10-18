@@ -24,6 +24,7 @@ import Suppliers from './pages/Suppliers';
 import Partners from './pages/Partners';
 import SupplierDetail from './pages/SupplierDetail';
 import Reports from './pages/Reports';
+import InstallAppPrompt from './components/pwa/InstallAppPrompt';
 
 export default function App() {
   return (
@@ -54,6 +55,7 @@ export default function App() {
             <Route path="more" element={<MoreMenu />} />
           </Route>
         </Routes>
+        <InstallAppPrompt />
       </BrowserRouter>
     </AppProvider>
   );

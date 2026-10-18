@@ -170,7 +170,7 @@ export default function CustomerDetail() {
     <div className="erp-compact flex flex-col h-full bg-slate-50 animate-in fade-in duration-500 overflow-hidden">
       {showEditModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-lg border border-white bg-white p-6 shadow-2xl space-y-4">
+          <div className="max-h-[calc(100dvh-1rem)] w-full max-w-md space-y-4 overflow-y-auto rounded-lg border border-white bg-white p-4 shadow-2xl sm:p-6">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-black text-slate-900 uppercase tracking-tight">Sửa hồ sơ khách hàng</h3>
               <button onClick={() => setShowEditModal(false)} className="text-slate-400 hover:text-red-500">

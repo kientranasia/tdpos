@@ -2,10 +2,16 @@
 <html lang="vi">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0284c7" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="HKDCare" />
     <title>HKDCare | Quản lý gọn, an tâm kinh doanh</title>
     <link rel="icon" type="image/png" href="/branding/hkdplus-icon.png" />
     <link rel="apple-touch-icon" href="/branding/hkdplus-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <meta
       name="description"
       content="HKDCare giúp hộ kinh doanh quản lý bán hàng, hàng hóa, kho, công nợ và thu chi gọn gàng."
@@ -31,6 +37,20 @@
     />
   </head>
   <body>
+    <script>
+      (() => {
+        const hostname = window.location.hostname;
+        const isLoopback = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i.test(hostname);
+        const isPrivateNetwork = /^(10|192\.168)\.\d{1,3}\.\d{1,3}$/.test(hostname)
+          || /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(hostname)
+          || hostname.endsWith('.local');
+
+        if (window.location.protocol === 'http:' && !isLoopback && !isPrivateNetwork) {
+          const port = window.location.port && window.location.port !== '80' ? `:${window.location.port}` : '';
+          window.location.replace(`https://${hostname}${port}${window.location.pathname}${window.location.search}${window.location.hash}`);
+        }
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
