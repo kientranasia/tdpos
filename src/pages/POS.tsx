@@ -9,6 +9,7 @@ import { toPng } from 'html-to-image';
 import download from 'downloadjs';
 import { v4 as uuid } from 'uuid';
 import { cashAccountsApi, priceListsApi } from '../lib/api';
+import { applyPriceListAdjustment } from '../lib/priceLists';
 
 // Components
 import { POSCartItem } from '../components/pos/POSCartItem';
@@ -70,6 +71,7 @@ export default function POS() {
   const [orderNote, setOrderNote] = useState('');
   const [orderDiscountType, setOrderDiscountType] = useState<'percent' | 'amount'>('amount');
   const [orderDiscountValue, setOrderDiscountValue] = useState(0);
+  const [actualPaymentAmount, setActualPaymentAmount] = useState<number | string>(0);
   const [drafts, setDrafts] = useState<OrderDraft[]>([]);
   const [activeOrderTab, setActiveOrderTab] = useState<'live' | string>('live');
   const [step, setStep] = useState<'cart' | 'payment' | 'success'>('cart');
@@ -85,7 +87,6 @@ export default function POS() {
   const [scanHint, setScanHint] = useState('');
   const [showMobileFilters, setShowMobileFilters] = useState(false);
   const [showOrderItemsSheet, setShowOrderItemsSheet] = useState(false);
-  const [isDelivery, setIsDelivery] = useState(false);
   const isCashier = currentUser?.role === 'cashier';
 
   useEffect(() => {
@@ -126,7 +127,9 @@ export default function POS() {
     const item = list?.items?.find((row: any) => row.productId === product.id && row.unitName === unitName);
     if (item) return Number(item.price);
     const baseItem = list?.items?.find((row: any) => row.productId === product.id && row.unitName === product.unit);
-    return (baseItem ? Number(baseItem.price) : Number(product.sellingPrice)) * unitFactor;
+    const basePrice = baseItem ? Number(baseItem.price) : Number(product.sellingPrice);
+    const adjustedBasePrice = baseItem || !list ? basePrice : applyPriceListAdjustment(basePrice, list);
+    return adjustedBasePrice * unitFactor;
   };
 
   const displayPrice = (product: Product) => resolvePrice(product, product.unit, 1);
@@ -376,6 +379,14 @@ export default function POS() {
     return Math.min(totalAmount, Math.max(0, Number(orderDiscountValue) || 0));
   }, [orderDiscountType, orderDiscountValue, totalAmount]);
   const finalAmount = Math.max(0, totalAmount - orderDiscountAmount + taxAmount);
+  const previousDebtAmount = Math.max(0, Number(selectedCustomer?.totalDebt) || 0);
+  const actualPayment = Math.max(0, Number(actualPaymentAmount) || 0);
+  const amountAppliedToInvoice = Math.min(finalAmount, actualPayment);
+  const debtPaymentAmount = Math.min(previousDebtAmount, Math.max(0, actualPayment - finalAmount));
+  const invoiceDebtAmount = Math.max(0, finalAmount - amountAppliedToInvoice);
+  const totalReceivable = finalAmount + previousDebtAmount;
+  const changeAmount = Math.max(0, actualPayment - totalReceivable);
+  const remainingCustomerDebt = Math.max(0, previousDebtAmount - debtPaymentAmount + invoiceDebtAmount);
 
   const updateLineDiscount = (lineId: string, discountPercent: number) => {
     setCart((prev) => prev.map((item) => {
@@ -410,6 +421,7 @@ export default function POS() {
     setCart([]);
     setSelectedCustomer(null);
     setPaymentMethod('cash');
+    setActualPaymentAmount(0);
     setOrderNote('');
     setOrderDiscountType('amount');
     setOrderDiscountValue(0);
@@ -423,6 +435,7 @@ export default function POS() {
     setOrderNote(draft.orderNote || '');
     setOrderDiscountType(draft.orderDiscountType || 'amount');
     setOrderDiscountValue(draft.orderDiscountValue || 0);
+    setActualPaymentAmount(0);
     setStep('cart');
     setActiveOrderTab(draft.id);
   };
@@ -438,6 +451,7 @@ export default function POS() {
     setCart([]);
     setSelectedCustomer(null);
     setPaymentMethod('cash');
+    setActualPaymentAmount(0);
     setOrderNote('');
     setOrderDiscountType('amount');
     setOrderDiscountValue(0);
@@ -445,11 +459,22 @@ export default function POS() {
     setActiveOrderTab('live');
   };
 
+  const openPaymentStep = () => {
+    setFormError('');
+    setActualPaymentAmount(paymentMethod === 'debt' ? 0 : finalAmount);
+    setStep('payment');
+  };
+
+  const selectPaymentMethod = (nextMethod: PaymentMethod) => {
+    setPaymentMethod(nextMethod);
+    setActualPaymentAmount(nextMethod === 'debt' ? 0 : finalAmount);
+  };
+
   const handleCheckout = () => {
     setFormError('');
     if (!activeTenant || !currentUser || cart.length === 0) return;
-    if (paymentMethod === 'debt' && !selectedCustomer) {
-      setFormError('Vui lòng chọn khách hàng để ghi nợ.');
+    if (invoiceDebtAmount > 0 && !selectedCustomer) {
+      setFormError('Khách lẻ cần thanh toán đủ toa hoặc chọn khách hàng để ghi nợ.');
       return;
     }
 
@@ -462,15 +487,17 @@ export default function POS() {
       discount: orderDiscountAmount,
       taxAmount,
       finalAmount,
-      paidAmount: paymentMethod === 'debt' ? 0 : finalAmount,
-      debtAmount: paymentMethod === 'debt' ? finalAmount : 0,
+      paidAmount: paymentMethod === 'debt' ? 0 : actualPayment,
+      debtAmount: paymentMethod === 'debt' ? finalAmount : invoiceDebtAmount,
+      previousDebtAmount,
+      changeAmount: paymentMethod === 'debt' ? 0 : changeAmount,
       paymentMethod,
       accountId: paymentMethod === 'debt' ? null : selectedAccountId || null,
-      status: paymentMethod === 'debt' ? 'unpaid' : 'completed',
+      status: paymentMethod === 'debt' || invoiceDebtAmount > 0 ? (actualPayment > 0 ? 'partial' : 'unpaid') : 'completed',
       // POS checkout is already the completed sale flow. Posting it as closed
       // makes stock, cashbook, debt and reports update immediately.
       workflowStatus: 'closed',
-      paymentStatus: paymentMethod === 'debt' ? 'unpaid' : 'paid',
+      paymentStatus: paymentMethod === 'debt' || invoiceDebtAmount > 0 ? (actualPayment > 0 ? 'partial' : 'unpaid') : 'paid',
       note: orderNote?.trim() || '',
       createdAt: new Date().toISOString()
     };
@@ -489,6 +516,7 @@ export default function POS() {
     setStep('success');
     setCart([]);
     setOrderDiscountValue(0);
+    setActualPaymentAmount(0);
     setOrderNote('');
     if (activeOrderTab !== 'live') {
       setDrafts((prev) => prev.filter((d) => d.id !== activeOrderTab));
@@ -737,6 +765,15 @@ export default function POS() {
             </button>
 
             <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-4">
+              {selectedCustomer && (
+                <div className="rounded-lg border border-orange-100 bg-orange-50/70 px-3 py-2.5">
+                  <div className="flex items-center justify-between gap-3 text-[15px]">
+                    <span className="text-orange-900">Công nợ cũ · {selectedCustomer.name}</span>
+                    <span className="font-semibold tabular-nums text-orange-700">{formatCurrency(previousDebtAmount)}</span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-orange-800/75">Tiền trả sẽ ưu tiên thanh toán toa này, phần còn lại cấn trừ công nợ cũ.</p>
+                </div>
+              )}
               <div className="flex items-center justify-between text-[17px]">
                 <span className="text-slate-900">Tổng tiền hàng</span>
                 <div className="flex items-center gap-2">
@@ -760,10 +797,52 @@ export default function POS() {
                 <span className="text-slate-900">Khách cần trả</span>
                 <span className="font-semibold text-sky-600 tabular-nums">{formatCurrency(finalAmount)}</span>
               </div>
-              <div className="flex items-center justify-between text-[17px]">
-                <span className="text-slate-900">Khách thanh toán</span>
-                <span className="tabular-nums">{formatCurrency(finalAmount)}</span>
+              {selectedCustomer && (
+                <div className="flex items-center justify-between border-t border-dashed border-slate-200 pt-3 text-[17px]">
+                  <span className="font-semibold text-slate-900">Tổng phải thu</span>
+                  <span className="font-semibold tabular-nums text-slate-900">{formatCurrency(totalReceivable)}</span>
+                </div>
+              )}
+              <div className="rounded-lg border border-sky-200 bg-sky-50/60 px-3 py-2.5">
+                <label className="flex items-center justify-between gap-3 text-[15px] font-medium text-slate-900">
+                  <span>Khách trả thực tế</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1000"
+                    inputMode="numeric"
+                    value={actualPaymentAmount}
+                    onChange={(event) => setActualPaymentAmount(event.target.value)}
+                    disabled={paymentMethod === 'debt'}
+                    className="h-9 w-36 rounded-md border border-sky-200 bg-white px-2 text-right text-[15px] font-semibold tabular-nums text-sky-700 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/15 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                  />
+                </label>
+                {paymentMethod === 'debt' && <p className="mt-1 text-[11px] text-slate-500">Đang ghi nợ toàn bộ toa này.</p>}
               </div>
+              {debtPaymentAmount > 0 && (
+                <div className="flex items-center justify-between text-[15px] text-emerald-700">
+                  <span>Cấn trừ công nợ cũ</span>
+                  <span className="font-semibold tabular-nums">-{formatCurrency(debtPaymentAmount)}</span>
+                </div>
+              )}
+              {invoiceDebtAmount > 0 && (
+                <div className="flex items-center justify-between text-[15px] text-orange-700">
+                  <span>Công nợ phát sinh từ toa này</span>
+                  <span className="font-semibold tabular-nums">{formatCurrency(invoiceDebtAmount)}</span>
+                </div>
+              )}
+              {selectedCustomer && remainingCustomerDebt > 0 && (
+                <div className="flex items-center justify-between rounded-lg bg-orange-50 px-3 py-2 text-[15px] text-orange-800">
+                  <span className="font-medium">Công nợ còn lại</span>
+                  <span className="font-semibold tabular-nums">{formatCurrency(remainingCustomerDebt)}</span>
+                </div>
+              )}
+              {changeAmount > 0 && (
+                <div className="flex items-center justify-between text-[15px] text-emerald-700">
+                  <span>Tiền thừa trả khách</span>
+                  <span className="font-semibold tabular-nums">{formatCurrency(changeAmount)}</span>
+                </div>
+              )}
 
               <div className="flex gap-2">
                 <div className="flex-1 rounded-xl bg-slate-100 p-1 flex items-center gap-1">
@@ -776,7 +855,7 @@ export default function POS() {
                       key={method.key}
                       type="button"
                       disabled={method.key === 'debt' && isCashier}
-                      onClick={() => setPaymentMethod(method.key as PaymentMethod)}
+                      onClick={() => selectPaymentMethod(method.key as PaymentMethod)}
                       className={`h-10 px-3 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
                         paymentMethod === method.key ? 'bg-white text-sky-700 shadow-sm' : 'text-slate-600'
                       }`}
@@ -797,17 +876,6 @@ export default function POS() {
               )}
             </div>
 
-            <div className="rounded-xl border border-slate-200 bg-white px-4 py-4 flex items-center justify-between">
-              <span className="text-[17px] text-slate-900">Giao hàng</span>
-              <button
-                type="button"
-                aria-label="Toggle giao hàng"
-                onClick={() => setIsDelivery((v) => !v)}
-                className={`relative h-7 w-12 rounded-full transition-colors ${isDelivery ? 'bg-sky-600' : 'bg-slate-300'}`}
-              >
-                <span className={`absolute top-0.5 h-6 w-6 rounded-full bg-white transition-transform ${isDelivery ? 'translate-x-5' : 'translate-x-0.5'}`} />
-              </button>
-            </div>
           </div>
         </div>
 
@@ -1081,7 +1149,7 @@ export default function POS() {
           </div>
 
           <div className="hidden lg:block overflow-hidden rounded-md border border-slate-200 bg-white">
-            <div className="grid grid-cols-[78px_minmax(0,1fr)_42px_52px_75px_30px] gap-1 border-b border-slate-200 bg-slate-50 px-2 py-1.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">
+            <div className="grid grid-cols-[76px_minmax(0,1fr)_58px_62px_105px_30px] gap-1 border-b border-slate-200 bg-slate-50 px-2 py-1.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500">
               <span>Mã hàng</span><span>Tên hàng</span><span>ĐVT</span><span className="text-right">Tồn</span><span className="text-right">Giá bán</span><span />
             </div>
             {filteredProducts.map(product => {
@@ -1092,7 +1160,7 @@ export default function POS() {
               const out = available <= 0;
               const low = available > 0 && available <= product.lowStockThreshold;
               return (
-                <button key={product.id} type="button" disabled={out} onClick={() => chooseProductForSale(product)} className={`grid w-full grid-cols-[78px_minmax(0,1fr)_42px_52px_75px_30px] items-center gap-1 border-b border-slate-100 px-2 py-1.5 text-left text-[11px] last:border-0 ${out ? 'cursor-not-allowed opacity-50' : 'hover:bg-sky-50'} ${inCart ? 'bg-sky-50/70' : 'bg-white'}`}>
+                <button key={product.id} type="button" disabled={out} onClick={() => chooseProductForSale(product)} className={`grid w-full grid-cols-[76px_minmax(0,1fr)_58px_62px_105px_30px] items-center gap-1 border-b border-slate-100 px-2 py-1.5 text-left text-[11px] last:border-0 ${out ? 'cursor-not-allowed opacity-50' : 'hover:bg-sky-50'} ${inCart ? 'bg-sky-50/70' : 'bg-white'}`}>
                   <span className="truncate font-mono text-[10px] text-slate-500">{product.sku}</span>
                   <span className="min-w-0 truncate font-medium text-slate-800">{product.name}</span>
                   <span className="flex min-w-0 items-center gap-0.5 text-[10px] text-slate-500"><span className="truncate">{product.unit}</span>{units.length > 1 && <span className="rounded bg-sky-50 px-0.5 text-[8px] font-semibold text-sky-700">+{units.length - 1}</span>}</span>
@@ -1266,7 +1334,7 @@ export default function POS() {
           <Button 
             className="group relative h-9 w-full overflow-hidden rounded-md bg-sky-600 text-sm font-semibold text-white shadow-md shadow-sky-900/15 transition-all hover:bg-sky-700 active:scale-[0.98] lg:h-8"
             disabled={cart.length === 0}
-            onClick={() => setStep('payment')}
+            onClick={openPaymentStep}
           >
             <span className="relative z-10 flex items-center gap-2">
               Thanh toán <ChevronRight className="h-4 w-4 sm:h-6 sm:w-6 lg:h-4 lg:w-4 group-hover:translate-x-2 transition-transform duration-500" />
@@ -1290,7 +1358,7 @@ export default function POS() {
             <Button variant="outline" className="h-11" disabled={cart.length === 0} onClick={saveDraft}>
               Lưu tạm
             </Button>
-            <Button className="h-11" disabled={cart.length === 0} onClick={() => setStep('payment')}>
+            <Button className="h-11" disabled={cart.length === 0} onClick={openPaymentStep}>
               Thanh toán
             </Button>
           </div>

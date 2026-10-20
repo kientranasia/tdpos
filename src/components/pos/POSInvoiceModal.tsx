@@ -1,6 +1,7 @@
 import React, { ForwardedRef, forwardRef } from 'react';
 import { Invoice, InvoiceItem, Customer, Tenant } from '../../types';
 import { formatCurrency } from '../../lib/utils';
+import { getInvoiceReceiptSummary } from '../../lib/invoiceReceipt';
 import { Button } from '../ui/Button';
 import { X, Download, Printer } from 'lucide-react';
 import BrandMark from '../BrandMark';
@@ -28,8 +29,9 @@ const InvoiceContent = forwardRef(({
   currentInvoice,
   currentUserName
 }: Omit<POSInvoiceModalProps, 'isOpen' | 'onClose' | 'onExportImage' | 'onPrint'>, ref: ForwardedRef<HTMLDivElement>) => (
-  <div ref={ref} className={`bg-white rounded-lg border border-slate-100 shadow-sm print:border-none print:shadow-none min-h-fit ${activeTenant?.settings?.invoice?.printSize === 'receipt_80mm' ? 'mx-auto w-[302px] p-4' : 'p-8'}`}>
+  <div id="printable-invoice" ref={ref} className={`bg-white rounded-lg border border-slate-100 shadow-sm print:border-none print:shadow-none min-h-fit ${activeTenant?.settings?.invoice?.printSize === 'receipt_80mm' ? 'mx-auto w-[302px] p-4' : 'p-8'}`}>
     {(() => {
+      const receipt = getInvoiceReceiptSummary(currentInvoice || { totalAmount: 0, discount: 0, finalAmount: 0, paidAmount: 0, debtAmount: 0 });
       const invoiceSettings = activeTenant?.settings?.invoice;
       const storeTitle = invoiceSettings?.storeDisplayName || activeTenant?.name || 'Cửa hàng';
       const showAddress = invoiceSettings?.showAddress ?? true;
@@ -49,7 +51,7 @@ const InvoiceContent = forwardRef(({
       {invoiceSettings?.headerLine2 && <p className="text-[11px] text-slate-500">{invoiceSettings.headerLine2}</p>}
       <div className="h-px bg-slate-200 w-full my-4"></div>
       <h5 className="text-base font-bold text-slate-900 uppercase tracking-wide">HÓA ĐƠN BÁN HÀNG</h5>
-      <p className="text-[11px] text-slate-500 mt-1">{new Date().toLocaleString('vi-VN')}</p>
+      <p className="text-[11px] text-slate-500 mt-1">{new Date(currentInvoice?.createdAt || Date.now()).toLocaleString('vi-VN')}</p>
       <p className="text-[11px] text-slate-500 mt-1">Mã hóa đơn: {lastInvoiceId}</p>
     </div>
 
@@ -97,23 +99,39 @@ const InvoiceContent = forwardRef(({
       ))}
     </div>
 
-    <div className="space-y-2 pt-4 border-t border-slate-200">
+      <div className="space-y-2 pt-4 border-t border-slate-200">
       <div className="flex justify-between items-center text-sm">
-        <span className="text-slate-600">Tạm tính</span>
-        <span className="font-semibold text-slate-900">{formatCurrency(currentInvoice?.totalAmount || 0)}</span>
+        <span className="text-slate-600">Tổng hàng</span>
+        <span className="font-semibold text-slate-900">{formatCurrency(receipt.totalAmount)}</span>
       </div>
       <div className="flex justify-between items-center text-sm">
         <span className="text-slate-600">Giảm giá</span>
-        <span className="font-semibold text-slate-900">-{formatCurrency(currentInvoice?.discount || 0)}</span>
+        <span className="font-semibold text-slate-900">-{formatCurrency(receipt.discount)}</span>
       </div>
+      <div className="flex justify-between items-center text-sm">
+        <span className="text-slate-600">Khách cần trả</span>
+        <span className="font-semibold text-sky-700">{formatCurrency(receipt.amountDue)}</span>
+      </div>
+      {(currentInvoice?.customerId || receipt.previousDebt > 0) && <div className="flex justify-between items-center text-sm">
+        <span className="text-slate-600">Nợ cũ</span>
+        <span className="font-semibold text-orange-700">{formatCurrency(receipt.previousDebt)}</span>
+      </div>}
       <div className="flex justify-between items-end border-t border-slate-200 pt-2">
-        <span className="text-sm font-semibold text-slate-900">Tổng thanh toán</span>
-        <span className="text-2xl font-black text-slate-900 font-display tabular-nums leading-none">{formatCurrency(currentInvoice?.finalAmount || 0)}</span>
+        <span className="text-sm font-semibold text-slate-900">Tổng cuối toa</span>
+        <span className="text-2xl font-black text-slate-900 font-display tabular-nums leading-none">{formatCurrency(receipt.grandTotal)}</span>
       </div>
-      {currentInvoice?.debtAmount && currentInvoice.debtAmount > 0 ? (
+      <div className="flex justify-between items-center text-sm">
+        <span className="text-slate-600">Khách đã trả</span>
+        <span className="font-semibold text-slate-900">{formatCurrency(receipt.paidAmount)}</span>
+      </div>
+      <div className="flex justify-between items-center text-sm">
+        <span className="text-slate-600">Tiền thừa trả khách</span>
+        <span className="font-semibold text-emerald-700">{formatCurrency(receipt.changeAmount)}</span>
+      </div>
+      {receipt.remainingDebt > 0 ? (
         <div className="flex justify-between items-center pt-2">
-          <span className="text-xs font-semibold text-orange-600">Còn nợ</span>
-          <span className="text-sm font-semibold text-orange-600 tabular-nums">{formatCurrency(currentInvoice.debtAmount)}</span>
+          <span className="text-xs font-semibold text-orange-600">Công nợ còn lại</span>
+          <span className="text-sm font-semibold text-orange-600 tabular-nums">{formatCurrency(receipt.remainingDebt)}</span>
         </div>
       ) : null}
       {showOrderNote && currentInvoice?.note && (

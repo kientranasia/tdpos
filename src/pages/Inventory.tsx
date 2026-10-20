@@ -1,15 +1,17 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { Search, Plus, AlertTriangle, Package, ArrowUpDown, X, Save, Edit3, Tag, CheckCircle, Camera, Layers, Trash2, Upload, Download, ScanLine, Barcode, SlidersHorizontal, ListFilter, Ellipsis, Settings2 } from 'lucide-react';
+import { Search, Plus, AlertTriangle, Package, ArrowUpDown, X, Save, Edit3, Tag, Camera, Layers, Trash2, Upload, Download, ScanLine, Barcode, SlidersHorizontal, ListFilter, Ellipsis, Settings2, ChevronDown, ChevronUp } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { formatCurrency, normalizeSearchText } from '../lib/utils';
 import { Product } from '../types';
 import { v4 as uuid } from 'uuid';
-import { productsApi, stockMovementsApi, priceListsApi, productUnitsApi, productComponentsApi, unitsApi } from '../lib/api';
+import { stockMovementsApi, priceListsApi, productUnitsApi, productComponentsApi, unitsApi } from '../lib/api';
 import * as XLSX from 'xlsx';
 import { BarcodeScannerModal } from '../components/barcode/BarcodeScannerModal';
+import { CategoryManagerModal, PriceListManagerModal, UnitManagerModal } from '../components/inventory/InventoryManagers';
+import { applyPriceListAdjustment, formatPriceListAdjustment } from '../lib/priceLists';
 
 type ImportPreviewRow = {
   rowNumber: number;
@@ -17,6 +19,26 @@ type ImportPreviewRow = {
   errors: string[];
   payload: Partial<Product>;
   existingId?: string;
+};
+
+const technicalStockIdPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+
+const readableStockNote = (movement: any) => {
+  const note = movement.note || '';
+  const withDocument = movement.referenceLabel && movement.referenceId
+    ? note.replaceAll(movement.referenceId, movement.referenceLabel)
+    : note;
+  return withDocument.replace(technicalStockIdPattern, '').replace(/\s+·\s*$/, '').replace(/\s{2,}/g, ' ').trim();
+};
+
+const readableStockDocument = (movement: any) => {
+  const value = movement.documentNo || movement.referenceLabel || '';
+  return /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(value) ? '—' : value || '—';
+};
+
+const readableStockActor = (movement: any) => {
+  const actorName = String(movement.actorName || '').trim();
+  return actorName && actorName !== 'N/A' ? actorName : '—';
 };
 
 type NumericDraft = number | string;
@@ -34,12 +56,6 @@ type ProductFormState = {
   lowStockThreshold: NumericDraft;
   imageUrl: string;
   productType: 'standard' | 'combo';
-};
-
-type StockUpdateFormState = {
-  quantity: NumericDraft;
-  purchasePrice: NumericDraft;
-  sellingPrice: NumericDraft;
 };
 
 const parseNumericDraft = (value: string): NumericDraft => value;
@@ -66,16 +82,9 @@ export default function Inventory() {
   const [showProductModal, setShowProductModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [showUnitModal, setShowUnitModal] = useState(false);
-  const [showStockModal, setShowStockModal] = useState(false);
-  const [showBulkCheckModal, setShowBulkCheckModal] = useState(false);
   const [showMobileActionSheet, setShowMobileActionSheet] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
-  const [stockUpdatingProduct, setStockUpdatingProduct] = useState<Product | null>(null);
   
-  const [newCategoryName, setNewCategoryName] = useState('');
-  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
-  const [editingCategoryName, setEditingCategoryName] = useState('');
-  const [newUnitName, setNewUnitName] = useState('');
   const [customUnits, setCustomUnits] = useState<string[]>([]);
   const [savingProduct, setSavingProduct] = useState(false);
   const [formError, setFormError] = useState('');
@@ -84,8 +93,7 @@ export default function Inventory() {
   const [stockCardRows, setStockCardRows] = useState<any[]>([]);
   const [stockCardLoading, setStockCardLoading] = useState(false);
   const [stockCardError, setStockCardError] = useState('');
-  const [stockCheckActual, setStockCheckActual] = useState<NumericDraft>(0);
-  const [bulkCheckActuals, setBulkCheckActuals] = useState<Record<string, NumericDraft>>({});
+  const [stockCardTransactionFilter, setStockCardTransactionFilter] = useState('all');
   const [movementTypeFilter, setMovementTypeFilter] = useState<'all' | 'in' | 'out' | 'adjust'>('all');
   const [stockStatusFilter, setStockStatusFilter] = useState<'all' | 'in_stock' | 'low_stock' | 'out_of_stock'>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
@@ -100,17 +108,15 @@ export default function Inventory() {
   const [showPricingModal, setShowPricingModal] = useState(false);
   const [showInlinePriceListForm, setShowInlinePriceListForm] = useState(false);
   const [priceLists, setPriceLists] = useState<any[]>([]);
-  const [editingPriceListId, setEditingPriceListId] = useState<string | null>(null);
-  const [editingPriceListDraft, setEditingPriceListDraft] = useState({ name: '', customerType: 'all' });
-  const [productVariantDrafts, setProductVariantDrafts] = useState<Array<{ name: string; factor: NumericDraft; barcode: string }>>([]);
+  const [productVariantDrafts, setProductVariantDrafts] = useState<Array<{ id: string; name: string; factor: NumericDraft; barcode: string }>>([]);
+  const [productVariantPriceDrafts, setProductVariantPriceDrafts] = useState<Record<string, NumericDraft>>({});
   const [productComponentDrafts, setProductComponentDrafts] = useState<Array<{ componentProductId: string; quantity: NumericDraft }>>([]);
   const [productPriceDrafts, setProductPriceDrafts] = useState<Record<string, NumericDraft>>({});
-  const [newPriceList, setNewPriceList] = useState({ name: '', customerType: 'all' });
+  const [newPriceList, setNewPriceList] = useState({ name: '', customerType: 'all', markupMode: 'percent' as 'percent' | 'amount', markupValue: 0 as NumericDraft });
+  const [pricingExpanded, setPricingExpanded] = useState(true);
+  const [variantsExpanded, setVariantsExpanded] = useState(true);
   const [pricingMessage, setPricingMessage] = useState('');
   const [catalogUnits, setCatalogUnits] = useState<any[]>([]);
-  const [editingUnitId, setEditingUnitId] = useState<string | null>(null);
-  const [editingUnitName, setEditingUnitName] = useState('');
-  const [unitMessage, setUnitMessage] = useState('');
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const unitOptions = useMemo(() => {
@@ -157,12 +163,6 @@ export default function Inventory() {
     return candidate;
   };
 
-  const [stockUpdateForm, setUpdateForm] = useState<StockUpdateFormState>({
-    quantity: 0,
-    purchasePrice: 0,
-    sellingPrice: 0
-  });
-
   const resetProductForm = () => {
     setProductForm({
       name: '',
@@ -180,8 +180,11 @@ export default function Inventory() {
     });
     setEditingProduct(null);
     setProductVariantDrafts([]);
+    setProductVariantPriceDrafts({});
     setProductComponentDrafts([]);
     setProductPriceDrafts({});
+    setPricingExpanded(true);
+    setVariantsExpanded(true);
   };
 
   const comboBasePriceForList = (list: any, components = productComponentDrafts) => components.reduce((total, component) => {
@@ -194,15 +197,21 @@ export default function Inventory() {
   const productFormBasePrice = (list: any, components = productComponentDrafts) => {
     const draft = list?.id ? productPriceDrafts[list.id] : undefined;
     if (draft !== undefined && draft !== '') return Number(draft) || 0;
-    return productForm.productType === 'combo'
-      ? comboBasePriceForList(list, components)
-      : Number(productForm.sellingPrice || 0);
+    const defaultList = priceLists.find((item: any) => item.isDefault) || priceLists[0];
+    const defaultDraft = defaultList?.id ? productPriceDrafts[defaultList.id] : undefined;
+    const basePrice = productForm.productType === 'combo'
+      ? comboBasePriceForList(defaultList, components)
+      : defaultDraft !== undefined && defaultDraft !== ''
+        ? Number(defaultDraft) || 0
+        : Number(productForm.sellingPrice || 0);
+    if (!list || !defaultList || list.id === defaultList.id || list.isDefault) return basePrice;
+    return applyPriceListAdjustment(basePrice, list);
   };
 
   const loadProductPriceDrafts = (lists: any[], product: Product | null = null) => {
     setProductPriceDrafts(Object.fromEntries(lists.map((list: any) => {
       const saved = product ? list.items?.find((item: any) => item.productId === product.id && item.unitName === product.unit) : undefined;
-      return [list.id, product ? Number(saved?.price ?? product.sellingPrice ?? 0) : undefined];
+      return [list.id, product && saved?.price !== undefined ? Number(saved.price) : product && list.isDefault ? Number(product.sellingPrice || 0) : undefined];
     })));
   };
 
@@ -240,7 +249,7 @@ export default function Inventory() {
     }
 
     const variants = productVariantDrafts
-      .map((variant) => ({ name: variant.name.trim(), factor: Number(variant.factor), barcode: variant.barcode.trim() }))
+      .map((variant) => ({ id: variant.id, name: variant.name.trim(), factor: Number(variant.factor), barcode: variant.barcode.trim() }))
       .filter((variant) => variant.name);
     if (productForm.productType === 'standard') {
       if (variants.some((variant) => variant.name === productForm.unit.trim())) {
@@ -329,7 +338,11 @@ export default function Inventory() {
         const rows = [
           { productId, unitName: productForm.unit.trim(), unitFactor: 1, price: basePrice },
           ...(productForm.productType === 'standard'
-            ? variants.map((variant) => ({ productId, unitName: variant.name, unitFactor: variant.factor, price: basePrice * Number(variant.factor) }))
+            ? variants.map((variant) => {
+              const draftKey = `${list.id}::${variant.id}`;
+              const variantPrice = productVariantPriceDrafts[draftKey];
+              return { productId, unitName: variant.name, unitFactor: variant.factor, price: variantPrice === undefined || variantPrice === '' ? basePrice * Number(variant.factor) : Number(variantPrice) || 0 };
+            })
             : []),
         ];
         const existingItems = (list.items || []).filter((item: any) => item.productId !== productId);
@@ -342,73 +355,6 @@ export default function Inventory() {
     } catch (err) {
       setSavingProduct(false);
       setFormError(err instanceof Error ? err.message : 'Sản phẩm đã lưu nhưng chưa lưu được biến thể, combo hoặc bảng giá.');
-    }
-  };
-
-  const handleUpdateStock = async () => {
-    if (!stockUpdatingProduct) return;
-    const quantity = stockUpdateForm.quantity === '' ? NaN : Number(stockUpdateForm.quantity);
-    const purchasePrice = Number(stockUpdateForm.purchasePrice || 0);
-    const sellingPrice = Number(stockUpdateForm.sellingPrice || 0);
-    if (!Number.isFinite(quantity) || quantity <= 0) {
-      setFormError('Số lượng nhập kho phải lớn hơn 0.');
-      return;
-    }
-
-    await productsApi.adjustStock(stockUpdatingProduct.id, quantity, 'increase', 'Nhập kho thủ công');
-    const success = await updateProduct(stockUpdatingProduct.id, {
-      stock: stockUpdatingProduct.stock + quantity,
-      purchasePrice: purchasePrice > 0 ? purchasePrice : stockUpdatingProduct.purchasePrice,
-      sellingPrice: sellingPrice > 0 ? sellingPrice : stockUpdatingProduct.sellingPrice
-    });
-    if (success) {
-      const movements = await stockMovementsApi.list();
-      setStockMovements(movements.slice(0, 40));
-    }
-    if (!success) {
-      setFormError('Không thể cập nhật tồn kho. Vui lòng thử lại.');
-      return;
-    }
-
-    setShowStockModal(false);
-  };
-
-  const handleStockCheck = async (product: Product) => {
-    const actual = stockCheckActual === '' ? NaN : Number(stockCheckActual);
-    if (!Number.isFinite(actual) || actual < 0) {
-      setFormError('Số lượng kiểm kê không hợp lệ.');
-      return;
-    }
-    await stockMovementsApi.stockCheck(product.id, actual, 'Kiểm kê nhanh');
-    await updateProduct(product.id, { stock: actual });
-    const movements = await stockMovementsApi.list();
-    setStockMovements(movements.slice(0, 40));
-    setStockCheckActual(0);
-  };
-
-  const openBulkCheck = () => {
-    const defaults: Record<string, NumericDraft> = {};
-    visibleProducts.forEach((p) => { defaults[p.id] = p.stock; });
-    setBulkCheckActuals(defaults);
-    setShowBulkCheckModal(true);
-  };
-
-  const handleBulkCheckApply = async () => {
-    setFormError('');
-    try {
-      for (const product of visibleProducts) {
-        const draftActual = bulkCheckActuals[product.id];
-        const actual = draftActual === '' || draftActual === undefined ? NaN : Number(draftActual);
-        if (!Number.isFinite(actual) || actual < 0) continue;
-        if (actual === product.stock) continue;
-        await stockMovementsApi.stockCheck(product.id, actual, 'Kiểm kê hàng loạt');
-        await updateProduct(product.id, { stock: actual });
-      }
-      const movements = await stockMovementsApi.list();
-      setStockMovements(movements.slice(0, 40));
-      setShowBulkCheckModal(false);
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Không thể áp dụng kiểm kê hàng loạt.');
     }
   };
 
@@ -437,11 +383,19 @@ export default function Inventory() {
       ]);
       setPriceLists(lists);
       loadProductPriceDrafts(lists, product);
-      setProductVariantDrafts(units.filter((unit: any) => unit.name !== product.unit || Number(unit.factor) !== 1).map((unit: any) => ({ name: unit.name, factor: Number(unit.factor) || 1, barcode: unit.barcode || '' })));
+      const loadedVariants = units
+        .filter((unit: any) => unit.name !== product.unit || Number(unit.factor) !== 1)
+        .map((unit: any) => ({ id: unit.id || uuid(), name: unit.name, factor: Number(unit.factor) || 1, barcode: unit.barcode || '' }));
+      setProductVariantDrafts(loadedVariants);
+      setProductVariantPriceDrafts(Object.fromEntries(loadedVariants.flatMap((variant) => lists.map((list: any) => {
+        const saved = list.items?.find((item: any) => item.productId === product.id && item.unitName === variant.name);
+        return [`${list.id}::${variant.id}`, saved?.price === undefined ? '' : Number(saved.price)];
+      }))));
       setProductComponentDrafts(components.map((component: any) => ({ componentProductId: component.componentProductId, quantity: Number(component.quantity) })));
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Không thể tải cấu hình sản phẩm.');
       setProductVariantDrafts([]);
+      setProductVariantPriceDrafts({});
       setProductComponentDrafts([]);
     }
     setShowProductModal(true);
@@ -461,53 +415,15 @@ export default function Inventory() {
   const createPriceList = async () => {
     if (!newPriceList.name.trim()) return;
     try {
-      await priceListsApi.create({ name: newPriceList.name.trim(), customerType: newPriceList.customerType, active: true });
+      await priceListsApi.create({ name: newPriceList.name.trim(), customerType: newPriceList.customerType, markupMode: newPriceList.markupMode, markupValue: Number(newPriceList.markupValue) || 0, active: true });
       const lists = await priceListsApi.list(true);
       setPriceLists(lists);
-      setProductPriceDrafts((previous) => Object.fromEntries(lists.map((list: any) => [list.id, previous[list.id] ?? 0])));
-      setNewPriceList({ name: '', customerType: 'all' });
+      setProductPriceDrafts((previous) => Object.fromEntries(lists.map((list: any) => [list.id, previous[list.id]])));
+      setNewPriceList({ name: '', customerType: 'all', markupMode: 'percent', markupValue: 0 });
       setPricingMessage('Đã tạo bảng giá mới.');
       setShowInlinePriceListForm(false);
     } catch (err) {
       setPricingMessage(err instanceof Error ? err.message : 'Không thể tạo bảng giá.');
-    }
-  };
-
-  const beginEditPriceList = (list: any) => {
-    setEditingPriceListId(list.id);
-    setEditingPriceListDraft({ name: list.name, customerType: list.customerType || 'all' });
-    setPricingMessage('');
-  };
-
-  const savePriceList = async () => {
-    if (!editingPriceListId || !editingPriceListDraft.name.trim()) return;
-    try {
-      await priceListsApi.update(editingPriceListId, {
-        name: editingPriceListDraft.name.trim(),
-        customerType: editingPriceListDraft.customerType,
-      });
-      const lists = await priceListsApi.list(true);
-      setPriceLists(lists);
-      setEditingPriceListId(null);
-      setPricingMessage('Đã cập nhật bảng giá.');
-    } catch (err) {
-      setPricingMessage(err instanceof Error ? err.message : 'Không thể cập nhật bảng giá.');
-    }
-  };
-
-  const deletePriceList = async (list: any) => {
-    if (list.isDefault) {
-      setPricingMessage('Không thể xóa bảng giá mặc định.');
-      return;
-    }
-    if (!window.confirm(`Xóa bảng giá "${list.name}"? Các giá đã nhập trong bảng này cũng sẽ bị xóa.`)) return;
-    try {
-      await priceListsApi.remove(list.id);
-      const lists = await priceListsApi.list(true);
-      setPriceLists(lists);
-      setPricingMessage('Đã xóa bảng giá.');
-    } catch (err) {
-      setPricingMessage(err instanceof Error ? err.message : 'Không thể xóa bảng giá.');
     }
   };
 
@@ -516,34 +432,21 @@ export default function Inventory() {
       const units = await unitsApi.list();
       setCatalogUnits(units);
       return units;
-    } catch (err) {
-      setUnitMessage(err instanceof Error ? err.message : 'Không thể tải đơn vị tính.');
+    } catch {
       return [];
     }
   };
 
   const openUnitManager = async () => {
-    setUnitMessage('');
-    setEditingUnitId(null);
-    setEditingUnitName('');
     await refreshUnitCatalog();
     setShowUnitModal(true);
-  };
-
-  const openStockEntry = (product: Product) => {
-    setStockUpdatingProduct(product);
-    setUpdateForm({
-      quantity: 0,
-      purchasePrice: product.purchasePrice,
-      sellingPrice: product.sellingPrice
-    });
-    setShowStockModal(true);
   };
 
   const openStockCard = async (product: Product) => {
     setStockCardProduct(product);
     setStockCardRows([]);
     setStockCardError('');
+    setStockCardTransactionFilter('all');
     setStockCardLoading(true);
     try {
       const rows = await stockMovementsApi.list(product.id);
@@ -571,87 +474,85 @@ export default function Inventory() {
     }
   };
 
-  const handleAddCategory = async () => {
-    setFormError('');
-    if (!newCategoryName || !activeTenant) return;
-    const success = await addCategory({
-      id: uuid(),
-      tenantId: activeTenant.id,
-      name: newCategoryName
-    });
-    if (!success) {
-      setFormError('Không thể thêm danh mục.');
-      return;
-    }
-    setNewCategoryName('');
-    setShowCategoryModal(false);
+  const createCategoryForManager = async (name: string) => {
+    if (!activeTenant) return false;
+    return addCategory({ id: uuid(), tenantId: activeTenant.id, name });
   };
 
-  const handleRenameCategory = async (categoryId: string) => {
-    const name = editingCategoryName.trim();
-    if (!name) return;
-    const success = await updateCategory(categoryId, name);
-    if (!success) {
-      setFormError('Không thể đổi tên danh mục. Tên có thể đã tồn tại hoặc bạn chưa có quyền.');
-      return;
-    }
-    setEditingCategoryId(null);
-    setEditingCategoryName('');
-    setFormError('');
-  };
+  const renameCategoryForManager = async (categoryId: string, name: string) => updateCategory(categoryId, name);
 
-  const handleDeleteCategory = async (category: { id: string; name: string }) => {
-    if (!window.confirm(`Xóa danh mục "${category.name}"?`)) return;
+  const deleteCategoryForManager = async (category: { id: string; name: string }) => {
     const success = await deleteCategory(category.id);
-    if (!success) setFormError('Không thể xóa danh mục đang được sử dụng hoặc bạn chưa có quyền.');
-    else if (productForm.category === category.name) setProductForm((previous) => ({ ...previous, category: categories.find((item) => item.id !== category.id)?.name || '' }));
+    if (success && productForm.category === category.name) {
+      setProductForm((previous) => ({ ...previous, category: categories.find((item) => item.id !== category.id)?.name || '' }));
+    }
+    return success;
   };
 
-  const handleAddUnit = async () => {
-    const normalized = newUnitName.trim();
-    if (!normalized) return;
+  const createUnitForManager = async (name: string) => {
     try {
-      const unit = await unitsApi.create({ name: normalized });
+      const unit = await unitsApi.create({ name });
       setCatalogUnits((previous) => [...previous, unit]);
-      if (!unitOptions.includes(normalized)) {
-        setCustomUnits((prev) => [...prev, normalized]);
-      }
-      setProductForm((prev) => ({ ...prev, unit: normalized }));
-      setNewUnitName('');
-      setUnitMessage('Đã thêm đơn vị tính.');
-    } catch (err) {
-      setUnitMessage(err instanceof Error ? err.message : 'Không thể thêm đơn vị tính.');
+      if (!unitOptions.includes(name)) setCustomUnits((previous) => [...previous, name]);
+      setProductForm((previous) => ({ ...previous, unit: name }));
+      return true;
+    } catch {
+      return false;
     }
   };
 
-  const saveUnitName = async () => {
-    if (!editingUnitId || !editingUnitName.trim()) return;
+  const renameUnitForManager = async (unitId: string, name: string) => {
     try {
-      const currentUnit = catalogUnits.find((unit) => unit.id === editingUnitId);
-      const updated = await unitsApi.update(editingUnitId, { name: editingUnitName.trim() });
-      setCatalogUnits((previous) => previous.map((unit) => unit.id === editingUnitId ? { ...unit, ...updated } : unit));
+      const currentUnit = catalogUnits.find((unit) => unit.id === unitId);
+      const updated = await unitsApi.update(unitId, { name });
+      setCatalogUnits((previous) => previous.map((unit) => unit.id === unitId ? { ...unit, ...updated } : unit));
       if (currentUnit?.name === productForm.unit) setProductForm((previous) => ({ ...previous, unit: updated.name }));
-      setEditingUnitId(null);
-      setEditingUnitName('');
       await refreshProducts();
-      setUnitMessage('Đã đổi tên đơn vị tính.');
-    } catch (err) {
-      setUnitMessage(err instanceof Error ? err.message : 'Không thể đổi tên đơn vị tính.');
+      return true;
+    } catch {
+      return false;
     }
   };
 
-  const deleteUnit = async (unit: any) => {
-    if (Number(unit.inUseCount) > 0) {
-      setUnitMessage('Đơn vị đang được dùng bởi sản phẩm hoặc biến thể. Hãy đổi đơn vị trước khi xóa.');
-      return;
-    }
-    if (!window.confirm(`Xóa đơn vị tính "${unit.name}"?`)) return;
+  const deleteUnitForManager = async (unit: any) => {
     try {
       await unitsApi.remove(unit.id);
       setCatalogUnits((previous) => previous.filter((item) => item.id !== unit.id));
-      setUnitMessage('Đã xóa đơn vị tính.');
-    } catch (err) {
-      setUnitMessage(err instanceof Error ? err.message : 'Không thể xóa đơn vị tính.');
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const createPriceListForManager = async (name: string, customerType: string, markupMode: 'percent' | 'amount', markupValue: number) => {
+    try {
+      await priceListsApi.create({ name, customerType, markupMode, markupValue, active: true });
+      const lists = await priceListsApi.list(true);
+      setPriceLists(lists);
+      setProductPriceDrafts((previous) => Object.fromEntries(lists.map((list: any) => [list.id, previous[list.id]])));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const renamePriceListForManager = async (id: string, name: string, customerType: string, markupMode: 'percent' | 'amount', markupValue: number) => {
+    try {
+      await priceListsApi.update(id, { name, customerType, markupMode, markupValue });
+      setPriceLists(await priceListsApi.list(true));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const deletePriceListForManager = async (list: any) => {
+    try {
+      await priceListsApi.remove(list.id);
+      setPriceLists(await priceListsApi.list(true));
+      return true;
+    } catch {
+      return false;
     }
   };
 
@@ -1016,6 +917,11 @@ export default function Inventory() {
     return summary;
   }, { in: 0, out: 0, adjust: 0 }), [stockCardRows]);
 
+  const visibleStockCardRows = useMemo(() => {
+    if (stockCardTransactionFilter === 'all') return stockCardRows;
+    return stockCardRows.filter((row) => row.transactionType === stockCardTransactionFilter);
+  }, [stockCardRows, stockCardTransactionFilter]);
+
   return (
     <div className="flex h-full flex-col bg-slate-50 animate-in fade-in duration-500 overflow-hidden relative">
       <BarcodeScannerModal
@@ -1150,17 +1056,6 @@ export default function Inventory() {
                 className="h-11 w-full justify-start gap-2"
                 onClick={() => {
                   setShowMobileActionSheet(false);
-                  openBulkCheck();
-                }}
-              >
-                <ListFilter className="h-4 w-4" />
-                Kiểm kê
-              </Button>
-              <Button
-                variant="outline"
-                className="h-11 w-full justify-start gap-2"
-                onClick={() => {
-                  setShowMobileActionSheet(false);
                   setShowCategoryModal(true);
                 }}
               >
@@ -1195,44 +1090,6 @@ export default function Inventory() {
       )}
 
       {/* Product Modal */}
-      {showBulkCheckModal && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-base font-semibold text-slate-900">Kiểm kê hàng loạt</h3>
-              <button onClick={() => setShowBulkCheckModal(false)} className="text-slate-400 hover:text-slate-700">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto divide-y divide-slate-100">
-              {visibleProducts.map((p) => (
-                <div key={p.id} className="px-5 py-3 grid grid-cols-12 items-center gap-3">
-                  <div className="col-span-5">
-                    <p className="text-sm font-medium text-slate-900">{p.name}</p>
-                    <p className="text-xs text-slate-500">{p.sku} · Hiện tại: {p.stock} {p.unit}</p>
-                  </div>
-                  <div className="col-span-4">
-                    <Input
-                      type="number"
-                      value={bulkCheckActuals[p.id] ?? p.stock}
-                      onChange={(e) => setBulkCheckActuals((prev) => ({ ...prev, [p.id]: parseNumericDraft(e.target.value) }))}
-                      className="h-9 text-sm"
-                    />
-                  </div>
-                  <div className="col-span-3 text-xs text-slate-500">
-                    Chênh: {bulkCheckActuals[p.id] === '' ? '—' : Number(bulkCheckActuals[p.id] ?? p.stock) - p.stock}
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="flex shrink-0 justify-end gap-2 border-t border-slate-100 px-5 py-4">
-              <Button variant="outline" onClick={() => setShowBulkCheckModal(false)}>Hủy</Button>
-              <Button onClick={handleBulkCheckApply}>Áp dụng kiểm kê</Button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {showProductModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 p-2 backdrop-blur-sm animate-in fade-in duration-300 sm:p-4">
           <div className="flex h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-white bg-white shadow-2xl animate-in zoom-in-95 duration-500 sm:h-[calc(100dvh-2rem)] sm:max-h-[calc(100dvh-2rem)] sm:rounded-xl">
@@ -1330,47 +1187,50 @@ export default function Inventory() {
                         </button>
                       </div>
                     </div>
-                  </div>
-               </div>
-
-               <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between px-1">
-                        <label className="text-[11px] font-semibold text-slate-500">Danh mục</label>
-                        <button 
-                          onClick={() => setShowCategoryModal(true)}
-                          className="text-[11px] font-semibold text-sky-600 hover:text-sky-700"
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between px-1">
+                          <label className="text-[11px] font-semibold text-slate-500">Danh mục</label>
+                          <button
+                            type="button"
+                            onClick={() => setShowCategoryModal(true)}
+                            className="text-[11px] font-semibold text-sky-600 hover:text-sky-700"
+                          >
+                            Quản lý
+                          </button>
+                        </div>
+                        <select
+                          value={productForm.category}
+                          onChange={e => setProductForm({...productForm, category: e.target.value})}
+                          className="w-full h-8 px-3 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm appearance-none sm:h-9"
                         >
-                          Quản lý
-                        </button>
+                          {categories.map(cat => (
+                            <option key={cat.id} value={cat.name}>{cat.name}</option>
+                          ))}
+                          {categories.length === 0 && (
+                            <option value="Khác">Khác</option>
+                          )}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-semibold text-slate-500">Loại hàng hóa</label>
+                        <select
+                          value={productForm.productType}
+                          onChange={e => {
+                            const productType = e.target.value as 'standard' | 'combo';
+                            setProductForm({ ...productForm, productType, ...(productType === 'combo' ? { purchasePrice: 0, stock: 0, unit: 'Bộ' } : {}) });
+                            if (productType === 'combo') {
+                              setProductVariantDrafts([]);
+                              setProductVariantPriceDrafts({});
+                            }
+                          }}
+                          className="w-full h-8 px-3 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm sm:h-9"
+                        >
+                          <option value="standard">Sản phẩm thường</option>
+                          <option value="combo">Combo bán hàng</option>
+                        </select>
+                      </div>
                     </div>
-                    <select 
-                      value={productForm.category}
-                      onChange={e => setProductForm({...productForm, category: e.target.value})}
-                      className="w-full h-8 px-3 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm appearance-none sm:h-9"
-                    >
-                      {categories.map(cat => (
-                        <option key={cat.id} value={cat.name}>{cat.name}</option>
-                      ))}
-                      {categories.length === 0 && (
-                        <option value="Khác">Khác</option>
-                      )}
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-semibold text-slate-500">Loại hàng hóa</label>
-                    <select
-                      value={productForm.productType}
-                      onChange={e => {
-                        const productType = e.target.value as 'standard' | 'combo';
-                        setProductForm({ ...productForm, productType, ...(productType === 'combo' ? { purchasePrice: 0, stock: 0, unit: 'Bộ' } : {}) });
-                        if (productType === 'combo') setProductVariantDrafts([]);
-                      }}
-                      className="w-full h-8 px-3 rounded-lg bg-slate-50 border-none shadow-inner font-semibold text-slate-700 text-sm sm:h-9"
-                    >
-                      <option value="standard">Sản phẩm thường</option>
-                      <option value="combo">Combo bán hàng</option>
-                    </select>
                   </div>
                </div>
 
@@ -1433,8 +1293,19 @@ export default function Inventory() {
                      </button>
                      <button type="button" onClick={openPricing} className="text-[11px] font-medium text-slate-500 hover:text-sky-700">Quản lý</button>
                      <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-sky-700">Đơn vị cơ sở</span>
+                     <button
+                       type="button"
+                       onClick={() => setPricingExpanded((expanded) => !expanded)}
+                       className="inline-flex h-7 items-center gap-1 rounded-md border border-sky-200 bg-white px-2 text-[11px] font-medium text-sky-800 hover:bg-sky-50 hover:text-sky-700"
+                       aria-expanded={pricingExpanded}
+                       aria-controls="product-pricing-content"
+                     >
+                       {pricingExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                       {pricingExpanded ? 'Thu gọn' : 'Mở rộng'}
+                     </button>
                    </div>
                  </div>
+                 {pricingExpanded && <div id="product-pricing-content" className="space-y-2">
                  {priceLists.length === 0 && <p className="rounded-md bg-amber-50 px-3 py-1.5 text-[11px] text-amber-700">Chưa có bảng giá. Hệ thống sẽ dùng giá cơ bản hiện có và tạo bảng giá mặc định khi lưu.</p>}
                  {showInlinePriceListForm && (
                    <div className="rounded-md border border-sky-200 bg-white p-2">
@@ -1442,7 +1313,7 @@ export default function Inventory() {
                        <span className="text-xs font-semibold text-slate-800">Tạo bảng giá mới</span>
                        <span className="text-[11px] text-slate-500">Giá áp dụng theo nhóm khách</span>
                      </div>
-                     <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_150px_auto]">
+                     <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_145px_105px_95px_auto]">
                        <Input
                          autoFocus
                          value={newPriceList.name}
@@ -1465,55 +1336,129 @@ export default function Inventory() {
                          <option value="retail">Bán lẻ</option>
                          <option value="loyal">Khách thân thiết</option>
                        </select>
-                       <Button type="button" onClick={createPriceList} disabled={!newPriceList.name.trim()} className="h-9 px-3 text-xs">Tạo bảng</Button>
-                     </div>
-                     {pricingMessage && <p className="mt-1.5 text-[11px] text-emerald-700">{pricingMessage}</p>}
-                   </div>
-                 )}
-                 <div className="grid gap-2 md:grid-cols-2">
-                   {priceLists.map((list: any) => {
-                     const calculated = productForm.productType === 'combo' ? comboBasePriceForList(list) : undefined;
-                     return <div key={list.id} className="rounded-md border border-white bg-white p-2">
-                       <div className="mb-1 flex items-center justify-between gap-2">
-                         <span className="text-xs font-semibold text-slate-700">{list.name}</span>
-                         {list.isDefault && <span className="text-[10px] font-medium text-emerald-600">Mặc định</span>}
-                       </div>
+                       <select
+                         value={newPriceList.markupMode}
+                         onChange={(e) => setNewPriceList({ ...newPriceList, markupMode: e.target.value as 'percent' | 'amount' })}
+                         className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs"
+                         aria-label="Kiểu điều chỉnh bảng giá"
+                       >
+                         <option value="percent">Theo %</option>
+                         <option value="amount">Theo tiền</option>
+                       </select>
                        <div className="relative">
                          <Input
                            type="number"
-                           min="0"
-                           value={productForm.productType === 'combo' ? (productPriceDrafts[list.id] ?? calculated ?? 0) : (productPriceDrafts[list.id] ?? 0)}
-                           onChange={(e) => setProductPriceDrafts((previous) => ({ ...previous, [list.id]: parseNumericDraft(e.target.value) }))}
-                           className="h-9 pr-9 text-sm font-semibold tabular-nums"
+                           min={newPriceList.markupMode === 'percent' ? '-100' : undefined}
+                           value={newPriceList.markupValue}
+                           onChange={(e) => setNewPriceList({ ...newPriceList, markupValue: parseNumericDraft(e.target.value) })}
+                           className="h-9 pr-8 text-right text-xs"
+                           placeholder="0"
+                           aria-label={newPriceList.markupMode === 'percent' ? 'Tăng giá theo phần trăm' : 'Cộng tiền so với giá cơ sở'}
                          />
-                         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">đ</span>
+                         <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-slate-400">{newPriceList.markupMode === 'percent' ? '%' : 'đ'}</span>
                        </div>
-                     </div>;
-                   })}
+                       <Button type="button" onClick={createPriceList} disabled={!newPriceList.name.trim()} className="h-9 px-3 text-xs">Tạo bảng</Button>
+                     </div>
+                     <p className="mt-1.5 text-[11px] text-slate-500">Chọn Theo % để nhập 10 hoặc -10; chọn Theo tiền để cộng trực tiếp số tiền vào giá cơ sở.</p>
+                     {pricingMessage && <p className="mt-1.5 text-[11px] text-emerald-700">{pricingMessage}</p>}
+                   </div>
+                 )}
+                 <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">
+                   <table className="min-w-[680px] w-full text-xs">
+                     <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+                       <tr>
+                         <th scope="col" className="sticky left-0 z-10 min-w-[180px] bg-slate-50 px-2 py-2 text-left font-semibold">Đơn vị / biến thể</th>
+                         {priceLists.map((list: any) => <th scope="col" key={list.id} className="min-w-[145px] px-2 py-2 text-left font-semibold">
+                           <div className="normal-case text-slate-700">{list.name}</div>
+                           <div className={`mt-0.5 normal-case text-[10px] font-medium ${list.isDefault ? 'text-emerald-600' : 'text-slate-400'}`}>
+                             {formatPriceListAdjustment(list)}
+                           </div>
+                         </th>)}
+                       </tr>
+                     </thead>
+                     <tbody className="divide-y divide-slate-100">
+                       <tr>
+                         <th scope="row" className="sticky left-0 z-10 bg-white px-2 py-2 text-left">
+                           <p className="font-medium text-slate-800">{productForm.unit || 'Đơn vị cơ sở'}</p>
+                           <p className="mt-0.5 text-[10px] font-normal text-slate-400">Đơn vị mặc định · ×1</p>
+                         </th>
+                         {priceLists.map((list: any) => {
+                           const fallbackPrice = productFormBasePrice(list);
+                           return <td key={list.id} className="px-2 py-2 align-top">
+                             <div className="relative">
+                               <Input type="number" min="0" value={productPriceDrafts[list.id] ?? fallbackPrice} aria-label={`Giá ${productForm.unit || 'đơn vị cơ sở'} · ${list.name}`} onChange={(e) => setProductPriceDrafts((previous) => ({ ...previous, [list.id]: parseNumericDraft(e.target.value) }))} className="h-8 pr-7 text-right text-xs font-semibold tabular-nums" />
+                               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">đ</span>
+                             </div>
+                           </td>;
+                         })}
+                       </tr>
+                       {productVariantDrafts.map((variant, index) => <tr key={variant.id}>
+                         <th scope="row" className="sticky left-0 z-10 bg-white px-2 py-2 text-left">
+                           <p className="truncate font-medium text-slate-800">{variant.name.trim() || `Biến thể ${index + 1}`}</p>
+                           <p className="mt-0.5 text-[10px] font-normal text-slate-400">{variant.factor || 1}× {productForm.unit || 'đơn vị cơ sở'}</p>
+                         </th>
+                         {priceLists.map((list: any) => {
+                           const draftKey = `${list.id}::${variant.id}`;
+                           const fallbackPrice = productFormBasePrice(list) * (Number(variant.factor) || 1);
+                           return <td key={list.id} className="px-2 py-2 align-top">
+                             <div className="relative">
+                               <Input type="number" min="0" value={productVariantPriceDrafts[draftKey] ?? fallbackPrice} aria-label={`Giá ${variant.name.trim() || `biến thể ${index + 1}`} · ${list.name}`} onChange={(e) => setProductVariantPriceDrafts((previous) => ({ ...previous, [draftKey]: parseNumericDraft(e.target.value) }))} className="h-8 pr-7 text-right text-xs tabular-nums" />
+                               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">đ</span>
+                             </div>
+                           </td>;
+                         })}
+                       </tr>)}
+                     </tbody>
+                   </table>
                  </div>
-                 {productForm.productType === 'combo' && <p className="text-[11px] text-slate-500">Giá gợi ý là tổng giá thành phần. Có thể nhập giá combo riêng; giá thành phần không bị thay đổi.</p>}
+                 <p className="text-[11px] text-slate-500">Mỗi hàng là một đơn vị hoặc biến thể; mỗi cột là một bảng giá. Giá gợi ý có thể tính theo % hoặc số tiền cố định, và vẫn có thể sửa riêng.</p>
+                 {productForm.productType === 'combo' && <p className="text-[11px] text-slate-500">Giá gợi ý của combo là tổng giá thành phần. Có thể nhập giá combo riêng; giá thành phần không bị thay đổi.</p>}
+                 </div>}
                </div>
 
                {productForm.productType === 'standard' ? (
                  <div className="rounded-lg border border-slate-200 p-3 space-y-2">
                    <div className="flex items-start justify-between gap-3">
                      <div>
-                       <h3 className="text-sm font-semibold text-slate-900">Biến thể đơn vị bán</h3>
-                       <p className="mt-0.5 text-[11px] leading-4 text-slate-500">Đơn vị cơ sở: <b>{productForm.unit || '—'}</b> ×1. Ví dụ: 1 Hộp = 20 Cây.</p>
+                       <h3 className="text-sm font-semibold text-slate-900">Biến thể bán hàng</h3>
+                       <p className="mt-0.5 text-[11px] leading-4 text-slate-500">Một sản phẩm có thể có nhiều màu/loại, mỗi biến thể có mã vạch riêng. Hệ số quy đổi theo <b>{productForm.unit || 'đơn vị cơ sở'}</b>.</p>
                      </div>
-                     <Button variant="outline" className="h-8 shrink-0 px-2 text-xs" onClick={() => setProductVariantDrafts([...productVariantDrafts, { name: '', factor: 1, barcode: '' }])}>
-                       <Plus className="mr-1 h-3 w-3" />Thêm biến thể
-                     </Button>
+                     <div className="flex shrink-0 items-center gap-1.5">
+                       <Button variant="outline" className="h-8 px-2 text-xs" onClick={() => setProductVariantDrafts([...productVariantDrafts, { id: uuid(), name: '', factor: 1, barcode: '' }])}>
+                         <Plus className="mr-1 h-3 w-3" />Thêm biến thể
+                       </Button>
+                       <button
+                         type="button"
+                         onClick={() => setVariantsExpanded((expanded) => !expanded)}
+                         className="inline-flex h-8 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-600 hover:bg-slate-50 hover:text-sky-700"
+                         aria-expanded={variantsExpanded}
+                         aria-controls="product-variants-content"
+                       >
+                         {variantsExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                         {variantsExpanded ? 'Thu gọn' : 'Mở rộng'}
+                       </button>
+                     </div>
                    </div>
+                   {variantsExpanded && <div id="product-variants-content" className="space-y-2">
                    {productVariantDrafts.length === 0 && <p className="rounded-md bg-slate-50 px-3 py-1.5 text-[11px] text-slate-500">Chưa có biến thể. Sản phẩm sẽ bán theo {productForm.unit || 'đơn vị cơ sở'}.</p>}
-                   <div className="space-y-1.5">
-                     {productVariantDrafts.map((variant, index) => <div key={`variant-row-${index}`} className="grid gap-2 md:grid-cols-[1fr_110px_1fr_auto]">
-                       <Input value={variant.name} placeholder="Tên biến thể, ví dụ Hộp" onChange={(e) => setProductVariantDrafts((previous) => previous.map((row, i) => i === index ? { ...row, name: e.target.value } : row))} className="h-9 text-xs" />
-                       <div className="relative"><Input type="text" inputMode="decimal" value={variant.factor} onChange={(e) => setProductVariantDrafts((previous) => previous.map((row, i) => i === index ? { ...row, factor: e.target.value.replace(',', '.') } : row))} className="h-9 pr-10 text-xs" placeholder="1" aria-label={`Hệ số quy đổi biến thể ${index + 1}`} /><span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">× cơ sở</span></div>
-                       <div className="relative"><Barcode className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-300" /><Input value={variant.barcode} placeholder="Mã vạch riêng (nếu có)" onChange={(e) => setProductVariantDrafts((previous) => previous.map((row, i) => i === index ? { ...row, barcode: e.target.value } : row))} className="h-9 pl-8 pr-9 text-xs" /><button type="button" aria-label="Quét mã vạch biến thể" title="Quét mã vạch biến thể" onClick={() => { setVariantBarcodeIndex(index); setShowBarcodeScannerModal(true); }} className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-slate-500 hover:bg-sky-50 hover:text-sky-700"><ScanLine className="h-3.5 w-3.5" /></button></div>
-                       <button type="button" onClick={() => setProductVariantDrafts(productVariantDrafts.filter((_, i) => i !== index))} className="flex h-9 items-center justify-center text-rose-500"><Trash2 className="h-4 w-4" /></button>
-                     </div>)}
-                   </div>
+                   {productVariantDrafts.length > 0 && <>
+                     <div className="space-y-1.5">
+                       <div className="grid gap-2 px-1 text-[10px] font-medium uppercase tracking-wide text-slate-400 md:grid-cols-[1fr_110px_1fr_32px]">
+                         <span>Tên biến thể / loại</span>
+                         <span>Hệ số</span>
+                         <span>Mã vạch riêng</span>
+                         <span className="sr-only">Thao tác</span>
+                       </div>
+                       {productVariantDrafts.map((variant, index) => <div key={variant.id} className="grid gap-2 rounded-md border border-slate-100 bg-slate-50/50 p-2 md:grid-cols-[1fr_110px_1fr_32px]">
+                         <Input value={variant.name} placeholder="Màu/loại, ví dụ Đỏ, Xanh" onChange={(e) => setProductVariantDrafts((previous) => previous.map((row, i) => i === index ? { ...row, name: e.target.value } : row))} className="h-9 text-xs" />
+                         <div className="relative"><Input type="text" inputMode="decimal" value={variant.factor} onChange={(e) => setProductVariantDrafts((previous) => previous.map((row, i) => i === index ? { ...row, factor: e.target.value.replace(',', '.') } : row))} className="h-9 pr-10 text-xs" placeholder="1" aria-label={`Hệ số quy đổi biến thể ${index + 1}`} /><span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">× cơ sở</span></div>
+                         <div className="relative"><Barcode className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-sky-300" /><Input value={variant.barcode} placeholder="Mã vạch riêng (nếu có)" onChange={(e) => setProductVariantDrafts((previous) => previous.map((row, i) => i === index ? { ...row, barcode: e.target.value } : row))} className="h-9 pl-8 pr-9 text-xs" /><button type="button" aria-label="Quét mã vạch biến thể" title="Quét mã vạch biến thể" onClick={() => { setVariantBarcodeIndex(index); setShowBarcodeScannerModal(true); }} className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-sky-700 hover:bg-sky-50 hover:text-sky-700"><ScanLine className="h-3.5 w-3.5" /></button></div>
+                         <button type="button" aria-label={`Xóa biến thể ${index + 1}`} onClick={() => setProductVariantDrafts(productVariantDrafts.filter((_, i) => i !== index))} className="flex h-9 items-center justify-center text-rose-500"><Trash2 className="h-4 w-4" /></button>
+                       </div>)}
+                     </div>
+
+                   </>}
+                   </div>}
                  </div>
                ) : (
                  <div className="rounded-lg border border-amber-200 bg-amber-50/40 p-3 space-y-2">
@@ -1534,7 +1479,7 @@ export default function Inventory() {
                            <option value="">Chọn sản phẩm</option>
                            {products.filter((p) => p.productType !== 'combo' && p.id !== editingProduct?.id).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.unit}</option>)}
                          </select>
-                         <button type="button" aria-label="Quét mã sản phẩm thành phần" title="Quét mã sản phẩm thành phần" onClick={() => { setComponentBarcodeIndex(index); setVariantBarcodeIndex(null); setShowBarcodeScannerModal(true); }} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-sky-50 hover:text-sky-700">
+                         <button type="button" aria-label="Quét mã sản phẩm thành phần" title="Quét mã sản phẩm thành phần" onClick={() => { setComponentBarcodeIndex(index); setVariantBarcodeIndex(null); setShowBarcodeScannerModal(true); }} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-sky-700 hover:bg-sky-50 hover:text-sky-700">
                            <Barcode className="h-4 w-4" />
                          </button>
                        </div>
@@ -1574,133 +1519,23 @@ export default function Inventory() {
         </div>
       )}
 
-      {showPricingModal && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/60 p-3 backdrop-blur-sm">
-          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
-              <div className="flex items-center gap-2.5">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-50 text-sky-700"><Settings2 className="h-4 w-4" /></div>
-                <div><h2 className="text-sm font-semibold text-slate-900">Quản lý bảng giá</h2><p className="text-[11px] text-slate-500">Tạo nhóm giá để chọn nhanh tại POS</p></div>
-              </div>
-              <button onClick={() => setShowPricingModal(false)} className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X className="h-4 w-4" /></button>
-            </div>
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
-              <div className="rounded-lg border border-slate-200">
-                <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
-                  <div><h3 className="text-xs font-semibold text-slate-900">Bảng giá hiện có</h3><p className="text-[11px] text-slate-500">Giá từng sản phẩm được nhập trong form sản phẩm.</p></div>
-                  <span className="text-[11px] font-medium text-slate-400">{priceLists.length} bảng</span>
-                </div>
-                <div className="divide-y divide-slate-100">
-                  {priceLists.map((list: any) => editingPriceListId === list.id ? (
-                    <div key={list.id} className="space-y-2 bg-slate-50 px-3 py-2">
-                      <Input
-                        autoFocus
-                        value={editingPriceListDraft.name}
-                        onChange={(event) => setEditingPriceListDraft((previous) => ({ ...previous, name: event.target.value }))}
-                        className="h-8 bg-white text-xs"
-                      />
-                      <div className="flex items-center gap-2">
-                        <select
-                          value={editingPriceListDraft.customerType}
-                          onChange={(event) => setEditingPriceListDraft((previous) => ({ ...previous, customerType: event.target.value }))}
-                          className="h-8 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-xs"
-                        >
-                          <option value="all">Mọi nhóm khách</option><option value="retail">Bán lẻ</option><option value="loyal">Khách thân thiết</option>
-                        </select>
-                        <Button type="button" className="h-8 px-2 text-xs" onClick={() => void savePriceList()}>Lưu</Button>
-                        <Button type="button" variant="outline" className="h-8 px-2 text-xs" onClick={() => setEditingPriceListId(null)}>Hủy</Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div key={list.id} className="flex items-center justify-between gap-3 px-3 py-2">
-                      <div className="min-w-0">
-                        <p className="truncate text-xs font-medium text-slate-700">{list.name}</p>
-                        <p className="text-[11px] text-slate-400">{list.isDefault ? 'Mặc định' : list.customerType === 'loyal' ? 'Thân thiết' : list.customerType === 'retail' ? 'Bán lẻ' : 'Mọi nhóm khách'}</p>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <button type="button" onClick={() => beginEditPriceList(list)} className="rounded-md p-1.5 text-sky-700 hover:bg-sky-50" aria-label={`Sửa bảng giá ${list.name}`} title="Sửa bảng giá"><Edit3 className="h-3.5 w-3.5" /></button>
-                        <button type="button" onClick={() => void deletePriceList(list)} disabled={Boolean(list.isDefault)} className="rounded-md p-1.5 text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Xóa bảng giá ${list.name}`} title={list.isDefault ? 'Không thể xóa bảng giá mặc định' : 'Xóa bảng giá'}><Trash2 className="h-3.5 w-3.5" /></button>
-                      </div>
-                    </div>
-                  ))}
-                  {priceLists.length === 0 && <p className="px-3 py-3 text-xs text-slate-500">Chưa có bảng giá nào.</p>}
-                </div>
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
-                <h3 className="mb-2 text-xs font-semibold text-slate-900">Thêm bảng giá</h3>
-                <div className="grid gap-2 sm:grid-cols-[1fr_150px_auto]">
-                  <Input value={newPriceList.name} onChange={(e) => setNewPriceList({ ...newPriceList, name: e.target.value })} placeholder="Ví dụ: Giá cơ quan" className="h-9 bg-white text-xs" />
-                  <select value={newPriceList.customerType} onChange={(e) => setNewPriceList({ ...newPriceList, customerType: e.target.value })} className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs">
-                    <option value="all">Mọi nhóm khách</option><option value="retail">Bán lẻ</option><option value="loyal">Khách thân thiết</option>
-                  </select>
-                  <Button onClick={createPriceList} disabled={!newPriceList.name.trim()} className="h-9 px-3 text-xs">Tạo bảng</Button>
-                </div>
-              </div>
-              {pricingMessage && <p className="rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-700">{pricingMessage}</p>}
-              <div className="flex justify-end"><Button variant="outline" className="h-9 px-3 text-xs" onClick={() => setShowPricingModal(false)}>Đóng</Button></div>
-            </div>
-          </div>
-        </div>
-      )}
+      <PriceListManagerModal
+        open={showPricingModal}
+        priceLists={priceLists}
+        onClose={() => setShowPricingModal(false)}
+        onCreate={createPriceListForManager}
+        onRename={renamePriceListForManager}
+        onDelete={deletePriceListForManager}
+      />
 
-      {/* Category Modal */}
-      {showCategoryModal && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
-           <div className="max-h-[calc(100dvh-1rem)] w-full max-w-sm space-y-5 overflow-y-auto rounded-lg border border-white bg-white p-4 shadow-2xl sm:space-y-6 sm:p-6">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                   <div className="h-10 w-10 rounded-lg bg-sky-600 text-white flex items-center justify-center">
-                      <Layers className="h-5 w-5" />
-                   </div>
-                   <h3 className="font-semibold text-slate-900">Quản lý nhóm sản phẩm</h3>
-                </div>
-                <button onClick={() => setShowCategoryModal(false)} className="text-slate-300 hover:text-red-500">
-                   <X className="h-5 w-5" />
-                </button>
-              </div>
-              <div className="space-y-2">
-                <label className="text-[9px] font-semibold text-slate-400 uppercase tracking-widest ml-1">TÊN NHÓM SẢN PHẨM MỚI</label>
-                <Input 
-                   value={newCategoryName}
-                   onChange={e => setNewCategoryName(e.target.value)}
-                   className="h-12 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700 uppercase" 
-                   placeholder="Ví dụ: Đồ gia dụng" 
-                />
-              </div>
-              <Button 
-                onClick={handleAddCategory}
-                className="w-full h-12 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-black uppercase tracking-widest"
-              >
-                TẠO NHÓM
-              </Button>
-              <div className="border-t border-slate-100 pt-3">
-                <div className="mb-2 flex items-center justify-between">
-                  <p className="text-[11px] font-semibold text-slate-500">Nhóm sản phẩm hiện có</p>
-                  <span className="text-[10px] text-slate-400">{categories.length}</span>
-                </div>
-                <div className="max-h-48 space-y-1 overflow-y-auto">
-                  {categories.map((category) => editingCategoryId === category.id ? (
-                    <div key={category.id} className="flex items-center gap-1.5 rounded-md bg-slate-50 p-1.5">
-                      <Input value={editingCategoryName} onChange={(event) => setEditingCategoryName(event.target.value)} className="h-8 min-w-0 flex-1 text-xs" autoFocus />
-                      <button type="button" onClick={() => void handleRenameCategory(category.id)} className="rounded-md px-2 py-1 text-[11px] font-medium text-sky-700 hover:bg-sky-100">Lưu</button>
-                      <button type="button" onClick={() => { setEditingCategoryId(null); setEditingCategoryName(''); }} className="rounded-md px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-200">Hủy</button>
-                    </div>
-                  ) : (
-                    <div key={category.id} className="flex items-center justify-between gap-2 rounded-md border border-slate-100 px-2.5 py-1.5">
-                      <span className="min-w-0 truncate text-xs text-slate-700">{category.name}</span>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <button type="button" onClick={() => { setEditingCategoryId(category.id); setEditingCategoryName(category.name); setFormError(''); }} className="rounded-md px-2 py-1 text-[11px] text-sky-700 hover:bg-sky-50">Đổi tên</button>
-                        <button type="button" onClick={() => void handleDeleteCategory(category)} className="rounded-md p-1 text-rose-500 hover:bg-rose-50" aria-label={`Xóa danh mục ${category.name}`}><Trash2 className="h-3.5 w-3.5" /></button>
-                      </div>
-                    </div>
-                  ))}
-                  {!categories.length && <p className="py-2 text-center text-[11px] text-slate-400">Chưa có danh mục.</p>}
-                </div>
-                {formError && <p className="mt-2 rounded-md bg-rose-50 px-2.5 py-2 text-[11px] text-rose-700">{formError}</p>}
-              </div>
-           </div>
-        </div>
-      )}
+      <CategoryManagerModal
+        open={showCategoryModal}
+        categories={categories}
+        onClose={() => setShowCategoryModal(false)}
+        onAdd={createCategoryForManager}
+        onRename={renameCategoryForManager}
+        onDelete={deleteCategoryForManager}
+      />
 
       {/* Stock Card Modal */}
       {stockCardProduct && (
@@ -1743,14 +1578,34 @@ export default function Inventory() {
                 </div>
               </div>
 
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2">
+                <div>
+                  <p className="text-xs font-semibold text-slate-700">Lịch sử giao dịch</p>
+                  <p className="text-[10px] text-slate-500">Nhập hàng, bán hàng, trả hàng và kiểm kê</p>
+                </div>
+                <select
+                  value={stockCardTransactionFilter}
+                  onChange={(event) => setStockCardTransactionFilter(event.target.value)}
+                  className="h-8 rounded-md border border-slate-200 bg-white px-2 text-[11px] text-slate-700"
+                  aria-label="Lọc loại giao dịch thẻ kho"
+                >
+                  <option value="all">Tất cả giao dịch</option>
+                  <option value="Nhập hàng">Nhập hàng</option>
+                  <option value="Bán hàng">Bán hàng</option>
+                  <option value="Khách trả hàng">Khách trả hàng</option>
+                  <option value="Trả hàng NCC">Trả hàng NCC</option>
+                  <option value="Kiểm kê">Kiểm kê</option>
+                </select>
+              </div>
+
               {stockCardError && <p className="mb-3 rounded-md bg-rose-50 px-3 py-2 text-xs text-rose-700">{stockCardError}</p>}
               {stockCardLoading ? (
                 <div className="rounded-lg border border-slate-200 p-8 text-center text-sm text-slate-500">Đang tải lịch sử kho…</div>
-              ) : stockCardRows.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-slate-200 p-8 text-center text-sm text-slate-500">Chưa có giao dịch kho cho sản phẩm này.</div>
+              ) : visibleStockCardRows.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-slate-200 p-8 text-center text-sm text-slate-500">{stockCardRows.length ? 'Không có giao dịch phù hợp với bộ lọc.' : 'Chưa có giao dịch kho cho sản phẩm này.'}</div>
               ) : (
                 <div className="overflow-x-auto rounded-lg border border-slate-200">
-                  <table className="min-w-[880px] w-full text-left text-xs">
+                  <table className="min-w-[1020px] w-full text-left text-xs">
                     <thead className="bg-slate-50 text-[11px] font-semibold text-slate-500">
                       <tr>
                         <th className="whitespace-nowrap px-3 py-2">Chứng từ</th>
@@ -1761,15 +1616,16 @@ export default function Inventory() {
                         <th className="whitespace-nowrap px-3 py-2 text-right">Số lượng</th>
                         <th className="whitespace-nowrap px-3 py-2 text-right">Tồn cuối</th>
                         <th className="whitespace-nowrap px-3 py-2">Đối tác</th>
+                        <th className="whitespace-nowrap px-3 py-2">Người cập nhật</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {stockCardRows.map((row) => {
+                      {visibleStockCardRows.map((row) => {
                         const meta = movementMeta(row.type);
                         const quantityPrefix = row.type === 'in' ? '+' : row.type === 'out' ? '-' : '±';
                         return (
                           <tr key={row.id} className="whitespace-nowrap hover:bg-slate-50/80">
-                            <td className="px-3 py-2 font-mono text-sky-700">{row.documentNo || row.referenceId || '—'}</td>
+                            <td className="px-3 py-2 font-mono text-sky-700">{readableStockDocument(row)}</td>
                             <td className="px-3 py-2 text-slate-600">{new Date(row.createdAt).toLocaleString('vi-VN')}</td>
                             <td className="px-3 py-2"><span className={`rounded-md px-2 py-1 text-[11px] font-medium ${meta.tone}`}>{row.transactionType || meta.label}</span></td>
                             <td className="px-3 py-2 text-right tabular-nums text-slate-700">{formatCompactCurrency(row.transactionPrice)}</td>
@@ -1777,6 +1633,7 @@ export default function Inventory() {
                             <td className={`px-3 py-2 text-right font-semibold tabular-nums ${row.type === 'in' ? 'text-emerald-700' : row.type === 'out' ? 'text-rose-700' : 'text-amber-700'}`}>{quantityPrefix}{row.quantity} {row.productUnit || stockCardProduct.unit}</td>
                             <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-900">{row.afterStock} {row.productUnit || stockCardProduct.unit}</td>
                             <td className="max-w-[180px] truncate px-3 py-2 text-slate-600" title={row.partnerName || ''}>{row.partnerName || '—'}</td>
+                            <td className="max-w-[150px] truncate px-3 py-2 text-slate-600" title={readableStockActor(row)}>{readableStockActor(row)}</td>
                           </tr>
                         );
                       })}
@@ -1790,159 +1647,14 @@ export default function Inventory() {
       )}
 
       {/* Unit Modal */}
-      {showUnitModal && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
-          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-md flex-col overflow-hidden rounded-lg border border-white bg-white p-4 shadow-2xl sm:p-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-lg bg-sky-600 text-white flex items-center justify-center">
-                  <Layers className="h-5 w-5" />
-                </div>
-                <div>
-                  <h3 className="font-semibold text-slate-900">Quản lý đơn vị tính</h3>
-                  <p className="text-[11px] text-slate-500">Đơn vị cơ sở và biến thể dùng trong sản phẩm</p>
-                </div>
-              </div>
-              <button onClick={() => setShowUnitModal(false)} className="text-slate-300 hover:text-red-500">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto">
-              <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
-                <p className="mb-2 text-xs font-semibold text-slate-700">Thêm đơn vị tính</p>
-                <div className="flex gap-2">
-                  <Input value={newUnitName} onChange={(event) => setNewUnitName(event.target.value)} className="h-9 min-w-0 flex-1 bg-white text-xs" placeholder="Ví dụ: Cuộn, Mét, Thùng" />
-                  <Button type="button" onClick={() => void handleAddUnit()} disabled={!newUnitName.trim()} className="h-9 px-3 text-xs">Thêm</Button>
-                </div>
-              </div>
-              <div className="rounded-lg border border-slate-200">
-                <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
-                  <p className="text-xs font-semibold text-slate-700">Đơn vị đã khai báo</p>
-                  <span className="text-[11px] text-slate-400">{catalogUnits.length}</span>
-                </div>
-                <div className="divide-y divide-slate-100">
-                  {catalogUnits.map((unit: any) => editingUnitId === unit.id ? (
-                    <div key={unit.id} className="flex items-center gap-2 bg-slate-50 px-3 py-2">
-                      <Input autoFocus value={editingUnitName} onChange={(event) => setEditingUnitName(event.target.value)} className="h-8 min-w-0 flex-1 bg-white text-xs" />
-                      <button type="button" onClick={() => void saveUnitName()} className="rounded-md px-2 py-1 text-[11px] font-medium text-sky-700 hover:bg-sky-100">Lưu</button>
-                      <button type="button" onClick={() => { setEditingUnitId(null); setEditingUnitName(''); }} className="rounded-md px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-200">Hủy</button>
-                    </div>
-                  ) : (
-                    <div key={unit.id} className="flex items-center justify-between gap-2 px-3 py-2">
-                      <div className="min-w-0">
-                        <p className="truncate text-xs font-medium text-slate-700">{unit.name}</p>
-                        {Number(unit.inUseCount) > 0 && <p className="text-[10px] text-slate-400">Đang dùng ở {unit.inUseCount} sản phẩm/biến thể</p>}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <button type="button" onClick={() => { setEditingUnitId(unit.id); setEditingUnitName(unit.name); setUnitMessage(''); }} className="rounded-md p-1.5 text-sky-700 hover:bg-sky-50" aria-label={`Sửa đơn vị ${unit.name}`} title="Sửa đơn vị"><Edit3 className="h-3.5 w-3.5" /></button>
-                        <button type="button" onClick={() => void deleteUnit(unit)} disabled={Number(unit.inUseCount) > 0} className="rounded-md p-1.5 text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Xóa đơn vị ${unit.name}`} title={Number(unit.inUseCount) > 0 ? 'Hãy đổi đơn vị đang sử dụng trước' : 'Xóa đơn vị'}><Trash2 className="h-3.5 w-3.5" /></button>
-                      </div>
-                    </div>
-                  ))}
-                  {!catalogUnits.length && <p className="px-3 py-4 text-center text-[11px] text-slate-400">Chưa có đơn vị được lưu. Các đơn vị của sản phẩm sẽ tự xuất hiện sau khi lưu.</p>}
-                </div>
-              </div>
-              {unitMessage && <p className="rounded-md bg-sky-50 px-3 py-2 text-[11px] text-sky-700">{unitMessage}</p>}
-              <p className="text-[11px] text-slate-500">Biến thể bán hàng được chỉnh sửa hoặc xóa trong phần <b>Biến thể đơn vị bán</b> khi mở sửa sản phẩm.</p>
-            </div>
-            <div className="mt-4 flex justify-end border-t border-slate-100 pt-3"><Button type="button" variant="outline" className="h-9 px-3 text-xs" onClick={() => setShowUnitModal(false)}>Đóng</Button></div>
-          </div>
-        </div>
-      )}
-
-      {/* Stock Entry Modal */}
-      {showStockModal && stockUpdatingProduct && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
-          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-md flex-col overflow-y-auto rounded-lg border border-white bg-white shadow-2xl animate-in slide-in-from-bottom-8 duration-500">
-             <div className="p-8 border-b border-slate-50 bg-slate-900">
-                <div className="flex justify-between items-start">
-                   <div className="space-y-2">
-                      <div className="text-[8px] font-black text-white/40 uppercase tracking-widest leading-none">Cập nhật kho hàng</div>
-                      <h2 className="text-xl font-black text-white uppercase italic tracking-tight leading-none">{stockUpdatingProduct.name}</h2>
-                      <div className="text-[10px] font-black text-sky-400 uppercase tracking-widest mt-1">Tồn hiện tại: {stockUpdatingProduct.stock} {stockUpdatingProduct.unit}</div>
-                   </div>
-                   <button onClick={() => setShowStockModal(false)} className="text-white/20 hover:text-white transition-colors">
-                      <X className="h-6 w-6" />
-                   </button>
-                </div>
-             </div>
-
-             <div className="p-8 space-y-6">
-                {formError && (
-                  <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                    {formError}
-                  </div>
-                )}
-                <div className="space-y-4">
-                   <div className="p-5 rounded-lg bg-slate-50 border border-slate-100 flex items-center gap-4 group">
-                      <div className="h-12 w-12 rounded-lg bg-sky-600 text-white flex items-center justify-center shadow-lg transform group-focus-within:rotate-12 transition-transform">
-                         <Plus className="h-6 w-6" />
-                      </div>
-                      <div className="flex-1 space-y-1">
-                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">SỐ LƯỢNG NHẬP THÊM</label>
-                        <Input 
-                          type="number"
-                          autoFocus
-                          className="border-none bg-transparent shadow-none p-0 text-2xl font-black text-slate-900 tabular-nums focus:ring-0"
-                          value={stockUpdateForm.quantity}
-                          onChange={e => setUpdateForm((previous) => ({ ...previous, quantity: parseNumericDraft(e.target.value) }))}
-                        />
-                      </div>
-                   </div>
-
-                   <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">GIÁ NHẬP MỚI</label>
-                        <Input 
-                          type="number"
-                          className="h-12 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700" 
-                          value={stockUpdateForm.purchasePrice}
-                          onChange={e => setUpdateForm((previous) => ({ ...previous, purchasePrice: parseNumericDraft(e.target.value) }))}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">GIÁ BÁN MỚI</label>
-                        <Input 
-                          type="number"
-                          className="h-12 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700" 
-                          value={stockUpdateForm.sellingPrice}
-                          onChange={e => setUpdateForm((previous) => ({ ...previous, sellingPrice: parseNumericDraft(e.target.value) }))}
-                        />
-                      </div>
-                   </div>
-
-                   <div className="space-y-2 rounded-lg border border-slate-200 p-4">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">KIỂM KÊ NHANH (số tồn thực tế)</label>
-                      <div className="flex items-center gap-2">
-                        <Input
-                          type="number"
-                          className="h-11 rounded-lg bg-slate-50 border-none shadow-inner font-bold text-slate-700"
-                          value={stockCheckActual}
-                          onChange={e => setStockCheckActual(parseNumericDraft(e.target.value))}
-                        />
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="h-11"
-                          onClick={() => handleStockCheck(stockUpdatingProduct)}
-                        >
-                          Áp dụng
-                        </Button>
-                      </div>
-                   </div>
-                </div>
-
-                <Button 
-                  onClick={handleUpdateStock}
-                  className="w-full h-16 rounded-lg bg-slate-900 hover:bg-sky-600 text-white font-black uppercase tracking-widest shadow-xl transition-all gap-3"
-                >
-                   <CheckCircle className="h-6 w-6" />
-                   <span>Hoàn tất nhập hàng</span>
-                </Button>
-             </div>
-          </div>
-        </div>
-      )}
+      <UnitManagerModal
+        open={showUnitModal}
+        units={catalogUnits}
+        onClose={() => setShowUnitModal(false)}
+        onAdd={createUnitForManager}
+        onRename={renameUnitForManager}
+        onDelete={deleteUnitForManager}
+      />
 
       <div className="px-3 py-2 bg-white border-b border-slate-200 sticky top-0 z-40 flex flex-col lg:flex-row gap-2 lg:gap-3 items-start lg:items-center justify-between shadow-sm shrink-0">
         <div className="hidden lg:flex items-center gap-3">
@@ -1950,8 +1662,8 @@ export default function Inventory() {
             <Package className="h-4 w-4" />
           </div>
           <div>
-            <h1 className="text-sm font-semibold leading-tight text-slate-900">Kho hàng</h1>
-            <p className="text-[11px] leading-tight text-slate-500 mt-0.5">{products.length} mặt hàng trong hệ thống</p>
+            <h1 className="text-sm font-semibold leading-tight text-slate-900">Hàng hóa</h1>
+            <p className="text-[11px] leading-tight text-slate-500 mt-0.5">{products.length} hàng hóa trong hệ thống</p>
           </div>
         </div>
         
@@ -2018,9 +1730,6 @@ export default function Inventory() {
             <Download className="h-4 w-4" />
             Tải mẫu
           </Button>
-          <Button variant="outline" onClick={openBulkCheck} className="hidden lg:inline-flex h-9 px-3 rounded-lg text-xs">
-            Kiểm kê
-          </Button>
         </div>
       </div>
 
@@ -2039,7 +1748,7 @@ export default function Inventory() {
             <p className="mt-0.5 text-sm font-semibold text-slate-700 tabular-nums">{formatCurrency(inventoryStats.totalStockValue)}</p>
           </div>
           <div className="rounded-lg border border-slate-200 bg-white p-2.5">
-            <p className="text-[10px] text-slate-500">Mặt hàng sắp hết</p>
+            <p className="text-[10px] text-slate-500">Hàng sắp hết</p>
             <p className={`mt-0.5 text-sm font-semibold tabular-nums ${inventoryStats.lowStock > 0 ? 'text-amber-700' : 'text-slate-700'}`}>
               {inventoryStats.lowStock}
             </p>
@@ -2102,7 +1811,7 @@ export default function Inventory() {
           {/* Mobile View: High-polish Cards */}
           <div className="grid grid-cols-1 gap-px bg-slate-100 lg:hidden">
             {visibleProducts.map(product => (
-              <div key={product.id} className="p-3 bg-white space-y-2 relative group active:bg-slate-50 transition-colors" onClick={() => openStockEntry(product)}>
+              <div key={product.id} className="p-3 bg-white space-y-2 relative group active:bg-slate-50 transition-colors">
                 <div className="flex justify-between items-start">
                   <div className="space-y-1">
                     <button type="button" className="block text-left text-xs font-semibold text-slate-500 font-mono leading-none hover:text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); void openEditProduct(product); }}>{product.sku}</button>
@@ -2176,11 +1885,11 @@ export default function Inventory() {
               <colgroup>
                 <col className="w-[9%]" />
                 <col className="w-[30%]" />
-                <col className="w-[12%]" />
+                <col className="w-[9%]" />
                 <col className="w-[12%]" />
                 <col className="w-[13%]" />
                 <col className="w-[15%]" />
-                <col className="w-[9%]" />
+                <col className="w-[12%]" />
               </colgroup>
               <thead>
                 <tr className="bg-slate-50/50">
@@ -2234,10 +1943,6 @@ export default function Inventory() {
                             ? 'border-amber-200 bg-amber-50 text-amber-700'
                             : 'border-slate-200 bg-slate-50 text-slate-700'
                         }`}>
-                          <button className="hover:text-sky-700 transition-colors" onClick={(e) => {
-                             e.stopPropagation();
-                             openStockEntry(product);
-                          }}><Plus className="h-3.5 w-3.5" /></button>
                           <span className="tabular-nums whitespace-nowrap">{Number(product.availableStock ?? product.stock)}</span>
                           <span className="text-[10px] text-slate-500">{product.unit}</span>
                           {Number(product.availableStock ?? product.stock) <= product.lowStockThreshold && <AlertTriangle className="h-3 w-3" />}
@@ -2250,10 +1955,11 @@ export default function Inventory() {
                           variant="ghost"
                           size="sm"
                           onClick={() => void openStockCard(product)}
-                          className="h-8 w-8 rounded-md bg-sky-50 text-sky-700 hover:bg-sky-100 transition-colors"
+                          className="h-8 gap-1 rounded-md bg-sky-50 px-2 text-[11px] text-sky-700 hover:bg-sky-100 transition-colors"
                           title="Thẻ kho"
                         >
                           <ArrowUpDown className="h-4 w-4" />
+                          <span>Thẻ kho</span>
                         </Button>
                         <Button 
                           variant="ghost" 
@@ -2317,13 +2023,15 @@ export default function Inventory() {
                       <span className="text-xs font-mono text-slate-500">{m.productSku || 'N/A'}</span>
                     </div>
                     <p className="text-sm font-medium text-slate-900 truncate">
-                      {m.productName || 'Sản phẩm'} {m.note ? `· ${m.note}` : ''}
+                      {m.productName || 'Sản phẩm'} {m.referenceLabel ? `· ${m.transactionType} ${m.referenceLabel}` : readableStockNote(m) ? `· ${readableStockNote(m)}` : ''}
                     </p>
                     <p className="text-xs text-slate-500">
                       {new Date(m.createdAt).toLocaleString('vi-VN')} · {m.actorName || 'N/A'}
                       {m.actorRole ? ` (${m.actorRole})` : ''}
-                      {m.referenceId && m.note?.includes('Bán hàng') && <><span> · </span><button type="button" className="text-sky-700 hover:underline" onClick={() => navigate(`/app/invoices?invoiceId=${encodeURIComponent(m.referenceId)}`)}>Mở đơn hàng</button></>}
-                      {m.referenceId && m.note?.includes('Nhập hàng') && <><span> · </span><button type="button" className="text-sky-700 hover:underline" onClick={() => navigate(`/app/purchases?purchaseId=${encodeURIComponent(m.referenceId)}`)}>Mở phiếu nhập</button></>}
+                      {m.referenceType === 'invoice' && m.referenceId && <><span> · </span><button type="button" className="text-sky-700 hover:underline" onClick={() => navigate(`/app/invoices?invoiceId=${encodeURIComponent(m.referenceId)}`)}>Mở hóa đơn</button></>}
+                      {m.referenceType === 'sales_return' && <><span> · </span><button type="button" className="text-sky-700 hover:underline" onClick={() => navigate('/app/returns')}>Mở phiếu trả</button></>}
+                      {m.referenceType === 'purchase' && m.referenceId && <><span> · </span><button type="button" className="text-sky-700 hover:underline" onClick={() => navigate(`/app/purchases?purchaseId=${encodeURIComponent(m.referenceId)}`)}>Mở phiếu nhập</button></>}
+                      {m.referenceType === 'purchase_return' && <><span> · </span><button type="button" className="text-sky-700 hover:underline" onClick={() => navigate('/app/purchase-returns')}>Mở phiếu trả NCC</button></>}
                     </p>
                   </div>
                   <div className="text-right shrink-0">

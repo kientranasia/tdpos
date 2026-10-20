@@ -15,7 +15,7 @@ type LauncherItem = {
 const quickActions: LauncherItem[] = [
   { label: 'Bán hàng', description: 'Tạo bill mới tại quầy', path: '/app/pos', icon: ShoppingCart, tone: 'bg-sky-50 text-sky-700 border-sky-100', surface: 'bg-white' },
   { label: 'Thêm khách hàng', description: 'Tạo hồ sơ khách mới', path: '/app/customers?create=1', icon: Plus, tone: 'bg-emerald-50 text-emerald-700 border-emerald-100', surface: 'bg-white' },
-  { label: 'Đơn nhập hàng', description: 'Tạo phiếu nhập kho', path: '/app/purchases', icon: ClipboardList, tone: 'bg-amber-50 text-amber-700 border-amber-100', surface: 'bg-white' },
+  { label: 'Nhập hàng', description: 'Tạo phiếu nhập kho', path: '/app/purchases', icon: ClipboardList, tone: 'bg-amber-50 text-amber-700 border-amber-100', surface: 'bg-white' },
   { label: 'Thu nợ', description: 'Ghi nhận khách thanh toán', path: '/app/debt', icon: Wallet, tone: 'bg-rose-50 text-rose-700 border-rose-100', surface: 'bg-white' },
 ];
 

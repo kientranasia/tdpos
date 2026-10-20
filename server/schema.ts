@@ -171,6 +171,12 @@ export const priceLists = sqliteTable('price_lists', {
   // Keeps the legacy retail/loyal mappings while allowing tenants to define
   // named price groups such as agency, wholesale, or healthcare.
   customerType: text('customer_type').notNull().default('all'),
+  // Optional percentage used to suggest prices relative to the default list.
+  // A product can still override the suggested amount per unit/variant.
+  markupPercent: real('markup_percent').notNull().default(0),
+  // Newer price lists can also add a fixed amount to the base price.
+  markupMode: text('markup_mode', { enum: ['percent', 'amount'] }).notNull().default('percent'),
+  markupValue: real('markup_value').notNull().default(0),
   isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
   active: integer('active', { mode: 'boolean' }).notNull().default(true),
   createdAt: text('created_at').notNull(),
@@ -342,6 +348,8 @@ export const invoices = sqliteTable('invoices', {
   finalAmount: real('final_amount').notNull(),
   paidAmount: real('paid_amount').notNull(),
   debtAmount: real('debt_amount').notNull().default(0),
+  previousDebtAmount: real('previous_debt_amount').notNull().default(0),
+  changeAmount: real('change_amount').notNull().default(0),
   paymentMethod: text('payment_method', { enum: ['cash', 'transfer', 'wallet', 'debt'] }).notNull(),
   accountId: text('account_id'),
   status: text('status', { enum: ['completed', 'partial', 'unpaid'] }).notNull(),
@@ -386,7 +394,7 @@ export const salesReturns = sqliteTable('sales_returns', {
   id: text('id').primaryKey(),
   documentNo: text('document_no').notNull().default(''),
   tenantId: text('tenant_id').notNull().references(() => tenants.id),
-  invoiceId: text('invoice_id').notNull().references(() => invoices.id),
+  invoiceId: text('invoice_id').references(() => invoices.id),
   customerId: text('customer_id'),
   totalAmount: real('total_amount').notNull(),
   debtReduction: real('debt_reduction').notNull().default(0),
@@ -400,7 +408,7 @@ export const salesReturns = sqliteTable('sales_returns', {
 export const salesReturnItems = sqliteTable('sales_return_items', {
   id: text('id').primaryKey(),
   returnId: text('return_id').notNull().references(() => salesReturns.id),
-  invoiceItemId: text('invoice_item_id').notNull().references(() => invoiceItems.id),
+  invoiceItemId: text('invoice_item_id').references(() => invoiceItems.id),
   productId: text('product_id').notNull(),
   productName: text('product_name').notNull(),
   unitName: text('unit_name').notNull(),

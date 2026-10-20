@@ -431,7 +431,7 @@ export default function TenantSetup() {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-2xl mx-auto">
                         <div className="p-8 rounded-lg border-2 border-dashed border-slate-200 hover:border-sky-600 hover:bg-sky-50 transition-all cursor-pointer group">
                              <Upload className="h-8 w-8 text-slate-300 mx-auto mb-4 group-hover:scale-110 transition-transform" />
-                             <p className="font-black text-sm text-slate-900 uppercase tracking-tight mb-1">Mặt hàng (.xlsx)</p>
+                             <p className="font-black text-sm text-slate-900 uppercase tracking-tight mb-1">Hàng hóa (.xlsx)</p>
                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Tải tệp mẫu</p>
                         </div>
                         <div className="p-8 rounded-lg border-2 border-dashed border-slate-200 hover:border-blue-600 hover:bg-blue-50 transition-all cursor-pointer group">

@@ -8,6 +8,26 @@ import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import AppPageHeader from '../components/layout/AppPageHeader';
 
+const technicalIdPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+
+const readableEntryNote = (entry: CashbookEntry) => {
+  const note = entry.displayNote || entry.note || '';
+  if (!entry.referenceLabel && entry.referenceId && technicalIdPattern.test(entry.note || '')) {
+    technicalIdPattern.lastIndex = 0;
+    const legacyLabel = entry.category === 'Bán hàng'
+      ? 'Hóa đơn cũ'
+      : entry.category === 'Hoàn tiền khách hàng'
+        ? 'Phiếu trả cũ'
+        : 'chứng từ cũ';
+    return String(entry.note).replace(technicalIdPattern, legacyLabel).replace(/\s+·\s*$/, '').replace(/\s{2,}/g, ' ').trim() || 'Không ghi chú';
+  }
+  technicalIdPattern.lastIndex = 0;
+  const withDocument = entry.referenceLabel && entry.referenceId
+    ? note.replaceAll(entry.referenceId, entry.referenceLabel)
+    : note;
+  return withDocument.replace(technicalIdPattern, '').replace(/\s+·\s*$/, '').replace(/\s{2,}/g, ' ').trim() || 'Không ghi chú';
+};
+
 export default function Cashbook() {
   const navigate = useNavigate();
   const [entries, setEntries] = useState<CashbookEntry[]>([]);
@@ -73,13 +93,14 @@ export default function Cashbook() {
   };
 
   const exportCsv = () => {
-    const header = ['Thoi gian', 'Loai', 'Tai khoan', 'Danh muc', 'So tien', 'Ghi chu'];
+    const header = ['Thoi gian', 'Loai', 'Tai khoan', 'Danh muc', 'So tien', 'Nguoi thuc hien', 'Ghi chu'];
     const rows = entries.filter((e) => accountFilter === 'all' || e.accountId === accountFilter).map((e) => [
       new Date(e.createdAt).toLocaleString('vi-VN'),
       e.type === 'income' ? 'Thu' : 'Chi',
       accounts.find((account) => account.id === e.accountId)?.name || 'Chưa phân bổ',
       e.category || '',
       String(e.amount || 0),
+      e.createdByName || 'Chua xac dinh',
       (e.note || '').replaceAll(',', ' '),
     ]);
     const csv = [header, ...rows].map((r) => r.join(',')).join('\n');
@@ -93,8 +114,20 @@ export default function Cashbook() {
 
   const openReference = (entry: CashbookEntry) => {
     if (!entry.referenceId) return;
-    if (entry.category === 'Bán hàng') {
+    if (entry.referenceType === 'invoice' || entry.category === 'Bán hàng') {
       navigate(`/app/invoices?invoiceId=${encodeURIComponent(entry.referenceId)}`);
+      return;
+    }
+    if (entry.referenceType === 'sales_return' || entry.category === 'Hoàn tiền khách hàng') {
+      navigate('/app/returns');
+      return;
+    }
+    if (entry.referenceType === 'purchase_return') {
+      navigate('/app/purchase-returns');
+      return;
+    }
+    if (entry.referenceType === 'purchase') {
+      navigate(`/app/purchases?purchaseId=${encodeURIComponent(entry.referenceId)}`);
       return;
     }
     if (entry.category?.includes('Nhập hàng')) {
@@ -159,8 +192,9 @@ export default function Cashbook() {
                 <div key={entry.id} className="flex items-center justify-between gap-3 px-3 py-2">
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-slate-900">{entry.category || 'Khác'}</p>
-                    <p className="truncate text-xs text-slate-500">{accounts.find((account) => account.id === entry.accountId)?.name || 'Chưa phân bổ'} · {entry.note || 'Không ghi chú'} · {new Date(entry.createdAt).toLocaleString('vi-VN')}</p>
-                    {entry.referenceId && <button type="button" onClick={() => openReference(entry)} className="mt-0.5 text-[11px] text-sky-700 hover:underline">Mở chứng từ liên quan · {entry.referenceId}</button>}
+                    <p className="truncate text-xs text-slate-500">{accounts.find((account) => account.id === entry.accountId)?.name || 'Chưa phân bổ'} · {readableEntryNote(entry)} · {new Date(entry.createdAt).toLocaleString('vi-VN')}</p>
+                    <p className="mt-0.5 text-[11px] text-slate-500">Người thực hiện: {entry.createdByName || 'Chưa xác định'}</p>
+                    {entry.referenceId && entry.referenceLabel && <button type="button" onClick={() => openReference(entry)} className="mt-0.5 text-[11px] text-sky-700 hover:underline">Mở chứng từ liên quan · {entry.referenceLabel}</button>}
                   </div>
                   <div className={`text-sm font-semibold tabular-nums ${entry.type === 'income' ? 'text-emerald-700' : 'text-rose-700'}`}>
                     {entry.type === 'income' ? '+' : '-'}{formatCurrency(entry.amount)}

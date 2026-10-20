@@ -95,6 +95,12 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
   addColumnIfMissing('customers', 'active', 'active INTEGER NOT NULL DEFAULT 1');
 }
 
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'price_lists'").get()) {
+  addColumnIfMissing('price_lists', 'markup_percent', 'markup_percent REAL NOT NULL DEFAULT 0');
+  addColumnIfMissing('price_lists', 'markup_mode', "markup_mode TEXT NOT NULL DEFAULT 'percent'");
+  addColumnIfMissing('price_lists', 'markup_value', 'markup_value REAL NOT NULL DEFAULT 0');
+}
+
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'purchases'").get()) {
   addColumnIfMissing('purchases', 'document_no', "document_no TEXT NOT NULL DEFAULT ''");
 }
@@ -133,6 +139,8 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'invoices'").get()) {
   addColumnIfMissing('invoices', 'account_id', 'account_id TEXT');
+  addColumnIfMissing('invoices', 'previous_debt_amount', 'previous_debt_amount REAL NOT NULL DEFAULT 0');
+  addColumnIfMissing('invoices', 'change_amount', 'change_amount REAL NOT NULL DEFAULT 0');
 }
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cashbook_entries'").get()) {
@@ -415,6 +423,9 @@ sqlite.exec(`
     tenant_id TEXT NOT NULL REFERENCES tenants(id),
     name TEXT NOT NULL,
     customer_type TEXT NOT NULL DEFAULT 'all',
+    markup_percent REAL NOT NULL DEFAULT 0,
+    markup_mode TEXT NOT NULL DEFAULT 'percent',
+    markup_value REAL NOT NULL DEFAULT 0,
     is_default INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
@@ -495,7 +506,7 @@ sqlite.exec(`
     id TEXT PRIMARY KEY,
     document_no TEXT NOT NULL DEFAULT '',
     tenant_id TEXT NOT NULL REFERENCES tenants(id),
-    invoice_id TEXT NOT NULL REFERENCES invoices(id),
+    invoice_id TEXT REFERENCES invoices(id),
     customer_id TEXT,
     total_amount REAL NOT NULL,
     debt_reduction REAL NOT NULL DEFAULT 0,
@@ -509,7 +520,7 @@ sqlite.exec(`
   CREATE TABLE IF NOT EXISTS sales_return_items (
     id TEXT PRIMARY KEY,
     return_id TEXT NOT NULL REFERENCES sales_returns(id),
-    invoice_item_id TEXT NOT NULL REFERENCES invoice_items(id),
+    invoice_item_id TEXT REFERENCES invoice_items(id),
     product_id TEXT NOT NULL,
     product_name TEXT NOT NULL,
     unit_name TEXT NOT NULL,
@@ -520,6 +531,64 @@ sqlite.exec(`
     total REAL NOT NULL
   );
 `);
+
+// Returns can be created without an original invoice. Older local databases
+// created these columns as NOT NULL, so rebuild both small tables once while
+// preserving existing return history.
+const salesReturnInfo = sqlite.prepare('PRAGMA table_info(sales_returns)').all() as Array<{ name: string; notnull: number }>;
+const salesReturnItemInfo = sqlite.prepare('PRAGMA table_info(sales_return_items)').all() as Array<{ name: string; notnull: number }>;
+const salesReturnInvoiceId = salesReturnInfo.find((column) => column.name === 'invoice_id');
+const salesReturnItemInvoiceId = salesReturnItemInfo.find((column) => column.name === 'invoice_item_id');
+if (salesReturnInvoiceId?.notnull === 1 || salesReturnItemInvoiceId?.notnull === 1) {
+  sqlite.pragma('foreign_keys = OFF');
+  try {
+    sqlite.transaction(() => {
+      sqlite.exec(`
+        CREATE TABLE sales_returns_migration (
+          id TEXT PRIMARY KEY,
+          document_no TEXT NOT NULL DEFAULT '',
+          tenant_id TEXT NOT NULL REFERENCES tenants(id),
+          invoice_id TEXT REFERENCES invoices(id),
+          customer_id TEXT,
+          total_amount REAL NOT NULL,
+          debt_reduction REAL NOT NULL DEFAULT 0,
+          refund_amount REAL NOT NULL DEFAULT 0,
+          refund_account_id TEXT,
+          note TEXT NOT NULL DEFAULT '',
+          created_by TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        INSERT INTO sales_returns_migration
+          SELECT id, document_no, tenant_id, invoice_id, customer_id, total_amount, debt_reduction, refund_amount, refund_account_id, note, created_by, created_at
+          FROM sales_returns;
+
+        CREATE TABLE sales_return_items_migration (
+          id TEXT PRIMARY KEY,
+          return_id TEXT NOT NULL REFERENCES sales_returns_migration(id),
+          invoice_item_id TEXT REFERENCES invoice_items(id),
+          product_id TEXT NOT NULL,
+          product_name TEXT NOT NULL,
+          unit_name TEXT NOT NULL,
+          quantity REAL NOT NULL,
+          unit_factor REAL NOT NULL DEFAULT 1,
+          base_quantity REAL NOT NULL DEFAULT 0,
+          price REAL NOT NULL,
+          total REAL NOT NULL
+        );
+        INSERT INTO sales_return_items_migration
+          SELECT id, return_id, invoice_item_id, product_id, product_name, unit_name, quantity, unit_factor, base_quantity, price, total
+          FROM sales_return_items;
+
+        DROP TABLE sales_return_items;
+        DROP TABLE sales_returns;
+        ALTER TABLE sales_returns_migration RENAME TO sales_returns;
+        ALTER TABLE sales_return_items_migration RENAME TO sales_return_items;
+      `);
+    })();
+  } finally {
+    sqlite.pragma('foreign_keys = ON');
+  }
+}
 
 // Keep supplier identifiers compact and readable while preserving existing supplier links.
 const supplierRows = sqlite.prepare('SELECT id, tenant_id, code FROM suppliers ORDER BY rowid').all() as Array<{ id: string; tenant_id: string; code: string }>;

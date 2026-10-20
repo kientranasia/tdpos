@@ -255,6 +255,8 @@ export interface Invoice {
   finalAmount: number;
   paidAmount: number;
   debtAmount: number;
+  previousDebtAmount?: number;
+  changeAmount?: number;
   paymentMethod: PaymentMethod;
   accountId?: string | null;
   status: 'completed' | 'partial' | 'unpaid';
@@ -369,6 +371,9 @@ export interface CashbookEntry {
   createdAt: string;
   createdBy: string;
   accountId?: string | null;
+  displayNote?: string;
+  referenceLabel?: string | null;
+  referenceType?: 'invoice' | 'sales_return' | 'purchase' | 'purchase_return' | 'unknown' | null;
 }
 
 export interface CashAccount {

@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, ShoppingCart, Package, Users, Truck, Wallet, LogOut, Receipt, Settings, PanelLeftClose, PanelLeftOpen, Bell, UserRound, BookText, Menu, ClipboardList, BarChart3 } from 'lucide-react';
+import { Home, ShoppingCart, Package, Users, Truck, Wallet, LogOut, Receipt, Settings, PanelLeftClose, PanelLeftOpen, Bell, UserRound, BookText, Menu, ClipboardList, ClipboardCheck, BarChart3, RotateCcw, PackageX, ArrowLeftRight, HandCoins } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { useState } from 'react';
 import { authApi } from '../../lib/api';
@@ -51,17 +51,24 @@ export default function MobileLayout() {
       ],
     },
     {
-      label: 'Bán hàng',
+      label: 'Giao dịch',
       items: [
         { icon: ShoppingCart, label: 'Bán hàng', shortLabel: 'Bán hàng', path: '/app/pos' },
-        { icon: Receipt, label: 'Lịch sử đơn', shortLabel: 'Đơn', path: '/app/invoices' },
+        { icon: Receipt, label: 'Hóa đơn', shortLabel: 'Hóa đơn', path: '/app/invoices' },
+        { icon: RotateCcw, label: 'Trả hàng', shortLabel: 'Trả hàng', path: '/app/returns' },
+        { icon: Wallet, label: 'Sổ quỹ', shortLabel: 'Sổ quỹ', path: '/app/cashbook' },
       ],
     },
     {
       label: 'Hàng hóa',
       items: [
-        { icon: Package, label: 'Mặt hàng', shortLabel: 'Hàng', path: '/app/inventory' },
-        { icon: ClipboardList, label: 'Đơn nhập hàng', shortLabel: 'Nhập', path: '/app/purchases' },
+        { icon: Package, label: 'Hàng hóa', shortLabel: 'Hàng hóa', path: '/app/inventory' },
+        { icon: ClipboardCheck, label: 'Kiểm kho', shortLabel: 'Kiểm kho', path: '/app/stock-check' },
+        { icon: ClipboardList, label: 'Nhập hàng', shortLabel: 'Nhập hàng', path: '/app/purchases' },
+        { icon: RotateCcw, label: 'Trả hàng nhập', shortLabel: 'Trả nhập', path: '/app/purchase-returns' },
+        { icon: PackageX, label: 'Xuất hủy', shortLabel: 'Xuất hủy', path: '/app/inventory-operations?mode=dispose' },
+        { icon: ArrowLeftRight, label: 'Chuyển hàng', shortLabel: 'Chuyển hàng', path: '/app/inventory-operations?mode=transfer' },
+        { icon: HandCoins, label: 'Xuất dùng nội bộ', shortLabel: 'Xuất nội bộ', path: '/app/inventory-operations?mode=internal' },
       ],
     },
     {
@@ -72,12 +79,16 @@ export default function MobileLayout() {
       ],
     },
     {
-      label: 'Tài chính',
+      label: 'Báo cáo',
       items: [
-        { icon: Wallet, label: 'Công nợ', shortLabel: 'Nợ', path: '/app/debt' },
-        { icon: BookText, label: 'Sổ quỹ', shortLabel: 'Quỹ', path: '/app/cashbook' },
-        { icon: BarChart3, label: 'Báo cáo', shortLabel: 'BC', path: '/app/reports' },
+        { icon: BarChart3, label: 'Cuối ngày', shortLabel: 'Cuối ngày', path: '/app/reports?view=daily' },
+        { icon: BarChart3, label: 'Bán hàng', shortLabel: 'BC bán', path: '/app/reports?view=sales' },
+        { icon: Package, label: 'Hàng hóa', shortLabel: 'BC hàng', path: '/app/reports?view=inventory' },
       ],
+    },
+    {
+      label: 'Tài chính',
+      items: [{ icon: Wallet, label: 'Công nợ', shortLabel: 'Nợ', path: '/app/debt' }],
     },
   ];
   const visibleMenuSections = menuSections
@@ -94,7 +105,9 @@ export default function MobileLayout() {
 
   const getHeaderTitle = () => {
     if (location.pathname.startsWith('/app/more')) return 'Nhiều hơn';
-    const item = visibleMenuItems.find(item => item.path === location.pathname);
+    const currentPath = `${location.pathname}${location.search}`;
+    const item = visibleMenuItems.find((menuItem) => menuItem.path === currentPath)
+      || visibleMenuItems.find((menuItem) => menuItem.path.split('?')[0] === location.pathname);
     return item ? item.label : 'HKD Smart';
   };
 
@@ -183,17 +196,17 @@ export default function MobileLayout() {
         <nav className="mt-2 flex-1 space-y-1 overflow-y-auto p-1.5">
           {visibleMenuSections.map((section) => (
             <div key={section.label} className="space-y-0.5">
-              {!isCollapsed && <p className="px-2.5 pb-1 pt-2 text-[0.625rem] font-semibold tracking-[0.08em] text-slate-500">{section.label}</p>}
+              {!isCollapsed && <p className="px-2.5 pb-1 pt-2 text-[0.625rem] font-medium tracking-[0.1em] text-slate-500">{section.label}</p>}
               {section.items.map((item) => (
                 <NavLink
                   key={item.path}
                   to={item.path}
                   title={isCollapsed ? item.label : ''}
-                  className={({ isActive }) =>
+                  className={() =>
                     `flex items-center ${isCollapsed ? 'justify-center' : 'gap-1.5'} rounded-md px-2 py-1.5 text-[0.6875rem] font-medium tracking-normal transition-all duration-200 group ${
-                      isActive
+                      item.path === `${location.pathname}${location.search}` || (!item.path.includes('?') && item.path === location.pathname)
                         ? 'bg-sky-600 text-white shadow-xl shadow-sky-900/30'
-                        : 'text-slate-400 hover:bg-slate-50 hover:text-slate-900'
+                        : 'text-slate-600 hover:bg-slate-50 hover:text-slate-950'
                     }`
                   }
                 >
@@ -269,7 +282,7 @@ export default function MobileLayout() {
           {!isCollapsed && (
             <div className="mt-1 text-center animate-in fade-in duration-700">
               <p className="sidebar-footer-note">
-                © HKD Smart · Kinh Doanh Tinh Gọn
+                © HKD Smart
               </p>
             </div>
           )}

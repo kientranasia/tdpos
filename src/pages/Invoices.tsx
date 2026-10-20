@@ -1,15 +1,19 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowUpDown, Calendar, ChevronDown, ChevronRight, Printer, Receipt, RotateCcw, Search, ShoppingCart, SlidersHorizontal, User, Wallet, X } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { formatCurrency, normalizeSearchText } from '../lib/utils';
+import { getInvoiceReceiptSummary } from '../lib/invoiceReceipt';
 import { cashAccountsApi, debtLedgerApi, invoiceItemsApi, invoicesApi } from '../lib/api';
 import { DebtLedger, Invoice, InvoiceItem } from '../types';
+import { POSInvoiceModal } from '../components/pos/POSInvoiceModal';
+import { toPng } from 'html-to-image';
+import download from 'downloadjs';
 
 export default function Invoices() {
-  const { invoices, customers, products, refreshInvoices } = useApp();
+  const { invoices, customers, products, activeTenant, currentUser, refreshInvoices } = useApp();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [searchTerm, setSearchTerm] = useState('');
@@ -19,12 +23,15 @@ export default function Invoices() {
   const [debtPayments, setDebtPayments] = useState<DebtLedger[]>([]);
   const [selectedInvoiceItems, setSelectedInvoiceItems] = useState<InvoiceItem[]>([]);
   const [loadingInvoiceItems, setLoadingInvoiceItems] = useState(false);
+  const [receiptInvoiceId, setReceiptInvoiceId] = useState<string | null>(null);
   const [timeFilter, setTimeFilter] = useState<'all' | 'today' | 'yesterday' | 'last7' | 'month' | 'lastMonth'>('all');
   const [showTimeSheet, setShowTimeSheet] = useState(false);
   const [showSummarySheet, setShowSummarySheet] = useState(false);
   const [showMobileSearch, setShowMobileSearch] = useState(false);
   const [showFilterSheet, setShowFilterSheet] = useState(false);
   const [showInvoiceActions, setShowInvoiceActions] = useState(false);
+  const [showReturnLookup, setShowReturnLookup] = useState(false);
+  const [returnLookupTerm, setReturnLookupTerm] = useState('');
   const [showReturnModal, setShowReturnModal] = useState(false);
   const [returnLines, setReturnLines] = useState<Array<{ invoiceItemId: string; productName: string; quantity: number; maxQuantity: number; price: number }>>([]);
   const [returnAccountId, setReturnAccountId] = useState('');
@@ -32,6 +39,7 @@ export default function Invoices() {
   const [returnMessage, setReturnMessage] = useState('');
   const [salesReturns, setSalesReturns] = useState<any[]>([]);
   const [loadingSalesReturns, setLoadingSalesReturns] = useState(false);
+  const receiptRef = useRef<HTMLDivElement | null>(null);
 
   const customerNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -88,14 +96,48 @@ export default function Invoices() {
     return baseInvoices.filter((inv) => effectiveStatusOf(inv) === statusFilter);
   }, [baseInvoices, statusFilter]);
 
+  const returnLookupInvoices = useMemo(() => {
+    const keyword = normalizeSearchText(returnLookupTerm);
+    return [...invoices]
+      .filter((invoice) => invoice.workflowStatus === 'closed')
+      .filter((invoice) => {
+        if (!keyword) return true;
+        const customer = invoice.customerId ? customers.find((item) => item.id === invoice.customerId) : null;
+        const searchable = [
+          invoice.id,
+          invoice.documentNo || '',
+          customer?.name || 'khách vãng lai',
+          customer?.phone || '',
+        ].map(normalizeSearchText);
+        return searchable.some((value) => value.includes(keyword));
+      })
+      .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
+  }, [customers, invoices, returnLookupTerm]);
+
   const selectedInvoice = useMemo(
     () => invoices.find((inv) => inv.id === selectedInvoiceId) || filteredInvoices.find((inv) => inv.id === selectedInvoiceId) || null,
     [filteredInvoices, invoices, selectedInvoiceId]
   );
 
+  const receiptInvoice = useMemo(
+    () => invoices.find((invoice) => invoice.id === receiptInvoiceId) || null,
+    [invoices, receiptInvoiceId]
+  );
+
+  const receiptCustomer = useMemo(
+    () => receiptInvoice?.customerId ? customers.find((customer) => customer.id === receiptInvoice.customerId) || null : null,
+    [customers, receiptInvoice]
+  );
+
+  const selectedInvoiceReceipt = useMemo(
+    () => selectedInvoice ? getInvoiceReceiptSummary(selectedInvoice) : null,
+    [selectedInvoice]
+  );
+
   const returnSummaryByInvoice = useMemo(() => {
     const map = new Map<string, { count: number; total: number }>();
     salesReturns.forEach((item) => {
+      if (!item.invoiceId) return;
       const current = map.get(item.invoiceId) || { count: 0, total: 0 };
       map.set(item.invoiceId, { count: current.count + 1, total: current.total + Number(item.totalAmount || 0) });
     });
@@ -135,6 +177,17 @@ export default function Invoices() {
       setReturnLines(data.items.map((item: any) => ({ invoiceItemId: item.id, productName: item.productName, quantity: 0, maxQuantity: Math.max(0, Number(item.returnableQuantity ?? (Number(item.soldQuantity ?? item.quantity) - Number(item.returnedQuantity || 0)))), price: Number(item.price) })));
       setReturnAccounts(accounts); setReturnAccountId(invoice.accountId || accounts.find((account: any) => account.type === 'cash')?.id || accounts[0]?.id || ''); setReturnMessage(''); setShowReturnModal(true);
     } catch (error) { setReturnMessage(error instanceof Error ? error.message : 'Không thể tải hàng hóa có thể trả.'); }
+  };
+
+  const openReturnLookup = () => {
+    setReturnLookupTerm('');
+    setShowReturnLookup(true);
+  };
+
+  const chooseReturnInvoice = async (invoice: Invoice) => {
+    setSelectedInvoiceId(invoice.id);
+    setShowReturnLookup(false);
+    await openReturnModal(invoice);
   };
 
   const loadSalesReturns = async () => {
@@ -229,30 +282,60 @@ export default function Invoices() {
     if (showFilterSheet) setPendingStatusFilter(statusFilter);
   }, [showFilterSheet, statusFilter]);
 
-  const printInvoice = (invoiceId: string) => {
-    const invoice = invoices.find((inv) => inv.id === invoiceId);
-    if (!invoice) return;
-    const customerName = invoice.customerId ? customerNameById.get(invoice.customerId) || 'Khách vãng lai' : 'Khách vãng lai';
-    const popup = window.open('', '_blank', 'width=480,height=680');
-    if (!popup) return;
-    popup.document.write(`
-      <html>
-        <head><title>Invoice ${invoice.id}</title></head>
-        <body style="font-family: system-ui, -apple-system, sans-serif; padding: 20px; color:#0f172a">
-          <h2 style="margin:0 0 8px">Hóa đơn #${invoice.id}</h2>
-          <p style="margin:4px 0">Khách hàng: ${customerName}</p>
-          <p style="margin:4px 0">Thời gian: ${new Date(invoice.createdAt).toLocaleString('vi-VN')}</p>
-          <p style="margin:4px 0">Trạng thái: ${invoice.status}</p>
-          <hr />
-          <p style="margin:4px 0">Tổng tiền: ${formatCurrency(invoice.finalAmount)}</p>
-          <p style="margin:4px 0">Đã thanh toán: ${formatCurrency(invoice.paidAmount)}</p>
-          <p style="margin:4px 0">Còn nợ: ${formatCurrency(invoice.debtAmount)}</p>
-        </body>
-      </html>
-    `);
-    popup.document.close();
-    popup.focus();
-    popup.print();
+  const openReceiptModal = (invoiceId: string) => {
+    if (invoiceId !== selectedInvoiceId) setLoadingInvoiceItems(true);
+    setSelectedInvoiceId(invoiceId);
+    setReceiptInvoiceId(invoiceId);
+  };
+
+  const printReceipt = () => {
+    const invoice = receiptInvoice;
+    const receiptNode = receiptRef.current;
+    if (!invoice || !receiptNode) return;
+    const printFrame = document.createElement('iframe');
+    printFrame.setAttribute('title', 'Bản in hóa đơn');
+    printFrame.style.position = 'fixed';
+    printFrame.style.right = '-10000px';
+    printFrame.style.bottom = '0';
+    printFrame.style.width = '1px';
+    printFrame.style.height = '1px';
+    printFrame.style.border = '0';
+    document.body.appendChild(printFrame);
+    const frameDocument = printFrame.contentDocument;
+    if (!frameDocument) {
+      printFrame.remove();
+      return;
+    }
+    const copiedStyles = Array.from(document.head.querySelectorAll('style, link[rel="stylesheet"]')).map((style) => style.outerHTML).join('');
+    frameDocument.open();
+    frameDocument.write(`<!doctype html><html><head><meta charset="utf-8">${copiedStyles}<style>@page{margin:0}html,body{margin:0;padding:0;background:#fff}body{display:flex;align-items:flex-start;justify-content:center}#printable-invoice{margin:0!important;border:0!important;box-shadow:none!important}</style></head><body>${receiptNode.outerHTML}</body></html>`);
+    frameDocument.close();
+    let printed = false;
+    const printNow = () => {
+      if (printed) return;
+      printed = true;
+      printFrame.contentWindow?.focus();
+      printFrame.contentWindow?.print();
+      window.setTimeout(() => printFrame.remove(), 500);
+    };
+    printFrame.onload = printNow;
+    window.setTimeout(printNow, 250);
+  };
+
+  const exportReceiptImage = () => {
+    const invoice = receiptInvoice;
+    const receiptNode = receiptRef.current;
+    if (!invoice || !receiptNode) return;
+    const width = Math.ceil(receiptNode.scrollWidth || receiptNode.getBoundingClientRect().width);
+    const height = Math.ceil(receiptNode.scrollHeight || receiptNode.getBoundingClientRect().height);
+    void toPng(receiptNode, {
+      cacheBust: true,
+      backgroundColor: '#ffffff',
+      width,
+      height,
+      pixelRatio: 2,
+      style: { width: `${width}px`, height: `${height}px`, margin: '0', borderRadius: '0', boxShadow: 'none', overflow: 'visible' },
+    }).then((dataUrl) => download(dataUrl, `HoaDon_${invoice.documentNo || invoice.id}.png`)).catch(() => undefined);
   };
 
   return (
@@ -269,6 +352,9 @@ export default function Invoices() {
                   </button>
                   <button onClick={() => setShowSummarySheet(true)} className="h-9 w-9 rounded-lg text-slate-500 hover:bg-slate-100 flex items-center justify-center">
                     <ArrowUpDown className="h-5 w-5" />
+                  </button>
+                  <button onClick={() => navigate('/app/returns')} className="h-9 w-9 rounded-lg text-orange-600 hover:bg-orange-50 flex items-center justify-center" aria-label="Mở mục trả hàng">
+                    <RotateCcw className="h-5 w-5" />
                   </button>
                 </div>
               </div>
@@ -368,7 +454,7 @@ export default function Invoices() {
             <Receipt className="h-4 w-4" />
           </div>
           <div>
-            <h1 className="text-base font-semibold leading-tight text-slate-900">Lịch sử đơn hàng</h1>
+            <h1 className="text-base font-semibold leading-tight text-slate-900">Hóa đơn</h1>
             <p className="text-[11px] leading-tight text-slate-500 mt-0.5">{invoices.length} đơn hàng trong hệ thống</p>
           </div>
         </div>
@@ -394,10 +480,16 @@ export default function Invoices() {
               <option value="partial">Thanh toán một phần</option>
               <option value="unpaid">Chưa thanh toán</option>
             </select>
-            <Button className="h-9 lg:h-10 text-sm px-3 lg:px-4" onClick={() => navigate('/app/pos')}>
-              <ShoppingCart className="h-4 w-4 sm:mr-2" />
-              <span className="hidden sm:inline">Lên đơn mới</span>
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" className="h-9 lg:h-10 px-3 text-sm" onClick={() => navigate('/app/returns')}>
+                <RotateCcw className="h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">Trả hàng</span>
+              </Button>
+              <Button className="h-9 lg:h-10 text-sm px-3 lg:px-4" onClick={() => navigate('/app/pos')}>
+                <ShoppingCart className="h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">Lên đơn mới</span>
+              </Button>
+            </div>
           </div>
         </div>
       </div>
@@ -453,32 +545,6 @@ export default function Invoices() {
       </section>
 
       <section className="rounded-lg border border-slate-200 bg-white">
-        <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-900">Phiếu trả hàng khách hàng</h2>
-            <p className="mt-0.5 text-xs text-slate-500">Mỗi lần trả được lưu thành một phiếu riêng và liên kết về hóa đơn gốc.</p>
-          </div>
-          <span className="text-xs text-slate-500">{salesReturns.length} phiếu</span>
-        </div>
-        <div className="divide-y divide-slate-100">
-          {loadingSalesReturns ? <p className="p-6 text-sm text-slate-500">Đang tải lịch sử trả hàng...</p> : salesReturns.slice(0, 20).map((returnSlip) => {
-            const invoice = invoices.find((item) => item.id === returnSlip.invoiceId);
-            const customerName = invoice?.customerId ? customerNameById.get(invoice.customerId) || 'Khách vãng lai' : 'Khách vãng lai';
-            return (
-              <button key={returnSlip.id} type="button" onClick={() => setSelectedInvoiceId(returnSlip.invoiceId)} className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-slate-900">{returnSlip.documentNo || returnSlip.id}</p>
-                  <p className="mt-0.5 truncate text-xs text-slate-500">Hóa đơn #{returnSlip.invoiceId} · {customerName} · {new Date(returnSlip.createdAt).toLocaleString('vi-VN')}</p>
-                </div>
-                <span className="shrink-0 text-sm font-semibold text-orange-700">-{formatCurrency(Number(returnSlip.totalAmount || 0))}</span>
-              </button>
-            );
-          })}
-          {!loadingSalesReturns && salesReturns.length === 0 && <p className="p-6 text-sm text-slate-500">Chưa có phiếu trả hàng.</p>}
-        </div>
-      </section>
-
-      <section className="rounded-lg border border-slate-200 bg-white">
         <div className="hidden border-b border-slate-100 px-4 py-3 text-xs text-slate-500 md:grid md:grid-cols-[1.2fr_1fr_1fr_1fr_auto] md:gap-3">
           <p>Mã đơn</p>
           <p>Khách hàng</p>
@@ -506,11 +572,11 @@ export default function Invoices() {
                 </div>
                 <div className="mb-3 md:mb-0">
                   <p className="text-sm font-semibold text-slate-900">{formatCurrency(inv.finalAmount)}</p>
-                  <p className="text-xs text-slate-500">Tạo bởi: {inv.createdByName || inv.createdBy || 'N/A'}</p>
+                  <p className="text-xs text-slate-500">Tạo bởi: {inv.createdByName || 'Chưa xác định'}</p>
                 </div>
                 <div className="flex items-center justify-end gap-1">
-                  {inv.workflowStatus === 'closed' && <Button variant="outline" className="h-8 px-2 text-xs" onClick={() => { setSelectedInvoiceId(inv.id); void openReturnModal(inv); }}><RotateCcw className="mr-1 h-3.5 w-3.5" />Trả hàng</Button>}
-                  <Button variant="ghost" size="icon" onClick={() => printInvoice(inv.id)}>
+                  {inv.workflowStatus === 'closed' && <Button variant="outline" className="h-8 px-2 text-xs" onClick={() => navigate(`/app/returns?invoiceId=${encodeURIComponent(inv.id)}`)}><RotateCcw className="mr-1 h-3.5 w-3.5" />Trả hàng</Button>}
+                  <Button variant="ghost" size="icon" onClick={() => openReceiptModal(inv.id)}>
                     <Printer className="h-4 w-4" />
                   </Button>
                   <Button variant="ghost" size="icon" onClick={() => setSelectedInvoiceId(inv.id)}>
@@ -703,7 +769,7 @@ export default function Invoices() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Nhân sự tạo đơn</span>
-                <span className="font-medium text-slate-900">{selectedInvoice.createdByName || selectedInvoice.createdBy || 'N/A'}</span>
+                <span className="font-medium text-slate-900">{selectedInvoice.createdByName || 'Chưa xác định'}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Trạng thái</span>
@@ -712,17 +778,41 @@ export default function Invoices() {
                 </div>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-slate-500">Tổng tiền</span>
-                <span className="font-semibold text-slate-900">{formatCurrency(selectedInvoice.finalAmount)}</span>
+                <span className="text-slate-500">Tổng hàng</span>
+                <span className="font-semibold text-slate-900">{formatCurrency(selectedInvoiceReceipt?.totalAmount || 0)}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-slate-500">Đã thanh toán</span>
-                <span className="font-medium text-slate-900">{formatCurrency(selectedInvoice.paidAmount)}</span>
+                <span className="text-slate-500">Giảm giá</span>
+                <span className="font-medium text-slate-900">{formatCurrency(selectedInvoiceReceipt?.discount || 0)}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-slate-500">Công nợ</span>
-                <span className="font-medium text-amber-700">{formatCurrency(selectedInvoice.debtAmount)}</span>
+                <span className="text-slate-500">Khách cần trả</span>
+                <span className="font-medium text-sky-700">{formatCurrency(selectedInvoiceReceipt?.amountDue || 0)}</span>
               </div>
+              {selectedInvoice.customerId && <div className="flex items-center justify-between">
+                <span className="text-slate-500">Nợ cũ</span>
+                <span className="font-medium text-orange-700">{formatCurrency(selectedInvoiceReceipt?.previousDebt || 0)}</span>
+              </div>}
+              <div className="flex items-center justify-between border-t border-slate-100 pt-2">
+                <span className="font-semibold text-slate-900">Tổng cuối toa</span>
+                <span className="font-semibold text-slate-900">{formatCurrency(selectedInvoiceReceipt?.grandTotal || 0)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Khách đã trả</span>
+                <span className="font-medium text-slate-900">{formatCurrency(selectedInvoiceReceipt?.paidAmount || 0)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Tiền thừa trả khách</span>
+                <span className="font-medium text-emerald-700">{formatCurrency(selectedInvoiceReceipt?.changeAmount || 0)}</span>
+              </div>
+              {selectedInvoiceReceipt && selectedInvoiceReceipt.debtAmount > 0 && <div className="flex items-center justify-between">
+                <span className="text-slate-500">Công nợ mới</span>
+                <span className="font-medium text-amber-700">{formatCurrency(selectedInvoiceReceipt.debtAmount)}</span>
+              </div>}
+              {selectedInvoiceReceipt && selectedInvoiceReceipt.remainingDebt > 0 && <div className="flex items-center justify-between">
+                <span className="text-slate-500">Công nợ còn lại</span>
+                <span className="font-medium text-orange-700">{formatCurrency(selectedInvoiceReceipt.remainingDebt)}</span>
+              </div>}
               {selectedInvoiceReturns.length > 0 && (
                 <div className="mt-3 rounded-md bg-orange-50 px-3 py-2">
                   <div className="flex items-center justify-between text-sm">
@@ -743,8 +833,8 @@ export default function Invoices() {
                   Mở khách hàng
                 </Button>
               )}
-              {selectedInvoice.workflowStatus === 'closed' && <Button variant="outline" className="h-10 text-sm" onClick={() => void openReturnModal(selectedInvoice)}><RotateCcw className="mr-2 h-4 w-4" />Trả hàng</Button>}
-              <Button className="h-10 text-sm" onClick={() => printInvoice(selectedInvoice.id)}>
+              {selectedInvoice.workflowStatus === 'closed' && <Button variant="outline" className="h-10 text-sm" onClick={() => navigate(`/app/returns?invoiceId=${encodeURIComponent(selectedInvoice.id)}`)}><RotateCcw className="mr-2 h-4 w-4" />Trả hàng</Button>}
+              <Button className="h-10 text-sm" onClick={() => openReceiptModal(selectedInvoice.id)}>
                 <Printer className="mr-2 h-4 w-4" />
                 In hóa đơn
               </Button>
@@ -791,10 +881,14 @@ export default function Invoices() {
                 })}
               </div>
               <div className="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 text-base">
-                <div className="p-4 flex justify-between"><span>Tổng tiền hàng</span><span>{formatCurrency(selectedInvoice.totalAmount)}</span></div>
-                <div className="p-4 flex justify-between"><span>Giảm giá</span><span>{formatCurrency(selectedInvoice.discount || 0)}</span></div>
-                <div className="p-4 flex justify-between"><span>Khách cần trả</span><span>{formatCurrency(selectedInvoice.finalAmount)}</span></div>
-                <div className="p-4 flex justify-between"><span>Khách đã trả</span><span className="text-sky-700">{formatCurrency(selectedInvoice.paidAmount)}</span></div>
+                <div className="p-4 flex justify-between"><span>Tổng hàng</span><span>{formatCurrency(selectedInvoiceReceipt?.totalAmount || 0)}</span></div>
+                <div className="p-4 flex justify-between"><span>Giảm giá</span><span>{formatCurrency(selectedInvoiceReceipt?.discount || 0)}</span></div>
+                <div className="p-4 flex justify-between"><span>Khách cần trả</span><span>{formatCurrency(selectedInvoiceReceipt?.amountDue || 0)}</span></div>
+                {selectedInvoice.customerId && <div className="p-4 flex justify-between"><span>Nợ cũ</span><span className="text-orange-700">{formatCurrency(selectedInvoiceReceipt?.previousDebt || 0)}</span></div>}
+                <div className="p-4 flex justify-between font-semibold"><span>Tổng cuối toa</span><span>{formatCurrency(selectedInvoiceReceipt?.grandTotal || 0)}</span></div>
+                <div className="p-4 flex justify-between"><span>Khách đã trả</span><span className="text-sky-700">{formatCurrency(selectedInvoiceReceipt?.paidAmount || 0)}</span></div>
+                <div className="p-4 flex justify-between"><span>Tiền thừa trả khách</span><span className="text-emerald-700">{formatCurrency(selectedInvoiceReceipt?.changeAmount || 0)}</span></div>
+                {selectedInvoiceReceipt && selectedInvoiceReceipt.remainingDebt > 0 && <div className="p-4 flex justify-between"><span>Công nợ còn lại</span><span className="text-orange-700">{formatCurrency(selectedInvoiceReceipt.remainingDebt)}</span></div>}
               </div>
               {selectedInvoiceReturns.length > 0 && <div className="rounded-lg border border-orange-100 bg-orange-50 p-4"><div className="flex items-center justify-between"><span className="font-medium text-orange-900">Đã trả hàng</span><span className="font-semibold text-orange-700">{formatCurrency(selectedInvoiceReturns.reduce((sum, item) => sum + Number(item.totalAmount || 0), 0))}</span></div><div className="mt-2 space-y-1 border-t border-orange-100 pt-2">{selectedInvoiceReturns.map((returnSlip) => <p key={returnSlip.id} className="flex justify-between text-xs text-orange-800"><span>{returnSlip.documentNo || returnSlip.id}</span><span>{formatCurrency(Number(returnSlip.totalAmount || 0))}</span></p>)}</div></div>}
               <div className="rounded-lg border border-slate-200 bg-white p-4">
@@ -811,12 +905,67 @@ export default function Invoices() {
                 </div>
                 <div>
                   <p className="text-slate-500">Người tạo</p>
-                  <p className="font-medium text-slate-900">{selectedInvoice.createdByName || selectedInvoice.createdBy || 'N/A'}</p>
+                  <p className="font-medium text-slate-900">{selectedInvoice.createdByName || 'Chưa xác định'}</p>
                 </div>
               </div>
               <div className="pt-2 pb-2">
                 <Button className="h-12 w-full text-base">Cập nhật</Button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {receiptInvoice && !loadingInvoiceItems && (
+        <POSInvoiceModal
+          ref={receiptRef}
+          isOpen
+          onClose={() => setReceiptInvoiceId(null)}
+          lastInvoiceId={receiptInvoice.documentNo || receiptInvoice.id}
+          activeTenant={activeTenant}
+          selectedCustomer={receiptCustomer}
+          paymentMethod={receiptInvoice.paymentMethod}
+          currentInvoiceItems={selectedInvoiceItems}
+          currentInvoice={receiptInvoice}
+          currentUserName={receiptInvoice.createdByName || currentUser?.name || 'Chưa xác định'}
+          onExportImage={exportReceiptImage}
+          onPrint={printReceipt}
+        />
+      )}
+      {showReturnLookup && (
+        <div className="fixed inset-0 z-[175] flex items-center justify-center bg-slate-900/60 p-4" onClick={() => setShowReturnLookup(false)}>
+          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-slate-100 p-4">
+              <div>
+                <h2 className="font-semibold text-slate-900">Tìm hóa đơn để trả hàng</h2>
+                <p className="mt-0.5 text-xs text-slate-500">Không cần nhớ mã đơn — tìm theo khách hàng hoặc chọn theo thời gian.</p>
+              </div>
+              <button type="button" onClick={() => setShowReturnLookup(false)} aria-label="Đóng"><X className="h-5 w-5 text-slate-400" /></button>
+            </div>
+            <div className="border-b border-slate-100 p-4">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <Input autoFocus value={returnLookupTerm} onChange={(event) => setReturnLookupTerm(event.target.value)} className="h-10 pl-9" placeholder="Tên khách, số điện thoại hoặc mã đơn" />
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              {returnLookupInvoices.slice(0, 50).map((invoice) => {
+                const customer = invoice.customerId ? customers.find((item) => item.id === invoice.customerId) : null;
+                const customerName = customer?.name || 'Khách vãng lai';
+                const returnSummary = returnSummaryByInvoice.get(invoice.id);
+                return (
+                  <div key={invoice.id} className="flex items-center justify-between gap-3 rounded-md border-b border-slate-100 px-2 py-3 last:border-0">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-sky-700">#{invoice.documentNo || invoice.id}</p>
+                      <p className="mt-0.5 truncate text-sm text-slate-800">{customerName}{customer?.phone ? ` · ${customer.phone}` : ''}</p>
+                      <p className="mt-0.5 text-xs text-slate-500">{new Date(invoice.createdAt).toLocaleString('vi-VN')} · {formatCurrency(invoice.finalAmount)}</p>
+                      {returnSummary && <p className="mt-0.5 text-xs font-medium text-orange-700">Đã trả {formatCurrency(returnSummary.total)} · {returnSummary.count} phiếu</p>}
+                    </div>
+                    <Button variant="outline" className="h-8 shrink-0 px-3 text-xs" onClick={() => void chooseReturnInvoice(invoice)}>Chọn đơn</Button>
+                  </div>
+                );
+              })}
+              {returnLookupInvoices.length === 0 && <p className="p-6 text-center text-sm text-slate-500">Không tìm thấy hóa đơn đã chốt phù hợp.</p>}
+              {returnLookupInvoices.length > 50 && <p className="px-2 py-2 text-center text-xs text-slate-400">Đang hiển thị 50 hóa đơn gần nhất. Hãy nhập thêm thông tin để lọc.</p>}
             </div>
           </div>
         </div>
@@ -839,8 +988,8 @@ export default function Invoices() {
           <div className="absolute inset-x-0 bottom-0 rounded-t-3xl bg-white p-4" onClick={(e) => e.stopPropagation()}>
             <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-slate-300" />
             <div className="space-y-1 text-base">
-              <button className="h-12 w-full text-left px-2 rounded-lg hover:bg-slate-50 disabled:opacity-40" disabled={selectedInvoice.workflowStatus !== 'closed'} onClick={() => { setShowInvoiceActions(false); void openReturnModal(selectedInvoice); }}>Trả hàng</button>
-              <button className="h-12 w-full text-left px-2 rounded-lg hover:bg-slate-50" onClick={() => { printInvoice(selectedInvoice.id); setShowInvoiceActions(false); }}>In</button>
+              <button className="h-12 w-full text-left px-2 rounded-lg hover:bg-slate-50 disabled:opacity-40" disabled={selectedInvoice.workflowStatus !== 'closed'} onClick={() => { setShowInvoiceActions(false); navigate(`/app/returns?invoiceId=${encodeURIComponent(selectedInvoice.id)}`); }}>Trả hàng</button>
+              <button className="h-12 w-full text-left px-2 rounded-lg hover:bg-slate-50" onClick={() => { openReceiptModal(selectedInvoice.id); setShowInvoiceActions(false); }}>In</button>
               <button className="h-12 w-full text-left px-2 rounded-lg hover:bg-slate-50">Chia sẻ</button>
               <button className="h-12 w-full text-left px-2 rounded-lg text-rose-600 hover:bg-rose-50">Hủy hóa đơn</button>
             </div>

@@ -201,6 +201,7 @@ export const invoicesApi = {
   returnable: (id: string) => request<any>(`/invoices/${id}/returnable`),
   returns: (invoiceId?: string) => request<any[]>('/sales-returns', { params: { invoiceId: invoiceId || '' } }),
   createReturn: (id: string, data: any) => request<any>(`/invoices/${id}/returns`, { method: 'POST', body: data }),
+  createStandaloneReturn: (data: any) => request<any>('/sales-returns', { method: 'POST', body: data }),
 };
 
 export const cashAccountsApi = {
@@ -216,7 +217,7 @@ export const paymentsApi = {
 };
 
 export const cashbookApi = {
-  list: (filters?: { from?: string; to?: string; type?: 'income' | 'expense' }) => request<any[]>('/cashbook', { params: filters as any }),
+  list: (filters?: { from?: string; to?: string; type?: 'income' | 'expense' }) => request<any[]>('/cashbook', { params: { ...(filters || {}), _ts: String(Date.now()) } as any }),
   create: (data: { type: 'income' | 'expense'; amount: number; category?: string; note?: string; referenceId?: string | null; accountId?: string | null }) =>
     request<any>('/cashbook', { method: 'POST', body: data }),
 };
@@ -226,7 +227,7 @@ export const reportsApi = {
 };
 
 export const stockMovementsApi = {
-  list: (productId?: string) => request<any[]>('/stock-movements', { params: { productId: productId || '' } }),
+  list: (productId?: string) => request<any[]>('/stock-movements', { params: { productId: productId || '', _ts: String(Date.now()) } }),
   stockCheck: (productId: string, actualStock: number, note?: string) =>
     request<any>('/stock-check', { method: 'POST', body: { productId, actualStock, note } }),
 };

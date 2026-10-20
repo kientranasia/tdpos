@@ -28,6 +28,12 @@ const normalizeSearchText = (value: unknown) => String(value ?? '')
   .toLowerCase()
   .trim();
 
+const fallbackDocumentNo = (prefix: string, id: string) => `${prefix}-${String(id).replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+
+const documentReference = (document: any, prefix: string) => document
+  ? document.documentNo || fallbackDocumentNo(prefix, document.id)
+  : null;
+
 const nextSupplierCode = (tenantId: string) => {
   const rows = sqlite.prepare('SELECT code FROM suppliers WHERE tenant_id = ?').all(tenantId) as Array<{ code: string }>;
   const usedCodes = new Set(rows.map((row) => String(row.code || '').toUpperCase()));
@@ -1111,7 +1117,10 @@ app.post('/api/price-lists', (req, res) => {
     const name = String(req.body?.name || '').trim();
     if (!name) return res.status(400).json({ error: 'Tên bảng giá là bắt buộc' });
     const now = new Date().toISOString();
-    const list = { id: uuid(), tenantId: req.user.tenantId, name, customerType: req.body?.customerType || 'all', isDefault: Boolean(req.body?.isDefault), active: req.body?.active !== false, createdAt: now };
+    const markupMode: 'percent' | 'amount' = req.body?.markupMode === 'amount' ? 'amount' : 'percent';
+    const markupValue = Number(req.body?.markupValue ?? req.body?.markupPercent) || 0;
+    if (!Number.isFinite(markupValue) || (markupMode === 'percent' && markupValue < -100)) return res.status(400).json({ error: markupMode === 'percent' ? 'Tỷ lệ giá phải lớn hơn hoặc bằng -100%' : 'Số tiền điều chỉnh không hợp lệ' });
+    const list = { id: uuid(), tenantId: req.user.tenantId, name, customerType: req.body?.customerType || 'all', markupPercent: markupMode === 'percent' ? markupValue : 0, markupMode, markupValue, isDefault: Boolean(req.body?.isDefault), active: req.body?.active !== false, createdAt: now };
     if (list.isDefault) db.update(schema.priceLists).set({ isDefault: false }).where(eq(schema.priceLists.tenantId, req.user.tenantId)).run();
     db.insert(schema.priceLists).values(list).run();
     res.status(201).json({ ...list, items: [] });
@@ -1133,9 +1142,14 @@ app.patch('/api/price-lists/:id', (req, res) => {
       .find((row) => row.id !== list.id && row.name.trim().toLowerCase() === name.toLowerCase());
     if (duplicate) return res.status(409).json({ error: 'Tên bảng giá đã tồn tại' });
     const isDefault = req.body?.isDefault;
+    const markupMode: 'percent' | 'amount' = req.body?.markupMode === undefined ? (list.markupMode === 'amount' ? 'amount' : 'percent') : req.body.markupMode === 'amount' ? 'amount' : 'percent';
+    const hasMarkupValue = req.body?.markupValue !== undefined || req.body?.markupPercent !== undefined;
+    const markupValue = hasMarkupValue ? Number(req.body?.markupValue ?? req.body?.markupPercent) || 0 : Number(list.markupValue ?? list.markupPercent) || 0;
+    if (!Number.isFinite(markupValue) || (markupMode === 'percent' && markupValue < -100)) return res.status(400).json({ error: markupMode === 'percent' ? 'Tỷ lệ giá phải lớn hơn hoặc bằng -100%' : 'Số tiền điều chỉnh không hợp lệ' });
     const updates = {
       name,
       ...(req.body?.customerType !== undefined ? { customerType: String(req.body.customerType) } : {}),
+      ...(hasMarkupValue || req.body?.markupMode !== undefined ? { markupMode, markupValue, markupPercent: markupMode === 'percent' ? markupValue : 0 } : {}),
       ...(req.body?.active !== undefined ? { active: Boolean(req.body.active) } : {}),
     };
     if (isDefault) db.update(schema.priceLists).set({ isDefault: false }).where(eq(schema.priceLists.tenantId, req.user.tenantId)).run();
@@ -1970,7 +1984,16 @@ const priceForProduct = (tenantId: string, product: any, unitName?: string, unit
   }
   const baseItem = priceList ? db.select().from(schema.priceListItems).where(and(eq(schema.priceListItems.priceListId, priceList.id), eq(schema.priceListItems.productId, product.id), eq(schema.priceListItems.unitName, product.unit))).get() : null;
   const basePrice = baseItem ? Number(baseItem.price) : Number(product.sellingPrice);
-  return { price: basePrice * resolvedUnit.factor, priceList };
+  const markupMode = priceList?.markupMode === 'amount' ? 'amount' : 'percent';
+  const markupValue = markupMode === 'amount'
+    ? Number(priceList?.markupValue) || 0
+    : Number(priceList?.markupValue) || Number(priceList?.markupPercent) || 0;
+  const adjustedBasePrice = baseItem || !priceList
+    ? basePrice
+    : markupMode === 'amount'
+      ? Math.max(0, basePrice + markupValue)
+      : Math.max(0, basePrice * (1 + markupValue / 100));
+  return { price: adjustedBasePrice * resolvedUnit.factor, priceList };
 };
 
 app.get('/api/invoices', (req, res) => {
@@ -2033,8 +2056,17 @@ app.post('/api/invoices', (req, res) => {
     // legacy records only; new POS invoices must immediately affect stock,
     // cashbook, debt and reports.
     const workflowStatus = 'closed' as const;
-    const paymentStatus = invoiceData.paymentStatus || (invoiceData.status === 'completed' ? 'paid' : invoiceData.status === 'partial' ? 'partial' : 'unpaid');
     const customer = invoiceData.customerId ? db.select().from(schema.customers).where(and(eq(schema.customers.id, invoiceData.customerId), eq(schema.customers.tenantId, req.user.tenantId))).get() : null;
+    const finalAmount = Number(invoiceData.finalAmount) || 0;
+    const paidAmount = Math.max(0, Number(invoiceData.paidAmount) || 0);
+    const previousDebtAmount = customer
+      ? Math.max(0, Number(customer.totalDebt) || 0)
+      : Math.max(0, Number(invoiceData.previousDebtAmount) || 0);
+    const amountAppliedToInvoice = Math.min(finalAmount, paidAmount);
+    const debtAmount = Math.max(0, finalAmount - amountAppliedToInvoice);
+    const debtReduction = Math.min(previousDebtAmount, Math.max(0, paidAmount - finalAmount));
+    const changeAmount = Math.max(0, paidAmount - finalAmount - previousDebtAmount);
+    const paymentStatus = invoiceData.paymentStatus || (debtAmount <= 0 ? 'paid' : paidAmount > 0 ? 'partial' : 'unpaid');
     const normalizedItems = Array.isArray(items) ? items.map((raw: any) => {
       const product = db.select().from(schema.products).where(and(eq(schema.products.id, raw.productId), eq(schema.products.tenantId, req.user.tenantId))).get();
       if (!product) throw new Error(`Không tìm thấy sản phẩm: ${raw.productId}`);
@@ -2056,6 +2088,10 @@ app.post('/api/invoices', (req, res) => {
       createdAt: invoiceData.createdAt || new Date().toISOString(),
       workflowStatus,
       paymentStatus,
+      previousDebtAmount,
+      paidAmount,
+      debtAmount,
+      changeAmount,
       status: invoiceData.status || (paymentStatus === 'paid' ? 'completed' : paymentStatus === 'partial' ? 'partial' : 'unpaid'),
       accountId: Number(invoiceData.paidAmount) > 0 ? resolvePaymentAccount(req.user.tenantId, invoiceData.paymentMethod, invoiceData.accountId) : null,
       version: 1,
@@ -2064,7 +2100,8 @@ app.post('/api/invoices', (req, res) => {
     if (invoice.debtAmount > 0 && invoice.customerId) {
       if (!customer) return res.status(400).json({ error: 'Khách hàng không tồn tại' });
       if (customer.allowDebt === false) return res.status(409).json({ error: 'Khách hàng đang bị khóa bán nợ' });
-      if (Number(customer.creditLimit) > 0 && Number(customer.totalDebt) + Number(invoice.debtAmount) > Number(customer.creditLimit)) {
+      const projectedDebt = Math.max(0, Number(customer.totalDebt) - debtReduction) + Number(invoice.debtAmount);
+      if (Number(customer.creditLimit) > 0 && projectedDebt > Number(customer.creditLimit)) {
         return res.status(409).json({ error: 'Bill vượt hạn mức công nợ khách hàng' });
       }
     }
@@ -2144,30 +2181,47 @@ app.post('/api/invoices', (req, res) => {
       }
     }
 
-    // Update customer debt if applicable for immediately posted legacy bills.
-    if (workflowStatus === 'closed' && invoice.debtAmount > 0 && invoice.customerId) {
+    // Apply the payment to this invoice first, then use any remainder to reduce
+    // the customer's previous debt balance.
+    if (workflowStatus === 'closed' && invoice.customerId && (invoice.debtAmount > 0 || debtReduction > 0)) {
       const customer = db.select().from(schema.customers)
         .where(and(eq(schema.customers.id, invoice.customerId), eq(schema.customers.tenantId, req.user.tenantId)))
         .get();
       if (customer) {
+        const appliedDebtReduction = Math.min(Number(customer.totalDebt) || 0, debtReduction);
         db.update(schema.customers)
-          .set({ totalDebt: customer.totalDebt + invoice.debtAmount })
+          .set({ totalDebt: Math.max(0, Number(customer.totalDebt) - appliedDebtReduction + Number(invoice.debtAmount)) })
           .where(and(eq(schema.customers.id, invoice.customerId), eq(schema.customers.tenantId, req.user.tenantId)))
           .run();
+
+        if (appliedDebtReduction > 0) {
+          db.insert(schema.debtLedger).values({
+            id: uuid(),
+            tenantId: invoice.tenantId,
+            customerId: invoice.customerId,
+            invoiceId: invoiceId,
+            amount: appliedDebtReduction,
+            type: 'decrease',
+            note: `Cấn trừ công nợ cũ từ hóa đơn ${invoiceId}`,
+            createdAt: invoice.createdAt,
+            createdBy: invoice.createdBy,
+          }).run();
+        }
       }
 
-      // Add debt ledger entry
-      db.insert(schema.debtLedger).values({
-        id: uuid(),
-        tenantId: invoice.tenantId,
-        customerId: invoice.customerId,
-        invoiceId: invoiceId,
-        amount: invoice.debtAmount,
-        type: 'increase',
-        note: 'Mua hàng nợ',
-        createdAt: invoice.createdAt,
-        createdBy: invoice.createdBy,
-      }).run();
+      if (invoice.debtAmount > 0) {
+        db.insert(schema.debtLedger).values({
+          id: uuid(),
+          tenantId: invoice.tenantId,
+          customerId: invoice.customerId,
+          invoiceId: invoiceId,
+          amount: invoice.debtAmount,
+          type: 'increase',
+          note: 'Mua hàng nợ',
+          createdAt: invoice.createdAt,
+          createdBy: invoice.createdBy,
+        }).run();
+      }
     }
 
     if (workflowStatus === 'closed' && (invoice.paidAmount || 0) > 0 && invoice.paymentMethod !== 'debt') {
@@ -2177,7 +2231,7 @@ app.post('/api/invoices', (req, res) => {
         type: 'income',
         amount: Number(invoice.paidAmount) || 0,
         category: 'Bán hàng',
-        note: `Thu từ hóa đơn ${invoiceId}`,
+        note: debtReduction > 0 ? `Thu từ hóa đơn ${invoiceId}, cấn trừ công nợ cũ` : `Thu từ hóa đơn ${invoiceId}`,
         referenceId: invoiceId,
         accountId: invoice.accountId || defaultAccountForPayment(req.user.tenantId, invoice.paymentMethod),
         createdAt: invoice.createdAt,
@@ -2366,7 +2420,9 @@ app.get('/api/sales-returns', (req, res) => {
     if (!ensurePermission(req, res, 'sales.view')) return;
     let rows = db.select().from(schema.salesReturns).where(eq(schema.salesReturns.tenantId, req.user.tenantId)).orderBy(desc(schema.salesReturns.createdAt)).all();
     if (req.query.invoiceId) rows = rows.filter((row) => row.invoiceId === req.query.invoiceId);
-    res.json(rows.map((row) => ({ ...row, items: db.select().from(schema.salesReturnItems).where(eq(schema.salesReturnItems.returnId, row.id)).all() })));
+    const users = db.select().from(schema.users).where(eq(schema.users.tenantId, req.user.tenantId)).all();
+    const userNameById = new Map(users.map((user) => [user.id, user.name]));
+    res.json(rows.map((row) => ({ ...row, createdByName: userNameById.get(row.createdBy) || null, items: db.select().from(schema.salesReturnItems).where(eq(schema.salesReturnItems.returnId, row.id)).all() })));
   } catch (err) { res.status(500).json({ error: 'Không thể tải phiếu trả khách hàng' }); }
 });
 
@@ -2440,6 +2496,154 @@ app.post('/api/invoices/:id/returns', (req, res) => {
   } catch (err) {
     console.error('POST /api/invoices/:id/returns error:', err);
     res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể tạo phiếu trả khách hàng' });
+  }
+});
+
+app.post('/api/sales-returns', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'sales.return')) return;
+    const requestedItems = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!requestedItems.length) return res.status(400).json({ error: 'Chọn ít nhất một hàng hóa để trả' });
+
+    const requestedCustomerId = req.body?.customerId ? String(req.body.customerId) : null;
+    if (requestedCustomerId) {
+      const customer = db.select().from(schema.customers).where(and(
+        eq(schema.customers.id, requestedCustomerId),
+        eq(schema.customers.tenantId, req.user.tenantId),
+      )).get();
+      if (!customer) return res.status(400).json({ error: 'Khách hàng không thuộc cửa hàng này' });
+    }
+
+    const normalized = requestedItems.map((raw: any) => {
+      const productId = String(raw.productId || '');
+      const product = db.select().from(schema.products).where(and(
+        eq(schema.products.id, productId),
+        eq(schema.products.tenantId, req.user.tenantId),
+      )).get();
+      if (!product) throw new Error('Hàng hóa trả không tồn tại hoặc không thuộc cửa hàng này');
+
+      const quantity = Number(raw.quantity);
+      const unitFactor = Number(raw.unitFactor || 1);
+      const requestedPrice = Number(raw.price);
+      const price = Number.isFinite(requestedPrice) && requestedPrice >= 0
+        ? requestedPrice
+        : Number(product.sellingPrice || 0) * unitFactor;
+      if (!Number.isFinite(quantity) || quantity <= 0) throw new Error(`Số lượng trả không hợp lệ cho ${product.name}`);
+      if (!Number.isFinite(unitFactor) || unitFactor <= 0) throw new Error(`Đơn vị trả không hợp lệ cho ${product.name}`);
+      if (!Number.isFinite(price) || price < 0) throw new Error(`Giá hoàn không hợp lệ cho ${product.name}`);
+
+      return {
+        product,
+        quantity,
+        unitFactor,
+        unitName: String(raw.unitName || product.unit),
+        price,
+        baseQuantity: quantity * unitFactor,
+        total: quantity * price,
+      };
+    });
+
+    const totalAmount = normalized.reduce((sum, item) => sum + item.total, 0);
+    const requestedRefundAccountId = req.body?.refundAccountId ? String(req.body.refundAccountId) : null;
+    const refundAccount = requestedRefundAccountId
+      ? db.select().from(schema.cashAccounts).where(and(
+        eq(schema.cashAccounts.id, requestedRefundAccountId),
+        eq(schema.cashAccounts.tenantId, req.user.tenantId),
+        eq(schema.cashAccounts.active, 1),
+      )).get()
+      : null;
+    const refundAccountId = refundAccount?.id || defaultAccountForPayment(req.user.tenantId, 'cash');
+    if (totalAmount > 0 && !refundAccountId) return res.status(400).json({ error: 'Cần chọn tài khoản hoàn tiền' });
+
+    const returnId = uuid();
+    const timestamp = new Date().toISOString();
+    const stockRequirements = new Map<string, number>();
+    for (const item of normalized) {
+      for (const requirement of expandStockRequirements(req.user.tenantId, item.product.id, item.baseQuantity)) {
+        stockRequirements.set(requirement.productId, (stockRequirements.get(requirement.productId) || 0) + requirement.quantity);
+      }
+    }
+
+    db.transaction((tx) => {
+      tx.insert(schema.salesReturns).values({
+        id: returnId,
+        documentNo: String(req.body?.documentNo || nextDocumentNo(req.user.tenantId, 'sales_return', 'TBH')),
+        tenantId: req.user.tenantId,
+        invoiceId: null,
+        customerId: requestedCustomerId,
+        totalAmount,
+        debtReduction: 0,
+        refundAmount: totalAmount,
+        refundAccountId,
+        note: String(req.body?.note || ''),
+        createdBy: req.user.id,
+        createdAt: timestamp,
+      }).run();
+
+      for (const item of normalized) {
+        tx.insert(schema.salesReturnItems).values({
+          id: uuid(),
+          returnId,
+          invoiceItemId: null,
+          productId: item.product.id,
+          productName: item.product.name,
+          unitName: item.unitName,
+          quantity: item.quantity,
+          unitFactor: item.unitFactor,
+          baseQuantity: item.baseQuantity,
+          price: item.price,
+          total: item.total,
+        }).run();
+      }
+
+      for (const [productId, quantity] of stockRequirements.entries()) {
+        const product = tx.select().from(schema.products).where(and(
+          eq(schema.products.id, productId),
+          eq(schema.products.tenantId, req.user.tenantId),
+        )).get();
+        if (!product || !product.trackStock) continue;
+        const beforeStock = Number(product.stock);
+        const afterStock = beforeStock + quantity;
+        tx.update(schema.products).set({ stock: afterStock }).where(eq(schema.products.id, product.id)).run();
+        tx.insert(schema.stockMovements).values({
+          id: uuid(),
+          tenantId: req.user.tenantId,
+          productId,
+          type: 'in',
+          quantity,
+          beforeStock,
+          afterStock,
+          note: `Trả hàng không hóa đơn ${returnId}`,
+          referenceId: returnId,
+          createdAt: timestamp,
+          createdBy: req.user.id,
+        }).run();
+      }
+
+      if (totalAmount > 0) {
+        tx.insert(schema.cashbookEntries).values({
+          id: uuid(),
+          tenantId: req.user.tenantId,
+          type: 'expense',
+          amount: totalAmount,
+          category: 'Hoàn tiền khách hàng',
+          note: `Hoàn tiền phiếu ${returnId}`,
+          referenceId: returnId,
+          accountId: refundAccountId,
+          createdAt: timestamp,
+          createdBy: req.user.id,
+        }).run();
+      }
+    });
+
+    writeAudit(req, 'sales_return.create', returnId, { invoiceId: null, source: 'standalone', totalAmount, refundAmount: totalAmount });
+    res.status(201).json({
+      ...db.select().from(schema.salesReturns).where(eq(schema.salesReturns.id, returnId)).get(),
+      items: db.select().from(schema.salesReturnItems).where(eq(schema.salesReturnItems.returnId, returnId)).all(),
+    });
+  } catch (err) {
+    console.error('POST /api/sales-returns error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể tạo phiếu trả hàng' });
   }
 });
 
@@ -2623,6 +2827,7 @@ app.get('/api/reports/staff', (req, res) => {
 // ═══════════════════════════════════════════════════════════
 app.get('/api/cashbook', (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-store');
     const { from, to, type } = req.query;
     const rows = db.select().from(schema.cashbookEntries)
       .where(eq(schema.cashbookEntries.tenantId, req.user.tenantId))
@@ -2634,7 +2839,52 @@ app.get('/api/cashbook', (req, res) => {
         if (to && new Date(row.createdAt).getTime() > (new Date(String(to)).getTime() + 24 * 60 * 60 * 1000 - 1)) return false;
         return true;
       });
-    res.json(rows);
+    const referenceIds = Array.from(new Set(rows.map((row) => row.referenceId).filter(Boolean))) as string[];
+    const relatedInvoices = referenceIds.length
+      ? db.select().from(schema.invoices).where(and(eq(schema.invoices.tenantId, req.user.tenantId), inArray(schema.invoices.id, referenceIds))).all()
+      : [];
+    const relatedSalesReturns = referenceIds.length
+      ? db.select().from(schema.salesReturns).where(and(eq(schema.salesReturns.tenantId, req.user.tenantId), inArray(schema.salesReturns.id, referenceIds))).all()
+      : [];
+    const relatedPurchases = referenceIds.length
+      ? db.select().from(schema.purchases).where(and(eq(schema.purchases.tenantId, req.user.tenantId), inArray(schema.purchases.id, referenceIds))).all()
+      : [];
+    const relatedPurchaseReturns = referenceIds.length
+      ? db.select().from(schema.purchaseReturns).where(and(eq(schema.purchaseReturns.tenantId, req.user.tenantId), inArray(schema.purchaseReturns.id, referenceIds))).all()
+      : [];
+    const invoiceMap = new Map(relatedInvoices.map((document) => [document.id, document]));
+    const salesReturnMap = new Map(relatedSalesReturns.map((document) => [document.id, document]));
+    const purchaseMap = new Map(relatedPurchases.map((document) => [document.id, document]));
+    const purchaseReturnMap = new Map(relatedPurchaseReturns.map((document) => [document.id, document]));
+    const users = db.select().from(schema.users).where(eq(schema.users.tenantId, req.user.tenantId)).all();
+    const userNameById = new Map(users.map((user) => [user.id, user.name]));
+    res.json(rows.map((row) => {
+      const invoice = row.referenceId ? invoiceMap.get(row.referenceId) : undefined;
+      const salesReturn = row.referenceId ? salesReturnMap.get(row.referenceId) : undefined;
+      const purchase = row.referenceId ? purchaseMap.get(row.referenceId) : undefined;
+      const purchaseReturn = row.referenceId ? purchaseReturnMap.get(row.referenceId) : undefined;
+      const reference = invoice
+        ? { label: documentReference(invoice, 'HD'), type: 'invoice' as const }
+        : salesReturn
+          ? { label: documentReference(salesReturn, 'TBH'), type: 'sales_return' as const }
+          : purchase
+            ? { label: documentReference(purchase, 'PN'), type: 'purchase' as const }
+            : purchaseReturn
+              ? { label: documentReference(purchaseReturn, 'PTN'), type: 'purchase_return' as const }
+              : null;
+      const displayNote = row.referenceId
+        ? reference?.label
+          ? String(row.note || '').replaceAll(row.referenceId, reference.label)
+          : String(row.note || '').replaceAll(row.referenceId, '').replace(/\s+·\s*$/, '').replace(/\s{2,}/g, ' ').trim()
+        : row.note;
+      return {
+        ...row,
+        createdByName: userNameById.get(row.createdBy) || null,
+        displayNote,
+        referenceLabel: reference?.label || null,
+        referenceType: reference?.type || (row.referenceId ? 'unknown' : null),
+      };
+    }));
   } catch (err) {
     console.error('GET /api/cashbook error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -2675,6 +2925,7 @@ app.post('/api/cashbook', (req, res) => {
 // ═══════════════════════════════════════════════════════════
 app.get('/api/stock-movements', (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-store');
     const { productId } = req.query;
     let rows = db.select().from(schema.stockMovements)
       .where(eq(schema.stockMovements.tenantId, req.user.tenantId))
@@ -2825,7 +3076,21 @@ app.get('/api/stock-movements', (req, res) => {
         productUnit: product?.unit || '',
         actorName: actor?.name || 'N/A',
         actorRole: actor?.role || '',
-        documentNo: reference?.documentNo || row.referenceId || '',
+        documentNo: purchase ? documentReference(purchase, 'PN')
+          : purchaseReturn ? documentReference(purchaseReturn, 'PTN')
+            : invoice ? documentReference(invoice, 'HD')
+              : salesReturn ? documentReference(salesReturn, 'TBH')
+                : '',
+        referenceLabel: purchase ? documentReference(purchase, 'PN')
+          : purchaseReturn ? documentReference(purchaseReturn, 'PTN')
+            : invoice ? documentReference(invoice, 'HD')
+              : salesReturn ? documentReference(salesReturn, 'TBH')
+                : null,
+        referenceType: purchase ? 'purchase'
+          : purchaseReturn ? 'purchase_return'
+            : invoice ? 'invoice'
+              : salesReturn ? 'sales_return'
+                : null,
         transactionType: purchase ? 'Nhập hàng'
           : purchaseReturn ? 'Trả hàng NCC'
             : invoice ? 'Bán hàng'
@@ -2992,10 +3257,17 @@ app.get('/api/dashboard/stats', (req, res) => {
 
     const todayInvoices = allInvoices.filter(i => {
       const d = new Date(i.createdAt);
-      return d >= todayStart && d <= todayEnd;
+      return i.workflowStatus !== 'cancelled' && i.workflowStatus === 'closed' && d >= todayStart && d <= todayEnd;
     });
 
-    const todayRevenue = todayInvoices.reduce((sum, i) => sum + i.paidAmount, 0);
+    const todayReturnRows = db.select().from(schema.salesReturns)
+      .where(eq(schema.salesReturns.tenantId, tid)).all()
+      .filter((row) => {
+        const d = new Date(row.createdAt);
+        return d >= todayStart && d <= todayEnd;
+      });
+
+    const todayRevenue = todayInvoices.reduce((sum, i) => sum + i.finalAmount, 0) - todayReturnRows.reduce((sum, row) => sum + row.totalAmount, 0);
     const todayOrders = todayInvoices.length;
 
     const allCustomers = db.select().from(schema.customers)

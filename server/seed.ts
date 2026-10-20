@@ -103,6 +103,8 @@ sqlite.exec(`
     final_amount REAL NOT NULL,
     paid_amount REAL NOT NULL,
     debt_amount REAL NOT NULL DEFAULT 0,
+    previous_debt_amount REAL NOT NULL DEFAULT 0,
+    change_amount REAL NOT NULL DEFAULT 0,
     payment_method TEXT NOT NULL,
     account_id TEXT,
     status TEXT NOT NULL,
