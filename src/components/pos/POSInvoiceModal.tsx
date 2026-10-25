@@ -91,6 +91,7 @@ const InvoiceContent = forwardRef(({
         <div key={item.id} className="grid grid-cols-[minmax(0,1fr)_20px_72px_78px] items-start gap-1 border-b border-dashed border-slate-100 py-1 text-left text-[9px] leading-tight">
           <div className="min-w-0 pr-1">
             <div className="break-words font-semibold text-slate-900">{item.productName}</div>
+            {item.note?.trim() && <div className="mt-0.5 break-words text-sky-800">Ghi chú: {item.note.trim()}</div>}
           </div>
           <div className="font-semibold tabular-nums text-slate-900">{item.quantity}</div>
           <div className="whitespace-nowrap tabular-nums text-slate-700">{formatCurrency(item.price)}</div>

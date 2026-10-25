@@ -86,6 +86,7 @@ export default function POS() {
   const [variantProduct, setVariantProduct] = useState<Product | null>(null);
   const [scanHint, setScanHint] = useState('');
   const [showMobileFilters, setShowMobileFilters] = useState(false);
+  const [mobileProductPickerOpen, setMobileProductPickerOpen] = useState(false);
   const [showOrderItemsSheet, setShowOrderItemsSheet] = useState(false);
   const isCashier = currentUser?.role === 'cashier';
 
@@ -268,6 +269,10 @@ export default function POS() {
     addToCart(matched.product, matched.unit);
     setSearchTerm(matched.product.name);
     setScanHint(`Đã thêm: ${matched.product.name} · ${matched.unit.name}`);
+    if (mobileProductPickerOpen) {
+      setMobileProductPickerOpen(false);
+      setSearchTerm('');
+    }
   };
 
   const addToCart = (product: Product, selectedUnit?: SaleUnit) => {
@@ -327,6 +332,10 @@ export default function POS() {
       return;
     }
     addToCart(product, units[0]);
+    if (mobileProductPickerOpen) {
+      setMobileProductPickerOpen(false);
+      setSearchTerm('');
+    }
   };
 
   const updateLineUnit = (lineId: string, unitName: string) => {
@@ -340,13 +349,6 @@ export default function POS() {
     setCart((prev) => {
       const current = prev.find((item) => item.id === lineId);
       if (!current) return prev;
-      const duplicate = prev.find((item) => item.id !== lineId && item.productId === product.id && item.unitName === unit.name);
-      if (duplicate) {
-        const quantity = Math.min(duplicate.quantity + current.quantity, maxStock);
-        return prev.filter((item) => item.id !== lineId).map((item) => item.id === duplicate.id
-          ? { ...item, quantity, maxStock, price, unitFactor, total: totalForLine(price, quantity, item.discountPercent) }
-          : item).filter((item) => item.quantity > 0);
-      }
       const quantity = Math.min(current.quantity, maxStock);
       return prev.map((item) => item.id === lineId
         ? { ...item, unitName: unit.name, unitFactor, quantity, maxStock, price, total: totalForLine(price, quantity, item.discountPercent) }
@@ -368,6 +370,32 @@ export default function POS() {
 
   const removeFromCart = (lineId: string) => {
     setCart(prev => prev.filter(item => item.id !== lineId));
+  };
+
+  const duplicateCartLine = (lineId: string) => {
+    setCart((prev) => {
+      const source = prev.find((item) => item.id === lineId);
+      if (!source) return prev;
+      const usedQuantity = prev
+        .filter((item) => item.productId === source.productId && item.unitName === source.unitName)
+        .reduce((sum, item) => sum + item.quantity, 0);
+      if (usedQuantity >= source.maxStock) return prev;
+      const duplicate: CartLine = {
+        ...source,
+        id: uuid(),
+        invoiceId: '',
+        quantity: 1,
+        total: totalForLine(source.price, 1, 0),
+        discountPercent: 0,
+        note: '',
+      };
+      const sourceIndex = prev.findIndex((item) => item.id === lineId);
+      return [...prev.slice(0, sourceIndex + 1), duplicate, ...prev.slice(sourceIndex + 1)];
+    });
+  };
+
+  const updateLineNote = (lineId: string, note: string) => {
+    setCart((prev) => prev.map((item) => item.id === lineId ? { ...item, note } : item));
   };
 
   const totalAmount = cart.reduce((sum, item) => sum + item.total, 0);
@@ -425,6 +453,8 @@ export default function POS() {
     setOrderNote('');
     setOrderDiscountType('amount');
     setOrderDiscountValue(0);
+    setMobileProductPickerOpen(false);
+    setShowOrderItemsSheet(false);
     setFormError('');
   };
 
@@ -457,6 +487,8 @@ export default function POS() {
     setOrderDiscountValue(0);
     setStep('cart');
     setActiveOrderTab('live');
+    setMobileProductPickerOpen(false);
+    setShowOrderItemsSheet(false);
   };
 
   const openPaymentStep = () => {
@@ -538,6 +570,8 @@ export default function POS() {
     setOrderDiscountType('amount');
     setOrderDiscountValue(0);
     setOrderNote('');
+    setMobileProductPickerOpen(false);
+    setShowOrderItemsSheet(false);
   };
 
   const handleCreateCustomer = () => {
@@ -574,6 +608,39 @@ export default function POS() {
     setShowCustomerResults(false);
     setShowCustomerPicker(false);
     setShowOrderContext(false);
+  };
+
+  const renderMobileOrderItemsSheet = () => {
+    if (!showOrderItemsSheet) return null;
+    return (
+      <div className="fixed inset-0 z-[120] flex items-end justify-center bg-slate-900/40 p-3 sm:items-center sm:p-4" onClick={() => setShowOrderItemsSheet(false)}>
+        <div className="max-h-[78vh] w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white p-4 shadow-2xl sm:rounded-xl" onClick={(event) => event.stopPropagation()}>
+          <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-slate-200 sm:hidden" />
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <h3 className="text-base font-semibold text-slate-900">Hàng hóa trong đơn</h3>
+            <button type="button" onClick={() => setShowOrderItemsSheet(false)} className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Đóng danh sách hàng hóa">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <p className="mb-3 text-[11px] text-slate-500">Nhấn <span className="font-semibold text-sky-700">+</span> để thêm dòng cùng sản phẩm, hoặc biểu tượng tin nhắn để ghi chú riêng.</p>
+          <div className="space-y-2">
+            {cart.map((item) => (
+              <POSCartItem
+                key={item.id}
+                item={item}
+                onUpdateQuantity={updateQuantity}
+                onRemove={removeFromCart}
+                onDuplicate={duplicateCartLine}
+                onUpdateNote={updateLineNote}
+                onUpdateDiscount={updateLineDiscount}
+                units={productUnits(products.find((product) => product.id === item.productId) || ({} as Product))}
+                onChangeUnit={updateLineUnit}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
   };
 
   const handleExportImage = () => {
@@ -764,6 +831,17 @@ export default function POS() {
               <ChevronRight className="h-5 w-5 text-slate-400" />
             </button>
 
+            <label className="block rounded-xl border border-slate-200 bg-white p-3">
+              <span className="text-sm font-medium text-slate-800">Ghi chú chung cho đơn hàng</span>
+              <textarea
+                value={orderNote}
+                onChange={(event) => setOrderNote(event.target.value)}
+                rows={2}
+                placeholder="Ví dụ: Khách lấy hàng lúc 17:00..."
+                className="mt-2 w-full resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:border-sky-400 focus:bg-white focus:ring-2 focus:ring-sky-100"
+              />
+            </label>
+
             <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-4">
               {selectedCustomer && (
                 <div className="rounded-lg border border-orange-100 bg-orange-50/70 px-3 py-2.5">
@@ -879,30 +957,7 @@ export default function POS() {
           </div>
         </div>
 
-        {showOrderItemsSheet && (
-          <div className="fixed inset-0 z-[120] flex items-end justify-center bg-slate-900/40 p-3 sm:items-center sm:p-4" onClick={() => setShowOrderItemsSheet(false)}>
-            <div className="max-h-[70vh] w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white p-4 shadow-2xl sm:rounded-xl" onClick={(e) => e.stopPropagation()}>
-              <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-slate-200 sm:hidden" />
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <h3 className="text-base font-semibold text-slate-900">Hàng hóa trong đơn</h3>
-                <button type="button" onClick={() => setShowOrderItemsSheet(false)} className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Đóng danh sách hàng hóa">
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-              <div className="space-y-3">
-                {cart.map((item) => (
-                  <div key={item.id} className="flex items-center justify-between border-b border-slate-100 pb-3">
-                    <div>
-                      <div className="font-medium text-slate-900">{item.productName}</div>
-                      <div className="text-sm text-slate-500">{formatCurrency(item.price)} x {item.quantity}</div>
-                    </div>
-                    <div className="text-base font-semibold tabular-nums">{formatCurrency(item.total)}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
+        {renderMobileOrderItemsSheet()}
 
         <div className="fixed bottom-0 left-0 right-0 z-50 border-t border-slate-200 bg-white p-3 lg:static lg:border-0 lg:bg-transparent lg:p-0">
           <div className="mx-auto w-full max-w-2xl">
@@ -950,7 +1005,7 @@ export default function POS() {
                 const price = resolvePrice(variantProduct, unit.name, factor);
                 const disabled = available <= 0;
                 return (
-                  <button key={unit.name} type="button" disabled={disabled} onClick={() => { addToCart(variantProduct, unit); setVariantProduct(null); }} className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition ${disabled ? 'cursor-not-allowed border-slate-100 bg-slate-50 opacity-50' : 'border-slate-200 bg-white hover:border-sky-400 hover:bg-sky-50'}`}>
+                  <button key={unit.name} type="button" disabled={disabled} onClick={() => { addToCart(variantProduct, unit); setVariantProduct(null); if (mobileProductPickerOpen) { setMobileProductPickerOpen(false); setSearchTerm(''); } }} className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition ${disabled ? 'cursor-not-allowed border-slate-100 bg-slate-50 opacity-50' : 'border-slate-200 bg-white hover:border-sky-400 hover:bg-sky-50'}`}>
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-semibold text-slate-800">{unit.name}</span>
                       <span className="mt-0.5 block text-[11px] text-slate-500">1 {unit.name} = {factor} {variantProduct.unit} · {disabled ? 'Hết hàng' : `Còn ${available}`}</span>
@@ -998,12 +1053,14 @@ export default function POS() {
                 className="h-10 sm:h-11 lg:h-8 pl-9 rounded-lg border border-slate-200 bg-white focus:ring-4 focus:ring-sky-500/10 transition-all font-medium text-sm lg:text-xs placeholder:text-slate-400"
                 placeholder="Quét mã hoặc tìm sản phẩm" 
                 value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
+                onFocus={() => setMobileProductPickerOpen(true)}
+                onChange={e => { setSearchTerm(e.target.value); setMobileProductPickerOpen(true); }}
               />
             </div>
             <Button
               onClick={() => {
                 setScanHint('');
+                setMobileProductPickerOpen(true);
                 setShowScannerModal(true);
               }}
               variant="outline"
@@ -1016,21 +1073,7 @@ export default function POS() {
           </div>
           {scanHint && <p className="text-xs text-sky-700">{scanHint}</p>}
 
-          <div className="lg:hidden rounded-lg border border-slate-200 bg-white overflow-hidden">
-            <button type="button" onClick={() => setShowCustomerPicker(true)} className="h-11 w-full px-3 flex items-center justify-between border-b border-slate-100">
-              <span className="flex min-w-0 items-center gap-2 text-sm text-slate-800"><User className="h-4 w-4 text-slate-400" /><span className="truncate">{selectedCustomer?.name || 'Khách lẻ / khách ngoài'}</span></span>
-              <span className="flex items-center gap-2 text-xs text-slate-500">Nợ: {formatCurrency(selectedCustomer?.totalDebt || 0)} <ChevronRight className="h-4 w-4 text-slate-400" /></span>
-            </button>
-            <div className="h-10 w-full px-3 flex items-center justify-between gap-2">
-              <select value={selectedPriceListId} onChange={(e) => setSelectedPriceListId(e.target.value)} className="min-w-0 flex-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600">
-                {priceLists.map((list: any) => <option key={list.id} value={list.id}>{list.name}</option>)}
-              </select>
-              <span className="hidden text-xs text-slate-500 sm:inline">· {currentUser?.name || 'Nhân viên'}</span>
-              {selectedCustomer && <button type="button" onClick={() => selectCustomer(null)} className="text-xs text-sky-700">Bán khách lẻ</button>}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none no-scrollbar">
+          <div className="hidden lg:flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none no-scrollbar">
             {categories.map(cat => (
               <button
                 key={cat}
@@ -1048,7 +1091,7 @@ export default function POS() {
         </div>
         
         <div className="flex-1 min-h-0 lg:overflow-y-auto p-3 pb-28 sm:p-4 sm:pb-28 lg:p-2 lg:pb-2">
-          <div className="mb-2 lg:hidden">
+          <div className={`${mobileProductPickerOpen ? 'mb-2' : 'hidden'} lg:hidden`}>
             <button
               onClick={() => setShowMobileFilters((v) => !v)}
               className="h-9 px-3 rounded-lg border border-slate-200 bg-white text-xs text-slate-700 inline-flex items-center gap-1.5"
@@ -1080,11 +1123,79 @@ export default function POS() {
                   <option value="low_stock">Sắp hết</option>
                   <option value="out_of_stock">Hết hàng</option>
                 </select>
+                <select
+                  value={selectedCategory}
+                  onChange={(e) => setSelectedCategory(e.target.value)}
+                  className="col-span-2 h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700"
+                >
+                  {categories.map((category) => <option key={category} value={category}>{category === 'All' ? 'Tất cả danh mục' : category}</option>)}
+                </select>
               </div>
             )}
           </div>
 
-          <div className="space-y-0 lg:hidden rounded-lg border border-slate-200 bg-white overflow-hidden">
+          {!mobileProductPickerOpen && (
+            <div className="lg:hidden">
+              <div className="mb-3 space-y-2">
+                <button type="button" onClick={() => setShowCustomerPicker(true)} className="flex min-h-11 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-left">
+                  <span className="flex min-w-0 items-center gap-2 text-sm text-slate-800"><User className="h-4 w-4 shrink-0 text-slate-400" /><span className="truncate">{selectedCustomer?.name || 'Chọn khách hàng / khách lẻ'}</span></span>
+                  <span className="ml-2 flex shrink-0 items-center gap-1 text-xs text-slate-500">Nợ: {formatCurrency(selectedCustomer?.totalDebt || 0)} <ChevronRight className="h-4 w-4" /></span>
+                </button>
+                <div className="flex min-h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3">
+                  <span className="shrink-0 text-sm text-slate-600">Bảng giá</span>
+                  <select value={selectedPriceListId} onChange={(e) => setSelectedPriceListId(e.target.value)} className="min-w-0 flex-1 bg-transparent text-right text-sm text-slate-800 outline-none">
+                    {priceLists.map((list: any) => <option key={list.id} value={list.id}>{list.name}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">Giỏ hàng</h2>
+                  <p className="text-[11px] text-slate-500">Chỉ hiển thị các mặt hàng đã chọn</p>
+                </div>
+                <button type="button" onClick={() => setMobileProductPickerOpen(true)} className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800">
+                  + Thêm hàng
+                </button>
+              </div>
+              {cart.length > 0 ? (
+                <div className="space-y-2">
+                  {cart.map((item) => (
+                    <POSCartItem
+                      key={item.id}
+                      item={item}
+                      onUpdateQuantity={updateQuantity}
+                      onRemove={removeFromCart}
+                      onDuplicate={duplicateCartLine}
+                      onUpdateNote={updateLineNote}
+                      onUpdateDiscount={updateLineDiscount}
+                      units={productUnits(products.find((product) => product.id === item.productId) || ({} as Product))}
+                      onChangeUnit={updateLineUnit}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <button type="button" onClick={() => setMobileProductPickerOpen(true)} className="flex min-h-32 w-full flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white px-4 text-center">
+                  <ShoppingCart className="mb-2 h-7 w-7 text-slate-300" />
+                  <span className="text-sm font-medium text-slate-600">Chưa có mặt hàng</span>
+                  <span className="mt-1 text-xs text-slate-400">Chạm “Thêm hàng” hoặc ô tìm kiếm để chọn sản phẩm</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className={`${mobileProductPickerOpen ? 'block' : 'hidden'} lg:hidden`}>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-900">Chọn hàng</h2>
+                <p className="text-[11px] text-slate-500">Chọn xong sẽ quay về giỏ hàng</p>
+              </div>
+              {cart.length > 0 && (
+                <button type="button" onClick={() => { setMobileProductPickerOpen(false); setSearchTerm(''); }} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700">
+                  ← Về giỏ hàng
+                </button>
+              )}
+            </div>
+            <div className="space-y-0 rounded-lg border border-slate-200 bg-white overflow-hidden">
             {mobileVisibleProducts.map((product) => {
               const inCart = cart.find((line) => line.productId === product.id);
               const units = productUnits(product);
@@ -1146,6 +1257,7 @@ export default function POS() {
                 </div>
               );
             })}
+            </div>
           </div>
 
           <div className="hidden lg:block overflow-hidden rounded-md border border-slate-200 bg-white">
@@ -1263,6 +1375,8 @@ export default function POS() {
                    item={item}
                    onUpdateQuantity={updateQuantity}
                    onRemove={removeFromCart}
+                   onDuplicate={duplicateCartLine}
+                   onUpdateNote={updateLineNote}
                    onUpdateDiscount={updateLineDiscount}
                    units={productUnits(products.find((product) => product.id === item.productId) || ({} as Product))}
                    onChangeUnit={updateLineUnit}
@@ -1354,6 +1468,20 @@ export default function POS() {
             </div>
             <span className="text-2xl font-semibold text-slate-900 tabular-nums">{formatCurrency(finalAmount)}</span>
           </div>
+          <Input
+            value={orderNote}
+            onChange={(event) => setOrderNote(event.target.value)}
+            placeholder="Ghi chú chung cho đơn hàng"
+            className="mb-2 h-9 text-xs"
+          />
+          <button
+            type="button"
+            className="mb-2 flex h-9 w-full items-center justify-center rounded-lg border border-sky-200 bg-sky-50 text-xs font-medium text-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={cart.length === 0}
+            onClick={() => setShowOrderItemsSheet(true)}
+          >
+            Mở rộng giỏ hàng ({cart.length})
+          </button>
           <div className="grid grid-cols-2 gap-2">
             <Button variant="outline" className="h-11" disabled={cart.length === 0} onClick={saveDraft}>
               Lưu tạm
@@ -1364,6 +1492,8 @@ export default function POS() {
           </div>
         </div>
       </div>
+
+      {renderMobileOrderItemsSheet()}
 
       {showCustomerPicker && (
         <div className="fixed inset-0 z-[125] flex items-center justify-center bg-slate-900/40 p-3" onClick={() => { setShowCustomerPicker(false); setShowAddCustomer(false); }}>

@@ -1,20 +1,23 @@
 import React from 'react';
 import { InvoiceItem } from '../../types';
 import { formatCurrency } from '../../lib/utils';
-import { Minus, Percent, Plus, X } from 'lucide-react';
+import { MessageSquare, Minus, Percent, Plus, X } from 'lucide-react';
 
 interface POSCartItemProps {
   key?: React.Key;
   item: InvoiceItem & { maxStock: number; discountPercent?: number };
   onUpdateQuantity: (lineId: string, delta: number) => void;
   onRemove: (lineId: string) => void;
+  onDuplicate: (lineId: string) => void;
+  onUpdateNote: (lineId: string, note: string) => void;
   onUpdateDiscount?: (lineId: string, discountPercent: number) => void;
   units?: Array<{ name: string; factor: number }>;
   onChangeUnit?: (lineId: string, unitName: string) => void;
 }
 
-export const POSCartItem = ({ item, onUpdateQuantity, onRemove, onUpdateDiscount, units, onChangeUnit }: POSCartItemProps) => {
+export const POSCartItem = ({ item, onUpdateQuantity, onRemove, onDuplicate, onUpdateNote, onUpdateDiscount, units, onChangeUnit }: POSCartItemProps) => {
   const [showDiscount, setShowDiscount] = React.useState(Boolean(item.discountPercent));
+  const [showNote, setShowNote] = React.useState(Boolean(item.note?.trim()));
   const baseUnit = units?.find((unit) => Number(unit.factor) === 1)?.name || 'đơn vị cơ sở';
   const selectedUnit = units?.find((unit) => unit.name === item.unitName);
   const variantLabel = selectedUnit && selectedUnit.name !== baseUnit
@@ -22,7 +25,7 @@ export const POSCartItem = ({ item, onUpdateQuantity, onRemove, onUpdateDiscount
     : '';
 
   return (
-    <div className="rounded-md border border-slate-200 bg-white px-1.5 py-1 transition-colors hover:border-sky-200" id={`cart-item-${item.productId}`}>
+    <div className="rounded-md border border-slate-200 bg-white px-1.5 py-1 transition-colors hover:border-sky-200" id={`cart-item-${item.id}`}>
       <div className="flex items-start gap-1 font-medium leading-tight text-slate-900">
         <p className="min-w-0 flex-1 break-words text-[11px]">{item.productName}{variantLabel}</p>
         <button
@@ -67,8 +70,32 @@ export const POSCartItem = ({ item, onUpdateQuantity, onRemove, onUpdateDiscount
               <Percent className="h-3.5 w-3.5" />
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => onDuplicate(item.id)}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-transparent text-slate-400 transition-colors hover:border-sky-200 hover:bg-white hover:text-sky-700"
+            aria-label="Thêm dòng hàng này"
+            title="Thêm dòng hàng này"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowNote((visible) => !visible)}
+            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border text-[10px] transition-colors ${showNote || item.note?.trim() ? 'border-sky-200 bg-sky-50 text-sky-700' : 'border-transparent text-slate-400 hover:border-slate-200 hover:text-slate-600'}`}
+            aria-label="Ghi chú riêng cho dòng hàng"
+            aria-expanded={showNote}
+            title="Ghi chú riêng cho dòng hàng"
+          >
+            <MessageSquare className="h-3.5 w-3.5" />
+          </button>
         </div>
       </div>
+      {item.note?.trim() && !showNote && (
+        <p className="mt-1 truncate rounded bg-sky-50 px-2 py-1 text-[10px] text-sky-800" title={item.note.trim()}>
+          Ghi chú: {item.note.trim()}
+        </p>
+      )}
       {units && units.length > 1 && onChangeUnit && (
         <select value={item.unitName || units[0].name} onChange={(event) => onChangeUnit(item.id, event.target.value)} aria-label="Đơn vị bán" className="mt-0.5 h-5 w-full rounded-md border border-slate-200 bg-white px-1.5 text-[10px] text-slate-600">
           {units.map((unit) => <option key={unit.name} value={unit.name}>{unit.name} · ×{unit.factor}</option>)}
@@ -84,6 +111,18 @@ export const POSCartItem = ({ item, onUpdateQuantity, onRemove, onUpdateDiscount
             value={item.discountPercent || 0}
             onChange={(e) => onUpdateDiscount(item.id, Number(e.target.value))}
             className="h-6 w-12 rounded-md border border-slate-200 bg-white px-1.5 text-right text-[11px]"
+          />
+        </div>
+      )}
+      {showNote && (
+        <div className="mt-1 rounded-md bg-sky-50/70 p-1.5 ring-1 ring-sky-100">
+          <label className="mb-1 block text-[10px] font-medium text-sky-800">Ghi chú riêng cho dòng hàng</label>
+          <textarea
+            value={item.note || ''}
+            onChange={(event) => onUpdateNote(item.id, event.target.value)}
+            placeholder="Ví dụ: Tên trên con dấu..."
+            rows={2}
+            className="w-full resize-none rounded-md border border-sky-100 bg-white px-2 py-1.5 text-[11px] text-slate-700 outline-none placeholder:text-slate-400 focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
           />
         </div>
       )}

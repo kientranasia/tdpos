@@ -749,6 +749,7 @@ export default function Invoices() {
                               <button type="button" className="block max-w-full truncate text-left text-sm font-medium text-slate-900 hover:text-sky-700 hover:underline" onClick={() => navigate(`/app/inventory?productId=${encodeURIComponent(item.productId)}`)}>{item.productName}</button>
                               <button type="button" className="block text-xs text-slate-500 hover:text-sky-700 hover:underline" onClick={() => navigate(`/app/inventory?productId=${encodeURIComponent(item.productId)}`)}>{product?.sku || item.productId}</button>
                               <p className="text-xs text-slate-600">{formatCurrency(item.price)} x {item.quantity}</p>
+                              {item.note?.trim() && <p className="mt-1 break-words text-xs text-sky-800">Ghi chú: {item.note.trim()}</p>}
                             </div>
                           </div>
                           <p className="shrink-0 text-sm font-semibold text-slate-900 tabular-nums">{formatCurrency(item.total)}</p>
@@ -824,6 +825,12 @@ export default function Invoices() {
                   </div>
                 </div>
               )}
+              {selectedInvoice.note?.trim() && (
+                <div className="mt-3 rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
+                  <p className="text-xs font-medium uppercase text-slate-500">Ghi chú đơn hàng</p>
+                  <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{selectedInvoice.note.trim()}</p>
+                </div>
+              )}
             </div>
 
             <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
@@ -873,6 +880,7 @@ export default function Invoices() {
                           <button type="button" className="block text-left text-[17px] font-medium text-slate-900 line-clamp-2 hover:text-sky-700 hover:underline" onClick={() => navigate(`/app/inventory?productId=${encodeURIComponent(item.productId)}`)}>{item.productName}</button>
                           <button type="button" className="block text-[13px] text-slate-500 hover:text-sky-700 hover:underline" onClick={() => navigate(`/app/inventory?productId=${encodeURIComponent(item.productId)}`)}>{product?.sku || item.productId}</button>
                           <p className="text-[14px] text-slate-700">{formatCurrency(item.price)} x {item.quantity}</p>
+                          {item.note?.trim() && <p className="mt-1 break-words text-[13px] text-sky-800">Ghi chú: {item.note.trim()}</p>}
                         </div>
                       </div>
                       <p className="text-[18px] font-semibold text-slate-900 tabular-nums">{formatCurrency(item.total)}</p>
@@ -891,13 +899,12 @@ export default function Invoices() {
                 {selectedInvoiceReceipt && selectedInvoiceReceipt.remainingDebt > 0 && <div className="p-4 flex justify-between"><span>Công nợ còn lại</span><span className="text-orange-700">{formatCurrency(selectedInvoiceReceipt.remainingDebt)}</span></div>}
               </div>
               {selectedInvoiceReturns.length > 0 && <div className="rounded-lg border border-orange-100 bg-orange-50 p-4"><div className="flex items-center justify-between"><span className="font-medium text-orange-900">Đã trả hàng</span><span className="font-semibold text-orange-700">{formatCurrency(selectedInvoiceReturns.reduce((sum, item) => sum + Number(item.totalAmount || 0), 0))}</span></div><div className="mt-2 space-y-1 border-t border-orange-100 pt-2">{selectedInvoiceReturns.map((returnSlip) => <p key={returnSlip.id} className="flex justify-between text-xs text-orange-800"><span>{returnSlip.documentNo || returnSlip.id}</span><span>{formatCurrency(Number(returnSlip.totalAmount || 0))}</span></p>)}</div></div>}
-              <div className="rounded-lg border border-slate-200 bg-white p-4">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs uppercase text-slate-400">Ghi chú</p>
-                  <span className="text-sm text-sky-600">Sửa</span>
+              {selectedInvoice.note?.trim() && (
+                <div className="rounded-lg border border-slate-200 bg-white p-4">
+                  <p className="text-xs uppercase text-slate-400">Ghi chú đơn hàng</p>
+                  <p className="mt-2 whitespace-pre-wrap text-sm text-slate-600">{selectedInvoice.note.trim()}</p>
                 </div>
-                <p className="mt-2 text-sm text-slate-600">{selectedInvoice.note || 'Chưa có ghi chú...'}</p>
-              </div>
+              )}
               <div className="rounded-lg border border-slate-200 bg-white p-4 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
                 <div>
                   <p className="text-slate-500">Kênh bán</p>
