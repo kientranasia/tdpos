@@ -216,6 +216,7 @@ export const productComponents = sqliteTable('product_components', {
 // ─── Customers ─────────────────────────────────────────────
 export const customers = sqliteTable('customers', {
   id: text('id').primaryKey(),
+  code: text('code').notNull().default(''),
   tenantId: text('tenant_id').notNull().references(() => tenants.id),
   createdBy: text('created_by'),
   name: text('name').notNull(),

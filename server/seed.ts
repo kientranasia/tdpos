@@ -74,6 +74,7 @@ sqlite.exec(`
 
   CREATE TABLE IF NOT EXISTS customers (
     id TEXT PRIMARY KEY,
+    code TEXT NOT NULL DEFAULT '',
     tenant_id TEXT NOT NULL REFERENCES tenants(id),
     name TEXT NOT NULL,
     phone TEXT NOT NULL,
@@ -358,15 +359,15 @@ if (!existingTenant) {
   }
 
   const customers = [
-    ['c1', 'Khách lẻ tại quầy', '0911222333', 'Quận 1, TP.HCM', 0, 'retail'],
-    ['c2', 'Công ty Minh Anh', '0988777666', 'Quận Bình Thạnh, TP.HCM', 4500000, 'loyal'],
-    ['c3', 'Đối tác An Phát', '0977111222', 'Thành phố Thủ Đức, TP.HCM', 1200000, 'loyal'],
+    ['c1', 'KH000001', 'Khách lẻ tại quầy', '0911222333', 'Quận 1, TP.HCM', 0, 'retail'],
+    ['c2', 'KH000002', 'Công ty Minh Anh', '0988777666', 'Quận Bình Thạnh, TP.HCM', 4500000, 'loyal'],
+    ['c3', 'KH000003', 'Đối tác An Phát', '0977111222', 'Thành phố Thủ Đức, TP.HCM', 1200000, 'loyal'],
   ];
   for (const customer of customers) {
     sqlite.prepare(`
-      INSERT INTO customers (id, tenant_id, name, phone, address, total_debt, type)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(customer[0], 'tenant-demo', customer[1], customer[2], customer[3], customer[4], customer[5]);
+      INSERT INTO customers (id, code, tenant_id, name, phone, address, total_debt, type)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(customer[0], customer[1], 'tenant-demo', customer[2], customer[3], customer[4], customer[5], customer[6]);
   }
 
   console.log('🏪 Demo tenant account created:');

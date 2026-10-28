@@ -136,6 +136,8 @@ export const customersApi = {
   list: (tenantId?: string, search?: string) =>
     request<any[]>('/customers', { params: { tenantId: tenantId || '', search: search || '' } }),
   get: (id: string) => request<any>(`/customers/${id}`),
+  debtStatement: (id: string, filters?: { from?: string; to?: string }) =>
+    request<any>(`/customers/${id}/debt-statement`, { params: filters as any }),
   create: (data: any) => request<any>('/customers', { method: 'POST', body: data }),
   update: (id: string, data: any) => request<any>(`/customers/${id}`, { method: 'PATCH', body: data }),
   adjustDebt: (id: string, amount: number, type: 'increase' | 'decrease') =>

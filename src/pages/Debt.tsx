@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { useApp } from '../context/AppContext';
 import { Search, Wallet, ArrowDownCircle, ArrowUpCircle, AlertCircle, CheckCircle, ChevronRight, TrendingUp, X, MessageCircleMore, Copy, ExternalLink, Tags, Download } from 'lucide-react';
 import { Input } from '../components/ui/Input';
@@ -14,6 +15,12 @@ export default function Debt() {
   const [searchParams] = useSearchParams();
   const [searchTerm, setSearchTerm] = useState('');
   const [showDebtModal, setShowDebtModal] = useState(false);
+  const [showDebtExportModal, setShowDebtExportModal] = useState(false);
+  const [debtExportCustomerId, setDebtExportCustomerId] = useState('');
+  const [debtExportFrom, setDebtExportFrom] = useState('');
+  const [debtExportTo, setDebtExportTo] = useState('');
+  const [exportingDebt, setExportingDebt] = useState(false);
+  const [debtExportError, setDebtExportError] = useState('');
   const [customerPickerSearch, setCustomerPickerSearch] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [ledgers, setLedgers] = useState<DebtLedger[]>([]);
@@ -153,6 +160,171 @@ export default function Debt() {
     anchor.download = `cong-no-${new Date().toISOString().slice(0, 10)}.csv`;
     anchor.click();
     URL.revokeObjectURL(url);
+  };
+
+  const openDebtExportModal = () => {
+    setDebtExportCustomerId(searchParams.get('customerId') || filteredDebtCustomers[0]?.customer.id || customers[0]?.id || '');
+    setDebtExportFrom('');
+    setDebtExportTo('');
+    setDebtExportError('');
+    setShowDebtExportModal(true);
+  };
+
+  const exportCustomerDebtExcel = async () => {
+    if (!debtExportCustomerId) {
+      setDebtExportError('Vui lòng chọn khách hàng.');
+      return;
+    }
+    if (debtExportFrom && debtExportTo && debtExportFrom > debtExportTo) {
+      setDebtExportError('Từ ngày không được lớn hơn đến ngày.');
+      return;
+    }
+
+    setExportingDebt(true);
+    setDebtExportError('');
+    try {
+      const statement = await customersApi.debtStatement(debtExportCustomerId, {
+        from: debtExportFrom || undefined,
+        to: debtExportTo || undefined,
+      });
+      const tenant = statement.tenant || activeTenant || {};
+      const customer = statement.customer || customers.find((item) => item.id === debtExportCustomerId);
+      if (!customer) throw new Error('Không tìm thấy khách hàng để xuất file.');
+
+      const money = (value: unknown) => Number(value || 0);
+      const dateText = (value: string) => {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? value : date.toLocaleString('vi-VN', { hour12: false });
+      };
+      const rangeText = `${debtExportFrom ? new Date(`${debtExportFrom}T00:00:00`).toLocaleDateString('vi-VN') : 'Tất cả'} đến ${debtExportTo ? new Date(`${debtExportTo}T00:00:00`).toLocaleDateString('vi-VN') : 'hiện tại'}`;
+      const statementRows: any[][] = [
+        [tenant.name || tenant.legalName || 'HKD Smart'],
+        ['Chi nhánh', tenant.legalName || tenant.name || ''],
+        ['Địa chỉ', tenant.address || ''],
+        ['Điện thoại', tenant.phone || ''],
+        [`Công nợ chi tiết khách hàng\nTừ ngày ${rangeText}`],
+        ['Khách hàng', customer.name || '', '', '', '', '', 'Nợ đầu kỳ', money(statement.openingDebt)],
+        ['Mã KH', customer.code || customer.id || '', '', '', '', '', 'Phát sinh trong kỳ', money(statement.periodDebit), money(statement.periodCredit)],
+        ['Điện thoại', customer.phone || '', '', '', '', '', 'Nợ cuối kỳ', money(statement.closingDebt)],
+        ...(customer.note ? [['Ghi chú khách hàng', customer.note]] : [[]]),
+        [],
+        ['Thời gian', 'Mã', 'Diễn giải', 'ĐVT', 'SL', 'Đơn giá', 'Thành tiền', 'Ghi nợ', 'Ghi có', 'Ghi chú', 'Người thực hiện'],
+      ];
+
+      for (const row of statement.rows || []) {
+        statementRows.push([
+          dateText(row.createdAt),
+          row.documentNo || row.id,
+          row.description || '',
+          row.unitName || '',
+          row.quantity ?? '',
+          row.unitPrice ?? '',
+          money(row.total),
+          money(row.debit) || '',
+          money(row.credit) || '',
+          row.note || '',
+          row.createdByName || row.createdBy || '',
+        ]);
+        if (row.rowType === 'invoice') {
+          for (const item of row.items || []) {
+            statementRows.push([
+              '',
+              item.sku || item.productId || '',
+              item.productName || '',
+              item.unitName || '',
+              item.quantity ?? '',
+              money(item.price),
+              money(item.total),
+              '',
+              '',
+              item.note || '',
+              row.createdByName || row.createdBy || '',
+            ]);
+          }
+        }
+      }
+
+      const detailSheet = XLSX.utils.aoa_to_sheet(statementRows);
+      detailSheet['!merges'] = [
+        { s: { r: 0, c: 0 }, e: { r: 0, c: 10 } },
+        { s: { r: 1, c: 1 }, e: { r: 1, c: 10 } },
+        { s: { r: 2, c: 1 }, e: { r: 2, c: 10 } },
+        { s: { r: 3, c: 1 }, e: { r: 3, c: 10 } },
+        { s: { r: 4, c: 0 }, e: { r: 4, c: 10 } },
+        { s: { r: 5, c: 1 }, e: { r: 5, c: 5 } },
+        { s: { r: 6, c: 1 }, e: { r: 6, c: 5 } },
+        { s: { r: 7, c: 1 }, e: { r: 7, c: 5 } },
+      ];
+      // Keep the legacy report's compact, printable proportions while adding
+      // explicit note and operator columns to the right.
+      detailSheet['!cols'] = [
+        { wch: 20 }, { wch: 19 }, { wch: 43 }, { wch: 13 }, { wch: 8 }, { wch: 14 },
+        { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 35 }, { wch: 20 },
+      ];
+      detailSheet['!rows'] = statementRows.map((row, index) => ({ hpt: index === 4 ? 34 : index === 10 ? 26 : row.some((value) => String(value || '').includes('\n')) ? 30 : 20 }));
+
+      const border = { top: { style: 'thin', color: { rgb: 'CBD5E1' } }, bottom: { style: 'thin', color: { rgb: 'CBD5E1' } }, left: { style: 'thin', color: { rgb: 'CBD5E1' } }, right: { style: 'thin', color: { rgb: 'CBD5E1' } } };
+      for (let rowIndex = 0; rowIndex < statementRows.length; rowIndex += 1) {
+        for (let columnIndex = 0; columnIndex < 11; columnIndex += 1) {
+          const address = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
+          const cell = detailSheet[address] as any;
+          if (!cell) continue;
+          cell.s = {
+            font: { name: 'Arial', sz: rowIndex === 0 || rowIndex === 4 ? 12 : 10, bold: rowIndex === 0 || rowIndex === 4 || rowIndex === 10, color: { rgb: '1E293B' } },
+            alignment: { vertical: 'center', wrapText: true, horizontal: columnIndex >= 4 && columnIndex <= 8 ? 'right' : 'left' },
+            border: rowIndex >= 10 ? border : undefined,
+            fill: rowIndex === 10 ? { fgColor: { rgb: 'E2E8F0' } } : undefined,
+          };
+          if (rowIndex === 0 || rowIndex === 4) cell.s.alignment.horizontal = 'center';
+        }
+      }
+      for (let rowIndex = 5; rowIndex <= 7; rowIndex += 1) {
+        for (const columnIndex of [0, 6]) {
+          const cell = detailSheet[XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex })] as any;
+          if (cell) cell.s = { ...(cell.s || {}), font: { ...(cell.s?.font || {}), bold: true, color: { rgb: '334155' } } };
+        }
+      }
+
+      const summaryRows: any[][] = [
+        ['Khách hàng', customer.name || ''],
+        ['Mã KH', customer.code || customer.id || ''],
+        ['Khoảng thời gian', rangeText],
+        [],
+        ['Chỉ tiêu', 'Giá trị'],
+        ['Nợ đầu kỳ', money(statement.openingDebt)],
+        ['Ghi nợ trong kỳ', money(statement.periodDebit)],
+        ['Ghi có trong kỳ', money(statement.periodCredit)],
+        ['Nợ cuối kỳ theo kỳ xuất', money(statement.closingDebt)],
+        ['Số dư hiện tại hệ thống', money(statement.currentDebt)],
+        [],
+        ['Thời gian', 'Mã đơn', 'Ghi chú đơn hàng', 'Tổng đơn', 'Ghi nợ', 'Ghi có', 'Số dòng hàng', 'Người thực hiện'],
+        ...(statement.rows || []).filter((row: any) => row.rowType === 'invoice').map((row: any) => [
+          dateText(row.createdAt), row.documentNo || row.id, row.note || '', money(row.total), money(row.debit), money(row.credit), (row.items || []).length, row.createdByName || row.createdBy || '',
+        ]),
+      ];
+      const summarySheet = XLSX.utils.aoa_to_sheet(summaryRows);
+      summarySheet['!cols'] = [{ wch: 26 }, { wch: 22 }, { wch: 38 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 20 }];
+      summarySheet['!rows'] = summaryRows.map((row, index) => ({ hpt: index === 11 ? 26 : 20 }));
+      for (let rowIndex = 0; rowIndex < summaryRows.length; rowIndex += 1) {
+        for (let columnIndex = 0; columnIndex < 8; columnIndex += 1) {
+          const address = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
+          const cell = summarySheet[address] as any;
+          if (!cell) continue;
+          cell.s = { font: { name: 'Arial', sz: 10, bold: rowIndex === 4 || rowIndex === 11, color: { rgb: '1E293B' } }, alignment: { vertical: 'center', wrapText: true }, border: rowIndex === 4 || rowIndex === 11 ? border : undefined, fill: rowIndex === 4 || rowIndex === 11 ? { fgColor: { rgb: 'E2E8F0' } } : undefined };
+        }
+      }
+
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, detailSheet, 'CNCT');
+      XLSX.utils.book_append_sheet(workbook, summarySheet, 'Tổng hợp đơn hàng');
+      const safeCustomerName = String(customer.name || customer.id).replace(/[\\/:*?"<>|]/g, '-').slice(0, 60);
+      XLSX.writeFile(workbook, `cong-no-chi-tiet-${safeCustomerName}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+      setShowDebtExportModal(false);
+    } catch (err) {
+      setDebtExportError(err instanceof Error ? err.message : 'Không thể xuất file công nợ chi tiết.');
+    } finally {
+      setExportingDebt(false);
+    }
   };
 
   const overdueDebtAmount = useMemo(() => {
@@ -494,6 +666,55 @@ export default function Debt() {
 
   return (
     <div className="erp-compact flex h-full flex-col overflow-hidden bg-slate-50 animate-in fade-in duration-500">
+      {showDebtExportModal && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl space-y-5 rounded-xl border border-white bg-white p-5 shadow-2xl sm:p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-section-title">Xuất công nợ chi tiết Excel</h3>
+                <p className="mt-1 text-xs text-slate-500">Bố cục CNCT theo file mẫu, gồm từng đơn hàng, dòng sản phẩm, ghi chú và người thực hiện.</p>
+              </div>
+              <button type="button" onClick={() => setShowDebtExportModal(false)} aria-label="Đóng popup" className="h-8 w-8 rounded-lg bg-slate-100 text-slate-500 hover:bg-slate-200">
+                <X className="mx-auto h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">Khách hàng</label>
+              <select value={debtExportCustomerId} onChange={(event) => setDebtExportCustomerId(event.target.value)} className="h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800">
+                <option value="">Chọn khách hàng</option>
+                {customers.slice().sort((a, b) => a.name.localeCompare(b.name, 'vi')).map((customer) => (
+                  <option key={customer.id} value={customer.id}>{customer.name} · {customer.phone || 'Chưa có SĐT'} · Nợ {formatCurrency(customer.totalDebt)}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">Từ ngày</label>
+                <Input type="date" value={debtExportFrom} onChange={(event) => setDebtExportFrom(event.target.value)} className="h-11" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">Đến ngày</label>
+                <Input type="date" value={debtExportTo} onChange={(event) => setDebtExportTo(event.target.value)} className="h-11" />
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-sky-100 bg-sky-50/70 px-3 py-2.5 text-xs leading-5 text-sky-800">
+              File sẽ có 2 sheet: <strong>CNCT</strong> theo mẫu cũ và <strong>Tổng hợp đơn hàng</strong>. Ghi chú chỉ xuất khi có dữ liệu; ghi chú từng sản phẩm được đặt ngay trên dòng sản phẩm tương ứng.
+            </div>
+            {debtExportError && <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{debtExportError}</p>}
+
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button type="button" variant="outline" onClick={() => setShowDebtExportModal(false)} className="h-10 px-4">Hủy</Button>
+              <Button type="button" onClick={exportCustomerDebtExcel} disabled={exportingDebt || !debtExportCustomerId} className="h-10 bg-emerald-600 px-4 hover:bg-emerald-700">
+                <Download className="mr-2 h-4 w-4" />{exportingDebt ? 'Đang tạo file...' : 'Xuất Excel chi tiết'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showDebtModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-slate-900/60 p-4 backdrop-blur-sm">
           <div className="my-2 flex max-h-[calc(100dvh-1rem)] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-white bg-white shadow-2xl sm:my-6 sm:max-h-[calc(100dvh-3rem)]">
@@ -697,7 +918,8 @@ export default function Debt() {
           <div className="grid w-full grid-cols-[1fr_auto] gap-2 sm:flex sm:w-auto sm:items-center sm:gap-2">
             {debtTab === 'customer' && <select value={careFilter} onChange={(e) => setCareFilter(e.target.value as typeof careFilter)} className="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"><option value="all">Còn nợ</option><option value="due_soon">Sắp đến hạn</option><option value="inactive_7">7 ngày chưa mua</option><option value="inactive_30">30 ngày chưa mua</option></select>}
             {debtTab === 'customer' && <Button onClick={() => openDebtModal('decrease')} className="h-8 rounded-md bg-sky-600 px-3 text-xs font-medium text-white hover:bg-sky-700"><ArrowDownCircle className="mr-1.5 h-3.5 w-3.5" />Thu nợ</Button>}
-            {debtTab === 'customer' && <Button variant="outline" onClick={exportDebtCsv} className="h-8 rounded-md px-3 text-xs"><Download className="mr-1.5 h-3.5 w-3.5" />Xuất CSV</Button>}
+            {debtTab === 'customer' && <Button variant="outline" onClick={openDebtExportModal} className="h-8 rounded-md border-emerald-200 px-3 text-xs text-emerald-700 hover:bg-emerald-50"><Download className="mr-1.5 h-3.5 w-3.5" />Xuất Excel chi tiết</Button>}
+            {debtTab === 'customer' && <Button variant="outline" onClick={exportDebtCsv} className="h-8 rounded-md px-3 text-xs"><Download className="mr-1.5 h-3.5 w-3.5" />Xuất CSV tổng hợp</Button>}
           </div>
         </div>
       </div>
@@ -839,7 +1061,7 @@ export default function Debt() {
                   <button type="button" onClick={() => toggleLedgerDetails(entry)} className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50">
                     <div className="min-w-0 space-y-0.5">
                       <p className="truncate text-xs font-semibold text-slate-900"><span role="link" tabIndex={0} className="cursor-pointer hover:text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); navigate(`/app/customers/${entry.customerId}`); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); navigate(`/app/customers/${entry.customerId}`); } }}>{customer?.name || entry.customerId}</span></p>
-                      <p className="truncate text-[11px] text-slate-500">{new Date(entry.createdAt).toLocaleString('vi-VN')} · {entry.note || 'Không có ghi chú'}{invoice ? <> · <span role="link" tabIndex={0} className="cursor-pointer text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); navigate(`/app/invoices?invoiceId=${encodeURIComponent(invoice.id)}`); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); navigate(`/app/invoices?invoiceId=${encodeURIComponent(invoice.id)}`); } }}>{invoice.documentNo || invoice.id}</span></> : null}</p>
+                      <p className="truncate text-[11px] text-slate-500">{new Date(entry.createdAt).toLocaleString('vi-VN')} · {entry.note || 'Không có ghi chú'} · {entry.createdByName || entry.createdBy || 'Không rõ người thực hiện'}{invoice ? <> · <span role="link" tabIndex={0} className="cursor-pointer text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); navigate(`/app/invoices?invoiceId=${encodeURIComponent(invoice.id)}`); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); navigate(`/app/invoices?invoiceId=${encodeURIComponent(invoice.id)}`); } }}>{invoice.documentNo || invoice.id}</span></> : null}</p>
                     </div>
                     <div className="flex shrink-0 items-center gap-3">
                       <div className={`text-xs font-semibold ${entry.type === 'increase' ? 'text-orange-600' : 'text-sky-600'}`}>{entry.type === 'increase' ? '+' : '-'} {formatCurrency(entry.amount)}</div>

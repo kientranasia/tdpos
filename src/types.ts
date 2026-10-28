@@ -146,6 +146,7 @@ export interface Category {
 
 export interface Customer {
   id: string;
+  code?: string;
   tenantId: string; // Tách data theo tenant
   createdBy?: string;
   createdByName?: string | null;

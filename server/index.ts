@@ -315,6 +315,15 @@ const nextDocumentNo = (tenantId: string, documentType: string, prefix: string) 
   return `${prefix}-${String(next).padStart(6, '0')}`;
 };
 
+const nextCustomerCode = (tenantId: string) => {
+  const existing = sqlite.prepare("SELECT code FROM customers WHERE tenant_id = ? AND code LIKE 'KH%'").all(tenantId) as Array<{ code: string }>;
+  const max = existing.reduce((highest, row) => {
+    const value = Number(String(row.code || '').replace(/^KH/i, ''));
+    return Number.isFinite(value) ? Math.max(highest, value) : highest;
+  }, 0);
+  return `KH${String(max + 1).padStart(6, '0')}`;
+};
+
 app.get('/api/system/status', (req, res) => {
   try {
     const interfaces = Object.values(os.networkInterfaces()).flat().filter((item) => item && !item.internal && item.family === 'IPv4').map((item) => item?.address).filter(Boolean);
@@ -1798,11 +1807,194 @@ app.get('/api/customers/:id', (req, res) => {
   }
 });
 
+// Customer debt statement used by the detailed Excel export.  The statement
+// keeps the invoice as the business document and the debt ledger as the
+// settlement/adjustment trail, so the same invoice-linked increase is not
+// counted twice.
+app.get('/api/customers/:id/debt-statement', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'debt.view')) return;
+    const customer = db.select().from(schema.customers)
+      .where(and(eq(schema.customers.id, req.params.id), eq(schema.customers.tenantId, req.user.tenantId))).get();
+    if (!customer) return res.status(404).json({ error: 'Customer not found' });
+
+    const parseBoundary = (value: unknown, endOfDay: boolean) => {
+      if (!value) return endOfDay ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+      const raw = String(value).trim();
+      const parsed = new Date(`${raw}T${endOfDay ? '23:59:59.999' : '00:00:00'}`).getTime();
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const fromMs = parseBoundary(req.query.from, false);
+    const toMs = parseBoundary(req.query.to, true);
+    if (fromMs === null || toMs === null || fromMs > toMs) {
+      return res.status(400).json({ error: 'Khoảng thời gian không hợp lệ' });
+    }
+
+    const tenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, req.user.tenantId)).get();
+    const users = db.select().from(schema.users).where(eq(schema.users.tenantId, req.user.tenantId)).all();
+    const userNameById = new Map(users.map((user) => [user.id, user.name]));
+    const invoices = db.select().from(schema.invoices)
+      .where(and(eq(schema.invoices.tenantId, req.user.tenantId), eq(schema.invoices.customerId, customer.id)))
+      .all()
+      .filter((invoice) => invoice.workflowStatus !== 'cancelled');
+    const invoiceIds = invoices.map((invoice) => invoice.id);
+    const invoiceItems = invoiceIds.length
+      ? db.select().from(schema.invoiceItems).where(inArray(schema.invoiceItems.invoiceId, invoiceIds)).all()
+      : [];
+    const productIds = Array.from(new Set(invoiceItems.map((item) => item.productId).filter(Boolean)));
+    const products = productIds.length
+      ? db.select().from(schema.products).where(and(eq(schema.products.tenantId, req.user.tenantId), inArray(schema.products.id, productIds))).all()
+      : [];
+    const productById = new Map(products.map((product) => [product.id, product]));
+    const itemsByInvoice = new Map<string, any[]>();
+    invoiceItems.forEach((item) => {
+      const product = productById.get(item.productId);
+      const row = {
+        ...item,
+        sku: product?.sku || item.productId,
+        barcode: product?.barcode || null,
+        unitName: item.unitName || product?.unit || '',
+      };
+      const rows = itemsByInvoice.get(item.invoiceId) || [];
+      rows.push(row);
+      itemsByInvoice.set(item.invoiceId, rows);
+    });
+
+    const ledgerEntries = db.select().from(schema.debtLedger)
+      .where(and(eq(schema.debtLedger.tenantId, req.user.tenantId), eq(schema.debtLedger.customerId, customer.id)))
+      .all();
+    const increaseByInvoice = new Map<string, number>();
+    ledgerEntries.forEach((entry) => {
+      if (entry.invoiceId && entry.type === 'increase') {
+        increaseByInvoice.set(entry.invoiceId, (increaseByInvoice.get(entry.invoiceId) || 0) + Number(entry.amount || 0));
+      }
+    });
+
+    const invoiceRows = invoices.map((invoice) => {
+      // debtAmount is the debt created at checkout. The ledger fallback keeps
+      // legacy invoices visible when they were posted before this field was
+      // populated consistently.
+      const debit = Math.max(Number(invoice.debtAmount || 0), increaseByInvoice.get(invoice.id) || 0);
+      return {
+        id: `invoice:${invoice.id}`,
+        rowType: 'invoice',
+        createdAt: invoice.createdAt,
+        documentNo: invoice.documentNo || invoice.id,
+        description: 'Bán hàng',
+        unitName: '',
+        quantity: null,
+        unitPrice: null,
+        total: Number(invoice.finalAmount || 0),
+        debit,
+        credit: 0,
+        note: invoice.note || '',
+        invoiceNote: invoice.note || '',
+        createdBy: invoice.createdBy,
+        createdByName: userNameById.get(invoice.createdBy) || invoice.createdBy || null,
+        items: itemsByInvoice.get(invoice.id) || [],
+      };
+    });
+
+    const ledgerRows = ledgerEntries
+      // The increase generated by a sales invoice is represented by the
+      // invoice row above. Keep linked decreases as separate audit rows.
+      .filter((entry) => !(entry.invoiceId && entry.type === 'increase'))
+      .map((entry) => {
+        const invoice = entry.invoiceId ? invoices.find((item) => item.id === entry.invoiceId) : null;
+        const isReturn = /trả hàng|hoàn tiền/i.test(entry.note || '');
+        return {
+          id: `ledger:${entry.id}`,
+          rowType: 'ledger',
+          createdAt: entry.createdAt,
+          documentNo: invoice?.documentNo || `CN-${entry.id.slice(0, 8).toUpperCase()}`,
+          description: isReturn ? 'Khách trả hàng' : entry.type === 'increase' ? 'Điều chỉnh tăng công nợ' : 'Thu công nợ',
+          unitName: '',
+          quantity: null,
+          unitPrice: null,
+          total: Number(entry.amount || 0),
+          debit: entry.type === 'increase' ? Number(entry.amount || 0) : 0,
+          credit: entry.type === 'decrease' ? Number(entry.amount || 0) : 0,
+          note: entry.note || '',
+          invoiceNote: invoice?.note || '',
+          createdBy: entry.createdBy,
+          createdByName: userNameById.get(entry.createdBy) || entry.createdBy || null,
+          items: [],
+        };
+      });
+
+    const movementRows = [...invoiceRows, ...ledgerRows];
+    const currentDebt = Number(customer.totalDebt || 0);
+    const movementDebt = movementRows.reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0);
+    const reconciliationAdjustment = currentDebt - movementDebt;
+    if (Math.abs(reconciliationAdjustment) > 0.01) {
+      movementRows.push({
+        id: `opening:${customer.id}`,
+        rowType: 'opening',
+        createdAt: tenant?.createdAt || new Date().toISOString(),
+        documentNo: `DC-${customer.id}`,
+        description: 'Số dư chuyển đổi',
+        unitName: '',
+        quantity: null,
+        unitPrice: null,
+        total: Math.abs(reconciliationAdjustment),
+        debit: reconciliationAdjustment > 0 ? reconciliationAdjustment : 0,
+        credit: reconciliationAdjustment < 0 ? Math.abs(reconciliationAdjustment) : 0,
+        note: 'Điều chỉnh đối soát để khớp số dư công nợ hiện tại của hệ thống',
+        invoiceNote: '',
+        createdBy: null,
+        createdByName: 'Hệ thống',
+        items: [],
+      });
+    }
+
+    const allRows = movementRows.sort((a, b) => {
+      const timeDiff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      if (timeDiff !== 0) return timeDiff;
+      return a.rowType === 'invoice' ? -1 : 1;
+    });
+    const inRange = (row: any) => {
+      const timestamp = new Date(row.createdAt).getTime();
+      return timestamp >= (fromMs as number) && timestamp <= (toMs as number);
+    };
+    const signed = (row: any) => Number(row.debit || 0) - Number(row.credit || 0);
+    const openingDebt = Math.max(0, allRows.filter((row) => new Date(row.createdAt).getTime() < (fromMs as number)).reduce((sum, row) => sum + signed(row), 0));
+    const rows = allRows.filter(inRange);
+    const periodDebit = rows.reduce((sum, row) => sum + Number(row.debit || 0), 0);
+    const periodCredit = rows.reduce((sum, row) => sum + Number(row.credit || 0), 0);
+
+    res.json({
+      from: req.query.from || null,
+      to: req.query.to || null,
+      tenant: tenant ? {
+        name: tenant.name,
+        legalName: tenant.legalName || '',
+        address: tenant.address,
+        phone: tenant.phone,
+        taxInfo: tenant.taxInfo || '',
+      } : null,
+      customer: {
+        ...customer,
+        tags: customer.tags ? JSON.parse(customer.tags) : [],
+      },
+      openingDebt,
+      periodDebit,
+      periodCredit,
+      closingDebt: Math.max(0, openingDebt + periodDebit - periodCredit),
+      currentDebt,
+      rows,
+    });
+  } catch (err) {
+    console.error('GET /api/customers/:id/debt-statement error:', err);
+    res.status(500).json({ error: 'Không thể tải chi tiết công nợ khách hàng' });
+  }
+});
+
 app.post('/api/customers', (req, res) => {
   try {
     if (!ensurePermission(req, res, 'partners.create')) return;
     const customer = {
       id: uuid(),
+      code: String(req.body?.code || nextCustomerCode(req.user.tenantId)),
       totalDebt: 0,
       note: '',
       active: true,
@@ -3178,7 +3370,15 @@ app.get('/api/debt-ledger', (req, res) => {
       allEntries = allEntries.filter(e => e.customerId === customerId);
     }
 
-    res.json(allEntries);
+    const userIds = Array.from(new Set(allEntries.map((entry) => entry.createdBy).filter(Boolean)));
+    const users = userIds.length
+      ? db.select().from(schema.users).where(and(eq(schema.users.tenantId, req.user.tenantId), inArray(schema.users.id, userIds))).all()
+      : [];
+    const userNameById = new Map(users.map((user) => [user.id, user.name]));
+    res.json(allEntries.map((entry) => ({
+      ...entry,
+      createdByName: userNameById.get(entry.createdBy) || entry.createdBy || null,
+    })));
   } catch (err) {
     console.error('GET /api/debt-ledger error:', err);
     res.status(500).json({ error: 'Internal server error' });

@@ -42,7 +42,21 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'customers'").get()) {
   addColumnIfMissing('customers', 'created_by', 'created_by TEXT');
+  addColumnIfMissing('customers', 'code', "code TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing('customers', 'tags', "tags TEXT NOT NULL DEFAULT '[]'");
+  const customersWithoutCode = sqlite.prepare("SELECT id, tenant_id FROM customers WHERE code IS NULL OR code = '' ORDER BY rowid").all() as Array<{ id: string; tenant_id: string }>;
+  const customersWithCode = sqlite.prepare("SELECT tenant_id, code FROM customers WHERE code IS NOT NULL AND code != ''").all() as Array<{ tenant_id: string; code: string }>;
+  const nextCodeByTenant = new Map<string, number>();
+  customersWithCode.forEach((customer) => {
+    const value = Number(String(customer.code || '').replace(/^KH/i, ''));
+    if (Number.isFinite(value)) nextCodeByTenant.set(customer.tenant_id, Math.max(nextCodeByTenant.get(customer.tenant_id) || 0, value));
+  });
+  for (const customer of customersWithoutCode) {
+    const current = nextCodeByTenant.get(customer.tenant_id) || 0;
+    const next = current + 1;
+    nextCodeByTenant.set(customer.tenant_id, next);
+    sqlite.prepare('UPDATE customers SET code = ? WHERE id = ?').run(`KH${String(next).padStart(6, '0')}`, customer.id);
+  }
 }
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenants'").get()) {
