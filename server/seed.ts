@@ -66,10 +66,17 @@ sqlite.exec(`
     stock REAL NOT NULL DEFAULT 0,
     track_stock INTEGER NOT NULL DEFAULT 1,
     low_stock_threshold REAL NOT NULL DEFAULT 10,
+    max_stock_threshold REAL NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'active',
     barcode TEXT,
     image_url TEXT,
-    product_type TEXT NOT NULL DEFAULT 'standard'
+    product_type TEXT NOT NULL DEFAULT 'standard',
+    attributes TEXT,
+    attributes_json TEXT,
+    source_system TEXT,
+    source_code TEXT,
+    source_related_code TEXT,
+    source_imported_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS customers (

@@ -14,6 +14,7 @@ interface AppContextType {
   activeTenant: Tenant | null;
   currentUser: User | null;
   products: Product[];
+  productSummary: { total: number; totalStock: number; stockValue: number; lowStock: number };
   categories: Category[];
   customers: Customer[];
   invoices: Invoice[];
@@ -45,6 +46,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeTenant, setActiveTenant] = useState<Tenant | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
+  const [productSummary, setProductSummary] = useState({ total: 0, totalStock: 0, stockValue: 0, lowStock: 0 });
   const [categories, setCategories] = useState<Category[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -61,6 +63,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setActiveTenant(null);
           setCurrentUser(null);
           setProducts([]);
+          setProductSummary({ total: 0, totalStock: 0, stockValue: 0, lowStock: 0 });
           setCategories([]);
           setCustomers([]);
           setInvoices([]);
@@ -68,7 +71,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        const session = await authApi.me();
+        let session;
+        try {
+          session = await authApi.me();
+        } catch (err) {
+          console.error('❌ Session is no longer valid:', err);
+          authApi.clearSession();
+          setActiveTenant(null);
+          setCurrentUser(null);
+          return;
+        }
         const tenant = session.tenant || null;
         const user = session.user || null;
         setActiveTenant(tenant);
@@ -78,6 +90,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
         if (tenant?.accessBlocked) {
           setProducts([]);
+          setProductSummary({ total: 0, totalStock: 0, stockValue: 0, lowStock: 0 });
           setCategories([]);
           setCustomers([]);
           setInvoices([]);
@@ -86,22 +99,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
 
         if (tenant) {
-          const [prodList, catList, custList, invList] = await Promise.all([
-            productsApi.list(tenant.id),
+          const [prodResult, summaryResult, catResult, custResult, invResult] = await Promise.allSettled([
+            productsApi.listPage(tenant.id, { limit: 100, offset: 0 }),
+            productsApi.summary(tenant.id),
             categoriesApi.list(tenant.id),
             customersApi.list(tenant.id),
             invoicesApi.list(tenant.id),
           ]);
-          setProducts(prodList);
-          setCategories(catList);
-          setCustomers(custList);
-          setInvoices(invList);
+          if (prodResult.status === 'fulfilled') setProducts(prodResult.value.items);
+          else console.error('Failed to load products:', prodResult.reason);
+          if (summaryResult.status === 'fulfilled') setProductSummary(summaryResult.value);
+          else console.error('Failed to load product summary:', summaryResult.reason);
+          if (catResult.status === 'fulfilled') setCategories(catResult.value);
+          else console.error('Failed to load categories:', catResult.reason);
+          if (custResult.status === 'fulfilled') setCustomers(custResult.value);
+          else console.error('Failed to load customers:', custResult.reason);
+          if (invResult.status === 'fulfilled') setInvoices(invResult.value);
+          else console.error('Failed to load invoices:', invResult.reason);
+          lastLoadedTenantIdRef.current = tenant.id;
         }
       } catch (err) {
         console.error('❌ Failed to connect to backend API:', err);
-        authApi.clearSession();
-        setActiveTenant(null);
-        setCurrentUser(null);
       } finally {
         setLoading(false);
       }
@@ -113,6 +131,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!authApi.getToken() || !activeTenant?.id) {
       lastLoadedTenantIdRef.current = null;
       setProducts([]);
+      setProductSummary({ total: 0, totalStock: 0, stockValue: 0, lowStock: 0 });
       setCategories([]);
       setCustomers([]);
       setInvoices([]);
@@ -123,6 +142,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (activeTenant.accessBlocked) {
       lastLoadedTenantIdRef.current = activeTenant.id;
       setProducts([]);
+      setProductSummary({ total: 0, totalStock: 0, stockValue: 0, lowStock: 0 });
       setCategories([]);
       setCustomers([]);
       setInvoices([]);
@@ -140,16 +160,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setCustomers([]);
         setInvoices([]);
 
-        const [prodList, catList, custList, invList] = await Promise.all([
-          productsApi.list(activeTenant.id),
+        const [prodResult, summaryResult, catResult, custResult, invResult] = await Promise.allSettled([
+          productsApi.listPage(activeTenant.id, { limit: 100, offset: 0 }),
+          productsApi.summary(activeTenant.id),
           categoriesApi.list(activeTenant.id),
           customersApi.list(activeTenant.id),
           invoicesApi.list(activeTenant.id),
         ]);
-        setProducts(prodList);
-        setCategories(catList);
-        setCustomers(custList);
-        setInvoices(invList);
+        if (prodResult.status === 'fulfilled') setProducts(prodResult.value.items);
+        else console.error('Failed to load products:', prodResult.reason);
+        if (summaryResult.status === 'fulfilled') setProductSummary(summaryResult.value);
+        else console.error('Failed to load product summary:', summaryResult.reason);
+        if (catResult.status === 'fulfilled') setCategories(catResult.value);
+        else console.error('Failed to load categories:', catResult.reason);
+        if (custResult.status === 'fulfilled') setCustomers(custResult.value);
+        else console.error('Failed to load customers:', custResult.reason);
+        if (invResult.status === 'fulfilled') setInvoices(invResult.value);
+        else console.error('Failed to load invoices:', invResult.reason);
         lastLoadedTenantIdRef.current = activeTenant.id;
       } catch (err) {
         console.error('Failed to load tenant-scoped data:', err);
@@ -163,8 +190,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const refreshProducts = useCallback(async () => {
     if (!activeTenant) return;
     try {
-      const data = await productsApi.list(activeTenant.id);
-      setProducts(data);
+      const [data, summary] = await Promise.all([
+        productsApi.listPage(activeTenant.id, { limit: 100, offset: 0 }),
+        productsApi.summary(activeTenant.id),
+      ]);
+      setProducts(data.items);
+      setProductSummary(summary);
     } catch (err) {
       console.error('Failed to refresh products:', err);
     }
@@ -358,6 +389,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       activeTenant,
       currentUser,
       products,
+      productSummary,
       categories,
       customers,
       invoices,

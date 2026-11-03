@@ -70,7 +70,7 @@ declare global {
 
 // ─── Middleware ─────────────────────────────────────────────
 app.use(cors({ origin: true }));
-app.use(express.json({ limit: '8mb' }));
+app.use(express.json({ limit: '20mb' }));
 app.use(morgan('dev'));
 
 // Auth Middleware
@@ -1048,19 +1048,61 @@ const ensureDefaultPriceList = (tenantId: string) => {
   }
   if (defaultList) {
     const products = db.select().from(schema.products).where(and(eq(schema.products.tenantId, tenantId), eq(schema.products.productType, 'standard'))).all();
-    for (const product of products) {
-      const exists = db.select().from(schema.priceListItems).where(and(eq(schema.priceListItems.priceListId, defaultList.id), eq(schema.priceListItems.productId, product.id), eq(schema.priceListItems.unitName, product.unit))).get();
-      if (!exists) db.insert(schema.priceListItems).values({ id: uuid(), tenantId, priceListId: defaultList.id, productId: product.id, unitName: product.unit, unitFactor: 1, price: product.sellingPrice, createdAt: new Date().toISOString() }).run();
-    }
+    const existingItems = db.select({ productId: schema.priceListItems.productId, unitName: schema.priceListItems.unitName })
+      .from(schema.priceListItems)
+      .where(eq(schema.priceListItems.priceListId, defaultList.id))
+      .all();
+    const existingKeys = new Set(existingItems.map((item) => `${item.productId}::${String(item.unitName).trim().toLowerCase()}`));
+    const missingItems = products
+      .filter((product) => !existingKeys.has(`${product.id}::${product.unit.trim().toLowerCase()}`))
+      .map((product) => ({ id: uuid(), tenantId, priceListId: defaultList!.id, productId: product.id, unitName: product.unit, unitFactor: 1, price: product.sellingPrice, createdAt: new Date().toISOString() }));
+    if (missingItems.length) db.insert(schema.priceListItems).values(missingItems).run();
   }
   return defaultList;
 };
 
-const productUnitsFor = (tenantId: string, product: any) => {
+type DefaultPriceLookup = Map<string, number>;
+
+const loadDefaultPriceLookup = (tenantId: string): DefaultPriceLookup => {
+  const defaultList = db.select({ id: schema.priceLists.id }).from(schema.priceLists)
+    .where(and(eq(schema.priceLists.tenantId, tenantId), eq(schema.priceLists.isDefault, true))).get();
+  if (!defaultList) return new Map();
+  const items = db.select().from(schema.priceListItems).where(eq(schema.priceListItems.priceListId, defaultList.id)).all();
+  return new Map(items.map((item) => [`${item.productId}::${item.unitName.trim().toLowerCase()}`, Number(item.price || 0)]));
+};
+
+const productUnitsFor = (tenantId: string, product: any, defaultPrices: DefaultPriceLookup = new Map()) => {
   const extraUnits = db.select().from(schema.productUnits)
     .where(and(eq(schema.productUnits.tenantId, tenantId), eq(schema.productUnits.productId, product.id), eq(schema.productUnits.active, true))).all();
-  const base = { id: `base-${product.id}`, tenantId, productId: product.id, name: product.unit, factor: 1, barcode: product.barcode || null, active: true };
-  return [base, ...extraUnits.filter((unit) => unit.name !== product.unit || Number(unit.factor) !== 1)];
+  const priceFor = (unitName: string, fallback: number) => defaultPrices.get(`${product.id}::${unitName.trim().toLowerCase()}`) ?? fallback;
+  const base = {
+    id: `base-${product.id}`,
+    tenantId,
+    productId: product.id,
+    sku: product.sku || null,
+    name: product.unit,
+    factor: 1,
+    barcode: product.barcode || null,
+    purchasePrice: Number(product.purchasePrice || 0),
+    sellingPrice: priceFor(String(product.unit || ''), Number(product.sellingPrice || 0)),
+    stock: Number(product.stock || 0),
+    attributes: product.attributes || null,
+    sourceSystem: product.sourceSystem || null,
+    sourceCode: product.sourceCode || null,
+    sourceRelatedCode: product.sourceRelatedCode || null,
+    sourceImportedAt: product.sourceImportedAt || null,
+    active: true,
+  };
+  return [
+    base,
+    ...extraUnits
+      .filter((unit) => unit.name !== product.unit || Number(unit.factor) !== 1)
+      .map((unit) => ({
+        ...unit,
+        sellingPrice: priceFor(String(unit.name || ''), Number(product.sellingPrice || 0) * Number(unit.factor || 1)),
+        stock: Number(unit.factor) > 0 ? Number(product.stock || 0) / Number(unit.factor) : 0,
+      })),
+  ];
 };
 
 const productComponentsFor = (tenantId: string, productId: string) => db.select().from(schema.productComponents)
@@ -1084,9 +1126,93 @@ const availableForProduct = (tenantId: string, productId: string, seen = new Set
   }));
 };
 
-const withStockAvailability = (tenantId: string, product: any) => {
+const withStockAvailability = (tenantId: string, product: any, defaultPrices?: DefaultPriceLookup) => {
   const reservedStock = reservedBaseStock(tenantId, product.id);
-  return { ...product, units: productUnitsFor(tenantId, product), components: productComponentsFor(tenantId, product.id), reservedStock, availableStock: availableForProduct(tenantId, product.id) };
+  return { ...product, units: productUnitsFor(tenantId, product, defaultPrices), components: productComponentsFor(tenantId, product.id), reservedStock, availableStock: availableForProduct(tenantId, product.id) };
+};
+
+const withStockAvailabilityBatch = (tenantId: string, products: any[], defaultPrices: DefaultPriceLookup, availabilityProducts = products) => {
+  const activeUnits = db.select().from(schema.productUnits)
+    .where(and(eq(schema.productUnits.tenantId, tenantId), eq(schema.productUnits.active, true))).all();
+  const components = db.select().from(schema.productComponents)
+    .where(eq(schema.productComponents.tenantId, tenantId)).all();
+  const reservedRows = db.select({
+    productId: schema.stockReservations.productId,
+    quantity: sql<number>`coalesce(sum(${schema.stockReservations.quantity}), 0)`,
+  }).from(schema.stockReservations)
+    .where(and(eq(schema.stockReservations.tenantId, tenantId), eq(schema.stockReservations.status, 'reserved')))
+    .groupBy(schema.stockReservations.productId)
+    .all();
+
+  const productById = new Map(availabilityProducts.map((product) => [product.id, product]));
+  const unitsByProduct = new Map<string, any[]>();
+  activeUnits.forEach((unit) => {
+    const rows = unitsByProduct.get(unit.productId) || [];
+    rows.push(unit);
+    unitsByProduct.set(unit.productId, rows);
+  });
+  const componentsByProduct = new Map<string, any[]>();
+  components.forEach((component) => {
+    const rows = componentsByProduct.get(component.comboProductId) || [];
+    rows.push(component);
+    componentsByProduct.set(component.comboProductId, rows);
+  });
+  const reservedByProduct = new Map(reservedRows.map((row) => [row.productId, Number(row.quantity || 0)]));
+  const availabilityMemo = new Map<string, number>();
+  const availableForBatch = (productId: string, seen = new Set<string>()): number => {
+    if (seen.has(productId)) return 0;
+    if (availabilityMemo.has(productId)) return availabilityMemo.get(productId) || 0;
+    const product = productById.get(productId);
+    if (!product) return 0;
+    if (product.productType !== 'combo') {
+      const result = Math.max(0, Number(product.stock || 0) - (reservedByProduct.get(productId) || 0));
+      availabilityMemo.set(productId, result);
+      return result;
+    }
+    const productComponents = componentsByProduct.get(productId) || [];
+    if (!productComponents.length) return 0;
+    const result = Math.min(...productComponents.map((component) => {
+      const quantity = Number(component.quantity || 0);
+      return quantity > 0 ? Math.floor(availableForBatch(component.componentProductId, new Set([...seen, productId])) / quantity) : 0;
+    }));
+    availabilityMemo.set(productId, result);
+    return result;
+  };
+
+  return products.map((product) => {
+    const extraUnits = (unitsByProduct.get(product.id) || []).filter((unit) => unit.name !== product.unit || Number(unit.factor) !== 1);
+    const priceFor = (unitName: string, fallback: number) => defaultPrices.get(`${product.id}::${unitName.trim().toLowerCase()}`) ?? fallback;
+    const baseUnit = {
+      id: `base-${product.id}`,
+      tenantId,
+      productId: product.id,
+      sku: product.sku || null,
+      name: product.unit,
+      factor: 1,
+      barcode: product.barcode || null,
+      purchasePrice: Number(product.purchasePrice || 0),
+      sellingPrice: priceFor(String(product.unit || ''), Number(product.sellingPrice || 0)),
+      stock: Number(product.stock || 0),
+      attributes: product.attributes || null,
+      sourceSystem: product.sourceSystem || null,
+      sourceCode: product.sourceCode || null,
+      sourceRelatedCode: product.sourceRelatedCode || null,
+      sourceImportedAt: product.sourceImportedAt || null,
+      active: true,
+    };
+    const units = [baseUnit, ...extraUnits.map((unit) => ({
+      ...unit,
+      sellingPrice: priceFor(String(unit.name || ''), Number(product.sellingPrice || 0) * Number(unit.factor || 1)),
+      stock: Number(unit.factor) > 0 ? Number(product.stock || 0) / Number(unit.factor) : 0,
+    }))];
+    return {
+      ...product,
+      units,
+      components: componentsByProduct.get(product.id) || [],
+      reservedStock: reservedByProduct.get(product.id) || 0,
+      availableStock: availableForBatch(product.id),
+    };
+  });
 };
 
 app.get('/api/price-lists', (req, res) => {
@@ -1094,11 +1220,16 @@ app.get('/api/price-lists', (req, res) => {
     if (!ensurePermission(req, res, 'inventory.view')) return;
     const defaultList = ensureDefaultPriceList(req.user.tenantId);
     const includeItems = String(req.query.includeItems ?? 'true') !== 'false';
+    const requestedProductIds = new Set(String(req.query.productIds || '').split(',').map((value) => value.trim()).filter(Boolean));
     const lists = db.select().from(schema.priceLists)
       .where(eq(schema.priceLists.tenantId, req.user.tenantId)).all();
     res.json(lists.map((list) => ({
       ...list,
-      items: includeItems ? db.select().from(schema.priceListItems).where(eq(schema.priceListItems.priceListId, list.id)).all() : undefined,
+      items: includeItems ? db.select().from(schema.priceListItems).where(
+        requestedProductIds.size
+          ? and(eq(schema.priceListItems.priceListId, list.id), inArray(schema.priceListItems.productId, Array.from(requestedProductIds)))
+          : eq(schema.priceListItems.priceListId, list.id)
+      ).all() : undefined,
       isDefault: Boolean(list.isDefault),
       active: Boolean(list.active),
       ensuredDefault: list.id === defaultList?.id,
@@ -1218,7 +1349,7 @@ app.get('/api/products/lookup', (req, res) => {
     if (!product) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
     const resolved = 'productId' in product ? db.select().from(schema.products).where(eq(schema.products.id, product.productId)).get() : product;
     if (!resolved) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
-    res.json(withStockAvailability(req.user.tenantId, resolved));
+    res.json(withStockAvailability(req.user.tenantId, resolved, loadDefaultPriceLookup(req.user.tenantId)));
   } catch (err) {
     console.error('GET /api/products/lookup error:', err);
     res.status(500).json({ error: 'Không thể tra cứu mã sản phẩm' });
@@ -1228,8 +1359,9 @@ app.get('/api/products/lookup', (req, res) => {
 app.get('/api/products', (req, res) => {
   try {
     const { category, search } = req.query;
-    let allProducts = db.select().from(schema.products)
+    const allTenantProducts = db.select().from(schema.products)
       .where(eq(schema.products.tenantId, req.user.tenantId)).all();
+    let allProducts = allTenantProducts;
 
     // Apply additional filters in-memory for simplicity
     if (category && category !== 'all') {
@@ -1237,16 +1369,89 @@ app.get('/api/products', (req, res) => {
     }
     if (search) {
       const searchStr = normalizeSearchText(search);
+      const matchingUnitProductIds = new Set(
+        db.select({ productId: schema.productUnits.productId, sku: schema.productUnits.sku, barcode: schema.productUnits.barcode })
+          .from(schema.productUnits)
+          .where(eq(schema.productUnits.tenantId, req.user.tenantId))
+          .all()
+          .filter((unit) => normalizeSearchText(unit.sku).includes(searchStr) || normalizeSearchText(unit.barcode).includes(searchStr))
+          .map((unit) => unit.productId)
+      );
       allProducts = allProducts.filter(p =>
         normalizeSearchText(p.name).includes(searchStr) ||
-        normalizeSearchText(p.sku).includes(searchStr)
+        normalizeSearchText(p.sku).includes(searchStr) ||
+        normalizeSearchText(p.barcode).includes(searchStr) ||
+        matchingUnitProductIds.has(p.id)
       );
     }
 
-    res.json(allProducts.map((product) => withStockAvailability(req.user.tenantId, product)));
+    const total = allProducts.length;
+    const parsedLimit = Number(req.query.limit);
+    const parsedOffset = Number(req.query.offset);
+    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(Math.floor(parsedLimit), 500) : 0;
+    const offset = Number.isFinite(parsedOffset) && parsedOffset > 0 ? Math.floor(parsedOffset) : 0;
+    const pageProducts = limit ? allProducts.slice(offset, offset + limit) : allProducts;
+    const defaultPrices = loadDefaultPriceLookup(req.user.tenantId);
+    const enrichedProducts = withStockAvailabilityBatch(req.user.tenantId, pageProducts, defaultPrices, allTenantProducts);
+    if (String(req.query.includeMeta || '').toLowerCase() === 'true') {
+      return res.json({ items: enrichedProducts, total, offset, limit: limit || total });
+    }
+    res.json(enrichedProducts);
   } catch (err) {
     console.error('GET /api/products error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/products/summary', (req, res) => {
+  try {
+    const rows = db.select({
+      stock: schema.products.stock,
+      purchasePrice: schema.products.purchasePrice,
+      trackStock: schema.products.trackStock,
+      lowStockThreshold: schema.products.lowStockThreshold,
+    }).from(schema.products).where(eq(schema.products.tenantId, req.user.tenantId)).all();
+    res.json({
+      total: rows.length,
+      totalStock: rows.reduce((sum, row) => sum + Number(row.stock || 0), 0),
+      stockValue: rows.reduce((sum, row) => sum + Number(row.stock || 0) * Number(row.purchasePrice || 0), 0),
+      lowStock: rows.filter((row) => Boolean(row.trackStock) && Number(row.stock || 0) <= Number(row.lowStockThreshold || 0)).length,
+    });
+  } catch (err) {
+    console.error('GET /api/products/summary error:', err);
+    res.status(500).json({ error: 'Không thể tải tổng hợp hàng hóa' });
+  }
+});
+
+app.get('/api/products/import-history', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.view')) return;
+    const rows = db.select().from(schema.productImportBatches)
+      .where(eq(schema.productImportBatches.tenantId, req.user.tenantId))
+      .orderBy(desc(schema.productImportBatches.createdAt))
+      .limit(20)
+      .all();
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/products/import-history error:', err);
+    res.status(500).json({ error: 'Không thể tải lịch sử import.' });
+  }
+});
+
+app.get('/api/products/import-history/:batchId/issues', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.view')) return;
+    const batch = db.select().from(schema.productImportBatches)
+      .where(and(eq(schema.productImportBatches.id, req.params.batchId), eq(schema.productImportBatches.tenantId, req.user.tenantId))).get();
+    if (!batch) return res.status(404).json({ error: 'Không tìm thấy batch import.' });
+    const issues = db.select().from(schema.productImportIssues)
+      .where(and(eq(schema.productImportIssues.batchId, batch.id), eq(schema.productImportIssues.tenantId, req.user.tenantId)))
+      .orderBy(schema.productImportIssues.rowNumber)
+      .all();
+    res.json({ batch, issues });
+  } catch (err) {
+    console.error('GET /api/products/import-history/:batchId/issues error:', err);
+    res.status(500).json({ error: 'Không thể tải chi tiết lỗi import.' });
   }
 });
 
@@ -1255,7 +1460,7 @@ app.get('/api/products/:id', (req, res) => {
     const product = db.select().from(schema.products)
       .where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
     if (!product) return res.status(404).json({ error: 'Product not found' });
-    res.json(withStockAvailability(req.user.tenantId, product));
+    res.json(withStockAvailability(req.user.tenantId, product, loadDefaultPriceLookup(req.user.tenantId)));
   } catch (err) {
     console.error('GET /api/products/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1266,7 +1471,7 @@ app.get('/api/products/:id/units', (req, res) => {
   try {
     const product = db.select().from(schema.products).where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
     if (!product) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
-    res.json(productUnitsFor(req.user.tenantId, product));
+    res.json(productUnitsFor(req.user.tenantId, product, loadDefaultPriceLookup(req.user.tenantId)));
   } catch (err) { res.status(500).json({ error: 'Không thể tải đơn vị quy đổi' }); }
 });
 
@@ -1277,15 +1482,35 @@ app.put('/api/products/:id/units', (req, res) => {
     if (!product) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
     const units = Array.isArray(req.body?.units) ? req.body.units : [];
     db.transaction((tx) => {
+      const previousUnits = tx.select().from(schema.productUnits)
+        .where(and(eq(schema.productUnits.productId, product.id), eq(schema.productUnits.tenantId, req.user.tenantId))).all();
+      const previousById = new Map(previousUnits.map((unit) => [unit.id, unit]));
       tx.delete(schema.productUnits).where(and(eq(schema.productUnits.productId, product.id), eq(schema.productUnits.tenantId, req.user.tenantId))).run();
       for (const unit of units) {
         const name = String(unit.name || '').trim();
         const factor = Number(unit.factor);
         if (!name || name === product.unit || !Number.isFinite(factor) || factor <= 0) continue;
-        tx.insert(schema.productUnits).values({ id: uuid(), tenantId: req.user.tenantId, productId: product.id, name, factor, barcode: unit.barcode ? String(unit.barcode).trim() : null, active: true, createdAt: new Date().toISOString() }).run();
+        const previous = unit.id ? previousById.get(String(unit.id)) : undefined;
+        tx.insert(schema.productUnits).values({
+          id: uuid(),
+          tenantId: req.user.tenantId,
+          productId: product.id,
+          sku: unit.sku ? String(unit.sku).trim() : null,
+          name,
+          factor,
+          barcode: unit.barcode ? String(unit.barcode).trim() : null,
+          purchasePrice: Number.isFinite(Number(unit.purchasePrice)) ? Number(unit.purchasePrice) : 0,
+          attributes: unit.attributes ? String(unit.attributes) : null,
+          sourceSystem: unit.sourceSystem ? String(unit.sourceSystem) : previous?.sourceSystem || null,
+          sourceCode: unit.sourceCode ? String(unit.sourceCode) : previous?.sourceCode || null,
+          sourceRelatedCode: unit.sourceRelatedCode ? String(unit.sourceRelatedCode) : previous?.sourceRelatedCode || null,
+          sourceImportedAt: unit.sourceImportedAt ? String(unit.sourceImportedAt) : previous?.sourceImportedAt || null,
+          active: true,
+          createdAt: new Date().toISOString(),
+        }).run();
       }
     });
-    res.json(productUnitsFor(req.user.tenantId, product));
+    res.json(productUnitsFor(req.user.tenantId, product, loadDefaultPriceLookup(req.user.tenantId)));
   } catch (err) { res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể lưu đơn vị quy đổi' }); }
 });
 
@@ -1321,6 +1546,430 @@ app.put('/api/products/:id/components', (req, res) => {
     });
     res.json(productComponentsFor(req.user.tenantId, combo.id));
   } catch (err) { res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể lưu thành phần combo' }); }
+});
+
+type KiotImportRow = {
+  rowNumber: number;
+  productType: 'standard' | 'combo';
+  category: string;
+  sku: string;
+  barcode: string;
+  name: string;
+  sellingPrice: number;
+  purchasePrice: number;
+  stock: number;
+  lowStockThreshold: number;
+  maxStockThreshold: number;
+  unit: string;
+  baseSku: string;
+  factor: number;
+  attributes: string;
+  relatedSku: string;
+};
+
+type KiotImportIssue = {
+  rowNumber: number;
+  code: string;
+  message: string;
+  sku: string;
+  barcode: string;
+};
+
+type KiotImportWarning = {
+  rowNumber: number;
+  message: string;
+  sku: string;
+};
+
+const importText = (value: unknown) => String(value ?? '').trim();
+const importCode = (value: unknown) => importText(value).toLowerCase();
+const importNumber = (value: unknown, fallback = 0) => {
+  if (value === null || value === undefined || value === '') return fallback;
+  const parsed = Number(String(value).replace(/,/g, '').trim());
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+const importAttributeData = (value: unknown) => {
+  const raw = importText(value);
+  if (!raw) return null;
+  const parsed: Record<string, string> = {};
+  raw.split(/[;|\n]+/).forEach((part) => {
+    const colonSeparator = part.indexOf(':');
+    const separator = colonSeparator >= 0 ? colonSeparator : part.indexOf('=');
+    if (separator < 0) return;
+    const key = part.slice(0, separator).trim();
+    const attributeValue = part.slice(separator + 1).trim();
+    if (key && attributeValue) parsed[key] = attributeValue;
+  });
+  return Object.keys(parsed).length ? JSON.stringify(parsed) : null;
+};
+
+const buildKiotImportPlan = (tenantId: string, rawRows: unknown[]) => {
+  const rows: KiotImportRow[] = rawRows.map((raw, index) => {
+    const value = (raw || {}) as Record<string, unknown>;
+    const typeText = importText(value.productType || value.type).toLowerCase();
+    return {
+      rowNumber: Number(value.rowNumber) || index + 2,
+      productType: typeText.includes('combo') ? 'combo' : 'standard',
+      category: importText(value.category) || 'Khác',
+      sku: importText(value.sku),
+      barcode: importText(value.barcode),
+      name: importText(value.name),
+      sellingPrice: importNumber(value.sellingPrice),
+      purchasePrice: importNumber(value.purchasePrice),
+      stock: importNumber(value.stock),
+      lowStockThreshold: importNumber(value.lowStockThreshold),
+      maxStockThreshold: importNumber(value.maxStockThreshold),
+      unit: importText(value.unit),
+      baseSku: importText(value.baseSku),
+      factor: importNumber(value.factor, 1),
+      attributes: importText(value.attributes),
+      relatedSku: importText(value.relatedSku),
+    };
+  });
+
+  const issues: KiotImportIssue[] = [];
+  const warnings: KiotImportWarning[] = [];
+  const issueKeys = new Set<string>();
+  const addIssue = (row: KiotImportRow, code: string, message: string) => {
+    const key = `${row.rowNumber}:${code}`;
+    if (issueKeys.has(key)) return;
+    issueKeys.add(key);
+    issues.push({ rowNumber: row.rowNumber, code, message, sku: row.sku, barcode: row.barcode });
+  };
+  const addWarning = (row: KiotImportRow, message: string) => {
+    warnings.push({ rowNumber: row.rowNumber, message, sku: row.sku });
+  };
+
+  const countBy = (values: string[]) => {
+    const map = new Map<string, number>();
+    values.filter(Boolean).forEach((value) => map.set(value, (map.get(value) || 0) + 1));
+    return map;
+  };
+  const skuCounts = countBy(rows.map((row) => importCode(row.sku)));
+  const barcodeCounts = countBy(rows.map((row) => importCode(row.barcode)));
+  rows.forEach((row) => {
+    if (!row.sku) addIssue(row, 'MISSING_SKU', 'Thiếu Mã hàng/SKU.');
+    if (!row.name) addIssue(row, 'MISSING_NAME', 'Thiếu Tên hàng.');
+    if (!Number.isFinite(row.sellingPrice)) addIssue(row, 'INVALID_SELLING_PRICE', 'Giá bán không hợp lệ.');
+    if (!Number.isFinite(row.purchasePrice)) addIssue(row, 'INVALID_PURCHASE_PRICE', 'Giá vốn không hợp lệ.');
+    if (!Number.isFinite(row.stock)) addIssue(row, 'INVALID_STOCK', 'Tồn kho không hợp lệ.');
+    if (row.purchasePrice < 0) addWarning(row, 'Giá vốn âm được giữ nguyên theo file nguồn để đối chiếu.');
+    if (row.stock < 0) addWarning(row, 'Tồn kho âm được giữ nguyên theo file nguồn để đối chiếu.');
+    if (row.lowStockThreshold < 0 || row.maxStockThreshold < 0) addIssue(row, 'INVALID_STOCK_LIMIT', 'Tồn tối thiểu/tối đa không hợp lệ.');
+    if (row.maxStockThreshold > 0 && row.lowStockThreshold > row.maxStockThreshold) addIssue(row, 'INVALID_STOCK_RANGE', 'Tồn tối thiểu lớn hơn tồn tối đa.');
+    if (!row.unit) {
+      row.unit = 'Cái';
+      addWarning(row, 'Thiếu ĐVT, hệ thống dùng mặc định “Cái”.');
+    }
+    if (row.factor <= 0 || !Number.isFinite(row.factor)) addIssue(row, 'INVALID_FACTOR', 'Quy đổi phải lớn hơn 0.');
+    if (row.baseSku && row.baseSku === row.sku) addIssue(row, 'SELF_PARENT', 'Đơn vị quy đổi không được trỏ về chính nó.');
+    if (row.baseSku && !row.sku) addIssue(row, 'MISSING_UNIT_SKU', 'Đơn vị quy đổi phải có Mã hàng/SKU.');
+    if (skuCounts.get(importCode(row.sku))! > 1) addIssue(row, 'DUPLICATE_SKU_FILE', 'Mã hàng/SKU bị trùng trong file.');
+    if (row.barcode && barcodeCounts.get(importCode(row.barcode))! > 1) addIssue(row, 'DUPLICATE_BARCODE_FILE', 'Mã vạch bị trùng trong file.');
+  });
+
+  const products = db.select().from(schema.products).where(eq(schema.products.tenantId, tenantId)).all();
+  const units = db.select().from(schema.productUnits).where(eq(schema.productUnits.tenantId, tenantId)).all();
+  const productsBySku = new Map<string, any[]>();
+  const productsByBarcode = new Map<string, any[]>();
+  const unitsBySku = new Map<string, any[]>();
+  const unitsByBarcode = new Map<string, any[]>();
+  const addToMap = (map: Map<string, any[]>, key: string, value: any) => {
+    if (!key) return;
+    const current = map.get(key) || [];
+    current.push(value);
+    map.set(key, current);
+  };
+  products.forEach((product) => {
+    addToMap(productsBySku, importCode(product.sku), product);
+    addToMap(productsByBarcode, importCode(product.barcode), product);
+  });
+  units.forEach((unit) => {
+    addToMap(unitsBySku, importCode(unit.sku || unit.sourceCode), unit);
+    addToMap(unitsByBarcode, importCode(unit.barcode), unit);
+  });
+
+  const baseRows = rows.filter((row) => !row.baseSku);
+  const unitRows = rows.filter((row) => Boolean(row.baseSku));
+  const baseBySku = new Map(baseRows.map((row) => [importCode(row.sku), row]));
+  const basePlans = new Map<string, { row: KiotImportRow; product: any | null; mode: 'create' | 'update'; errors: KiotImportIssue[] }>();
+  const unitPlans: Array<{ row: KiotImportRow; product: any | null; unit: any | null; mode: 'create' | 'update'; errors: KiotImportIssue[] }> = [];
+
+  for (const row of baseRows) {
+    const rowIssues = issues.filter((issue) => issue.rowNumber === row.rowNumber);
+    let product: any | null = null;
+    if (!rowIssues.length) {
+      const barcodeMatches = row.barcode ? (productsByBarcode.get(importCode(row.barcode)) || []) : [];
+      const skuMatches = productsBySku.get(importCode(row.sku)) || [];
+      if (barcodeMatches.length > 1) {
+        addIssue(row, 'AMBIGUOUS_BARCODE', 'Barcode đang gắn với nhiều sản phẩm trong HKD Smart.');
+      } else if (barcodeMatches.length === 1) {
+        product = barcodeMatches[0];
+        if (skuMatches.some((candidate) => candidate.id !== product.id)) addIssue(row, 'SKU_CONFLICT', 'SKU đang thuộc sản phẩm khác với sản phẩm khớp barcode.');
+      } else if (skuMatches.length > 1) {
+        addIssue(row, 'AMBIGUOUS_SKU', 'SKU đang gắn với nhiều sản phẩm trong HKD Smart.');
+      } else if (skuMatches.length === 1) {
+        product = skuMatches[0];
+      }
+    }
+    const finalErrors = issues.filter((issue) => issue.rowNumber === row.rowNumber);
+    basePlans.set(importCode(row.sku), { row, product, mode: product ? 'update' : 'create', errors: finalErrors });
+  }
+
+  for (const row of unitRows) {
+    const rowIssues = issues.filter((issue) => issue.rowNumber === row.rowNumber);
+    const parent = baseBySku.get(importCode(row.baseSku));
+    const parentPlan = parent ? basePlans.get(importCode(parent.sku)) : undefined;
+    let product: any | null = null;
+    let unit: any | null = null;
+    if (!parent || !parentPlan) addIssue(row, 'MISSING_PARENT', `Không tìm thấy sản phẩm cơ sở ${row.baseSku}.`);
+    else if (issues.some((issue) => issue.rowNumber === parent.rowNumber)) addIssue(row, 'INVALID_PARENT', `Sản phẩm cơ sở ${row.baseSku} có lỗi và chưa thể nhận đơn vị quy đổi.`);
+    else {
+      product = parentPlan.product;
+      if (product) {
+        const matchingUnits = units.filter((candidate) => candidate.productId === product.id);
+        const barcodeMatches = row.barcode ? matchingUnits.filter((candidate) => importCode(candidate.barcode) === importCode(row.barcode)) : [];
+        const skuMatches = matchingUnits.filter((candidate) => importCode(candidate.sku || candidate.sourceCode) === importCode(row.sku));
+        if (barcodeMatches.length > 1) addIssue(row, 'AMBIGUOUS_UNIT_BARCODE', 'Barcode đang gắn với nhiều đơn vị quy đổi của sản phẩm.');
+        else if (barcodeMatches.length === 1) unit = barcodeMatches[0];
+        else if (skuMatches.length > 1) addIssue(row, 'AMBIGUOUS_UNIT_SKU', 'SKU đơn vị quy đổi đang bị trùng.');
+        else if (skuMatches.length === 1) unit = skuMatches[0];
+        const globalProductBarcodeMatch = row.barcode ? (productsByBarcode.get(importCode(row.barcode)) || []) : [];
+        const globalUnitBarcodeMatch = row.barcode ? (unitsByBarcode.get(importCode(row.barcode)) || []) : [];
+        if (globalProductBarcodeMatch.some((candidate) => candidate.id !== product.id) || globalUnitBarcodeMatch.some((candidate) => candidate.productId !== product.id)) {
+          addIssue(row, 'BARCODE_CONFLICT', 'Barcode đã được dùng cho sản phẩm hoặc đơn vị quy đổi khác.');
+        }
+      }
+    }
+    unitPlans.push({ row, product, unit, mode: unit ? 'update' : 'create', errors: rowIssues });
+  }
+
+  const validBaseRows = baseRows.filter((row) => !issues.some((issue) => issue.rowNumber === row.rowNumber));
+  const validUnitRows = unitRows.filter((row) => !issues.some((issue) => issue.rowNumber === row.rowNumber));
+  const summary = {
+    totalRows: rows.length,
+    productRows: baseRows.length,
+    unitRows: unitRows.length,
+    createdCount: validBaseRows.filter((row) => basePlans.get(importCode(row.sku))?.mode === 'create').length,
+    updatedCount: validBaseRows.filter((row) => basePlans.get(importCode(row.sku))?.mode === 'update').length,
+    unitCount: validUnitRows.length,
+    comboCount: validBaseRows.filter((row) => row.productType === 'combo').length,
+    errorCount: issues.length,
+    warningCount: warnings.length,
+  };
+
+  return { rows, baseRows, unitRows, basePlans, unitPlans, issues, warnings, summary };
+};
+
+const kiotImportFingerprint = (sourceSystem: string, rows: unknown[]) => crypto
+  .createHash('sha256')
+  .update(JSON.stringify({ sourceSystem, rows }))
+  .digest('hex');
+
+app.post('/api/products/import/preview', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.create')) return;
+    const sourceSystem = importText(req.body?.sourceSystem) || 'kiot-viet';
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (sourceSystem !== 'kiot-viet') return res.status(400).json({ error: 'Nguồn import chưa được hỗ trợ.' });
+    if (!rows.length) return res.status(400).json({ error: 'File chưa có dòng dữ liệu hợp lệ.' });
+    const plan = buildKiotImportPlan(req.user.tenantId, rows);
+    res.json({ sourceSystem, fingerprint: kiotImportFingerprint(sourceSystem, rows), summary: plan.summary, issues: plan.issues, warnings: plan.warnings });
+  } catch (err) {
+    console.error('POST /api/products/import/preview error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể kiểm tra file Kiot Việt.' });
+  }
+});
+
+app.post('/api/products/import', (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'inventory.create')) return;
+    const sourceSystem = importText(req.body?.sourceSystem) || 'kiot-viet';
+    const fileName = importText(req.body?.fileName);
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (sourceSystem !== 'kiot-viet') return res.status(400).json({ error: 'Nguồn import chưa được hỗ trợ.' });
+    if (!rows.length) return res.status(400).json({ error: 'File chưa có dòng dữ liệu hợp lệ.' });
+
+    const sourceHash = kiotImportFingerprint(sourceSystem, rows);
+    const previousBatch = db.select().from(schema.productImportBatches)
+      .where(and(
+        eq(schema.productImportBatches.tenantId, req.user.tenantId),
+        eq(schema.productImportBatches.sourceSystem, sourceSystem),
+        eq(schema.productImportBatches.sourceHash, sourceHash),
+        eq(schema.productImportBatches.status, 'completed'),
+      )).get();
+    if (previousBatch) return res.json({ batchId: previousBatch.id, summary: previousBatch, idempotent: true, issues: [] });
+
+    const plan = buildKiotImportPlan(req.user.tenantId, rows);
+    if (!plan.summary.createdCount && !plan.summary.updatedCount) return res.status(400).json({ error: 'Không có sản phẩm hợp lệ để import.', summary: plan.summary, issues: plan.issues, warnings: plan.warnings });
+
+    const now = new Date().toISOString();
+    const batchId = uuid();
+    const userId = req.user.id;
+    const defaultList = ensureDefaultPriceList(req.user.tenantId);
+    if (!defaultList) return res.status(500).json({ error: 'Không thể tạo bảng giá chung.' });
+
+    const result = db.transaction((tx) => {
+      const batch = {
+        id: batchId,
+        tenantId: req.user.tenantId,
+        sourceSystem,
+        fileName,
+        sourceHash,
+        status: 'completed',
+        totalRows: plan.summary.totalRows,
+        productRows: plan.summary.productRows,
+        unitRows: plan.summary.unitRows,
+        createdCount: plan.summary.createdCount,
+        updatedCount: plan.summary.updatedCount,
+        unitCount: plan.summary.unitCount,
+        comboCount: plan.summary.comboCount,
+        errorCount: plan.summary.errorCount,
+        createdBy: userId,
+        createdAt: now,
+        completedAt: now,
+      };
+      tx.insert(schema.productImportBatches).values(batch).run();
+
+      const categoryNames = new Set(plan.baseRows.filter((row) => !plan.issues.some((issue) => issue.rowNumber === row.rowNumber)).map((row) => row.category));
+      const existingCategories = tx.select().from(schema.categories).where(eq(schema.categories.tenantId, req.user.tenantId)).all();
+      const categoryByName = new Map(existingCategories.map((category) => [category.name.trim().toLowerCase(), category]));
+      categoryNames.forEach((name) => {
+        if (categoryByName.has(name.trim().toLowerCase())) return;
+        const category = { id: uuid(), tenantId: req.user.tenantId, name, description: 'Import từ Kiot Việt' };
+        tx.insert(schema.categories).values(category).run();
+        categoryByName.set(name.trim().toLowerCase(), category);
+      });
+
+      const unitNames = new Set([...plan.baseRows, ...plan.unitRows]
+        .filter((row) => !plan.issues.some((issue) => issue.rowNumber === row.rowNumber))
+        .map((row) => row.unit.trim())
+        .filter(Boolean));
+      const existingUnits = tx.select().from(schema.units).where(eq(schema.units.tenantId, req.user.tenantId)).all();
+      const unitByName = new Set(existingUnits.map((unit) => unit.name.trim().toLowerCase()));
+      unitNames.forEach((name) => {
+        if (unitByName.has(name.toLowerCase())) return;
+        tx.insert(schema.units).values({ id: uuid(), tenantId: req.user.tenantId, name, createdAt: now }).run();
+        unitByName.add(name.toLowerCase());
+      });
+
+      const importedProducts = new Map<string, any>();
+      const saveDefaultPrice = (productId: string, unitName: string, factor: number, price: number) => {
+        tx.delete(schema.priceListItems).where(and(
+          eq(schema.priceListItems.priceListId, defaultList.id),
+          eq(schema.priceListItems.productId, productId),
+          eq(schema.priceListItems.unitName, unitName),
+        )).run();
+        tx.insert(schema.priceListItems).values({
+          id: uuid(),
+          tenantId: req.user.tenantId,
+          priceListId: defaultList.id,
+          productId,
+          unitName,
+          unitFactor: factor,
+          price,
+          createdAt: now,
+        }).run();
+      };
+
+      for (const row of plan.baseRows) {
+        if (plan.issues.some((issue) => issue.rowNumber === row.rowNumber)) continue;
+        const basePlan = plan.basePlans.get(importCode(row.sku));
+        if (!basePlan) continue;
+        const beforeStock = basePlan.product ? Number(basePlan.product.stock || 0) : 0;
+        const productId = basePlan.product?.id || uuid();
+        const values = {
+          tenantId: req.user.tenantId,
+          sku: row.sku,
+          name: row.name,
+          category: row.category,
+          unit: row.unit,
+          purchasePrice: row.purchasePrice,
+          sellingPrice: row.sellingPrice,
+          taxRate: Number(basePlan.product?.taxRate || 0),
+          stock: row.stock,
+          trackStock: true,
+          lowStockThreshold: row.lowStockThreshold,
+          maxStockThreshold: row.maxStockThreshold,
+          status: 'active' as const,
+          barcode: row.barcode || null,
+          productType: row.productType,
+          attributes: row.attributes || null,
+          attributesJson: importAttributeData(row.attributes),
+          sourceSystem,
+          sourceCode: row.sku,
+          sourceRelatedCode: row.relatedSku || null,
+          sourceImportedAt: now,
+        };
+        if (basePlan.product) tx.update(schema.products).set(values).where(eq(schema.products.id, productId)).run();
+        else tx.insert(schema.products).values({ id: productId, ...values }).run();
+        const afterStock = row.stock;
+        if (Math.abs(afterStock - beforeStock) > 0.000001) {
+          tx.insert(schema.stockMovements).values({
+            id: uuid(),
+            tenantId: req.user.tenantId,
+            productId,
+            type: 'adjust',
+            quantity: Math.abs(afterStock - beforeStock),
+            beforeStock,
+            afterStock,
+            note: `Nhập tồn đầu kỳ từ Kiot Việt${fileName ? ` · ${fileName}` : ''}`,
+            referenceId: batchId,
+            createdAt: now,
+            createdBy: userId,
+          }).run();
+        }
+        saveDefaultPrice(productId, row.unit, 1, row.sellingPrice);
+        importedProducts.set(importCode(row.sku), tx.select().from(schema.products).where(eq(schema.products.id, productId)).get());
+      }
+
+      for (const planRow of plan.unitPlans) {
+        const row = planRow.row;
+        if (plan.issues.some((issue) => issue.rowNumber === row.rowNumber)) continue;
+        const parent = importedProducts.get(importCode(row.baseSku));
+        if (!parent) continue;
+        const unitId = planRow.unit?.id || uuid();
+        const values = {
+          tenantId: req.user.tenantId,
+          productId: parent.id,
+          sku: row.sku,
+          name: row.unit,
+          factor: row.factor,
+          barcode: row.barcode || null,
+          purchasePrice: row.purchasePrice,
+          attributes: row.attributes || null,
+          sourceSystem,
+          sourceCode: row.sku,
+          sourceRelatedCode: row.relatedSku || null,
+          sourceImportedAt: now,
+          active: true,
+        };
+        if (planRow.unit) tx.update(schema.productUnits).set(values).where(eq(schema.productUnits.id, unitId)).run();
+        else tx.insert(schema.productUnits).values({ id: unitId, ...values, createdAt: now }).run();
+        saveDefaultPrice(parent.id, row.unit, row.factor, row.sellingPrice);
+      }
+
+      for (const issue of plan.issues) {
+        tx.insert(schema.productImportIssues).values({
+          id: uuid(),
+          batchId,
+          tenantId: req.user.tenantId,
+          rowNumber: issue.rowNumber,
+          code: issue.code,
+          message: issue.message,
+          sku: issue.sku,
+          barcode: issue.barcode,
+          createdAt: now,
+        }).run();
+      }
+      return batch;
+    });
+
+    res.json({ batchId, summary: result, issues: plan.issues, warnings: plan.warnings });
+  } catch (err) {
+    console.error('POST /api/products/import error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể import file Kiot Việt.' });
+  }
 });
 
 app.post('/api/products', (req, res) => {
@@ -3119,11 +3768,15 @@ app.get('/api/stock-movements', (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store');
     const { productId } = req.query;
+    const requestedLimit = Number(req.query.limit);
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.min(Math.floor(requestedLimit), 500) : 100;
+    const includeAll = String(req.query.all || '').toLowerCase() === 'true';
     let rows = db.select().from(schema.stockMovements)
       .where(eq(schema.stockMovements.tenantId, req.user.tenantId))
       .orderBy(desc(schema.stockMovements.createdAt))
       .all();
     if (productId) rows = rows.filter((r) => r.productId === productId);
+    if (!productId && !includeAll) rows = rows.slice(0, limit);
 
     const relatedProductIds = Array.from(new Set(rows.map((r) => r.productId)));
     const relatedUserIds = Array.from(new Set(rows.map((r) => r.createdBy)));

@@ -8,7 +8,7 @@ import { formatCurrency } from '../lib/utils';
 import * as XLSX from 'xlsx';
 
 export default function Reports() {
-  const { invoices, products } = useApp();
+  const { invoices, productSummary } = useApp();
   const navigate = useNavigate();
   const [purchases, setPurchases] = useState<any[]>([]);
   const [cashbook, setCashbook] = useState<any[]>([]);
@@ -23,7 +23,7 @@ export default function Reports() {
 
   const load = async () => {
     try {
-      const [purchaseRows, cashRows, staff, movementRows, returnRows] = await Promise.all([purchasesApi.list(), cashbookApi.list(), reportsApi.staff({ from: fromDate || undefined, to: toDate || undefined, userId: staffId === 'all' ? undefined : staffId }), stockMovementsApi.list(), invoicesApi.returns()]);
+      const [purchaseRows, cashRows, staff, movementRows, returnRows] = await Promise.all([purchasesApi.list(), cashbookApi.list(), reportsApi.staff({ from: fromDate || undefined, to: toDate || undefined, userId: staffId === 'all' ? undefined : staffId }), stockMovementsApi.list(undefined, { all: true }), invoicesApi.returns()]);
       setPurchases(purchaseRows); setCashbook(cashRows); setStaffReport(staff); setStockMovements(movementRows); setSalesReturns(returnRows);
     } catch (err) { setMessage(err instanceof Error ? err.message : 'Không thể tải báo cáo.'); }
   };
@@ -59,11 +59,11 @@ export default function Reports() {
     revenue: invoices.filter((row) => row.workflowStatus !== 'cancelled' && row.workflowStatus === 'closed' && inDateRange(row.createdAt) && (!staffId || staffId === 'all' || row.createdBy === staffId)).reduce((sum, row) => sum + row.finalAmount, 0) - filteredReturns.reduce((sum, row) => sum + Number(row.totalAmount || 0), 0),
     collected: invoices.filter((row) => row.workflowStatus !== 'cancelled' && row.workflowStatus === 'closed' && inDateRange(row.createdAt) && (!staffId || staffId === 'all' || row.createdBy === staffId)).reduce((sum, row) => sum + row.paidAmount, 0) - filteredReturns.reduce((sum, row) => sum + Number(row.refundAmount || 0), 0),
     receivable: invoices.filter((row) => row.workflowStatus !== 'cancelled' && row.workflowStatus === 'closed' && inDateRange(row.createdAt) && (!staffId || staffId === 'all' || row.createdBy === staffId)).reduce((sum, row) => sum + row.debtAmount, 0),
-    stockValue: products.reduce((sum, row) => sum + row.stock * row.purchasePrice, 0),
+    stockValue: productSummary.stockValue,
     purchaseValue: purchases.filter((row) => inDateRange(row.createdAt) && (!staffId || staffId === 'all' || row.createdBy === staffId)).reduce((sum, row) => sum + row.finalAmount, 0),
     cashIn: cashbook.filter((row) => row.type === 'income' && inDateRange(row.createdAt) && (!staffId || staffId === 'all' || row.createdBy === staffId)).reduce((sum, row) => sum + row.amount, 0),
     cashOut: cashbook.filter((row) => row.type === 'expense' && inDateRange(row.createdAt) && (!staffId || staffId === 'all' || row.createdBy === staffId)).reduce((sum, row) => sum + row.amount, 0),
-  }), [cashbook, filteredReturns, fromDate, invoices, products, purchases, staffId, toDate]);
+  }), [cashbook, filteredReturns, fromDate, invoices, productSummary, purchases, staffId, toDate]);
 
   const reportView = (searchParams.get('view') || 'daily') as 'daily' | 'sales' | 'inventory';
   const filteredSales = useMemo(() => invoices.filter((row) => row.workflowStatus !== 'cancelled' && row.workflowStatus === 'closed' && inDateRange(row.createdAt) && (staffId === 'all' || row.createdBy === staffId)), [fromDate, invoices, staffId, toDate]);
@@ -103,7 +103,7 @@ export default function Reports() {
     { id: 'inventory' as const, label: 'Hàng hóa', icon: Package, description: 'Nhập, xuất, tồn và điều chỉnh' },
   ];
   const metricCards = reportView === 'inventory'
-    ? [['Giá trị tồn', metrics.stockValue], ['Mặt hàng', products.length], ['Sắp hết', products.filter((product) => product.stock <= product.lowStockThreshold).length], ['Nhập', movementSummary.in], ['Xuất', movementSummary.out], ['Điều chỉnh', movementSummary.adjust]]
+    ? [['Giá trị tồn', metrics.stockValue], ['Mặt hàng', productSummary.total], ['Sắp hết', productSummary.lowStock], ['Nhập', movementSummary.in], ['Xuất', movementSummary.out], ['Điều chỉnh', movementSummary.adjust]]
     : reportView === 'sales'
       ? [['Doanh thu ròng', metrics.revenue], ['Trả khách', filteredReturns.reduce((sum, row) => sum + Number(row.totalAmount || 0), 0)], ['Thực thu ròng', metrics.collected], ['Phải thu', metrics.receivable], ['Số hóa đơn', filteredSales.length]]
       : [['Tổng thu', metrics.cashIn], ['Tổng chi', metrics.cashOut], ['Thu - chi', metrics.cashIn - metrics.cashOut], ['Doanh thu ròng', metrics.revenue], ['Trả khách', filteredReturns.reduce((sum, row) => sum + Number(row.totalAmount || 0), 0)], ['Thực thu ròng', metrics.collected], ['Số hóa đơn', filteredSales.length]];

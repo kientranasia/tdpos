@@ -14,7 +14,7 @@ const dateKey = (value: string) => {
 };
 
 export default function Dashboard() {
-  const { activeTenant, invoices, products, customers } = useApp();
+  const { activeTenant, invoices, products, productSummary, customers } = useApp();
   const navigate = useNavigate();
   const [salesReturns, setSalesReturns] = useState<any[]>([]);
   useEffect(() => {
@@ -29,9 +29,9 @@ export default function Dashboard() {
     debtToday: todayInvoices.reduce((sum, row) => sum + row.debtAmount, 0),
     orders: todayInvoices.length,
     debt: customers.reduce((sum, row) => sum + row.totalDebt, 0),
-    stockValue: products.reduce((sum, row) => sum + row.stock * row.purchasePrice, 0),
-    lowStock: products.filter((row) => row.trackStock && row.stock <= row.lowStockThreshold).length,
-  }), [customers, products, todayInvoices, todayReturns]);
+    stockValue: productSummary.stockValue,
+    lowStock: productSummary.lowStock,
+  }), [customers, productSummary, products, todayInvoices, todayReturns]);
   const recentInvoices = useMemo(() => invoices.filter((invoice) => invoice.workflowStatus !== 'cancelled' && invoice.workflowStatus === 'closed').sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt)).slice(0, 8), [invoices]);
   const debtors = useMemo(() => [...customers].filter((row) => row.totalDebt > 0).sort((a, b) => b.totalDebt - a.totalDebt).slice(0, 8), [customers]);
   const lowStock = useMemo(() => products.filter((row) => row.trackStock && row.stock <= row.lowStockThreshold).slice(0, 8), [products]);

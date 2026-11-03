@@ -88,10 +88,17 @@ export interface Product {
   stock: number;
   trackStock: boolean;
   lowStockThreshold: number;
+  maxStockThreshold?: number;
   status: 'active' | 'inactive';
   barcode?: string;
   imageUrl?: string;
   productType?: 'standard' | 'combo';
+  attributes?: string | null;
+  attributesJson?: string | null;
+  sourceSystem?: string | null;
+  sourceCode?: string | null;
+  sourceRelatedCode?: string | null;
+  sourceImportedAt?: string | null;
   reservedStock?: number;
   availableStock?: number;
   units?: ProductUnit[];
@@ -102,9 +109,18 @@ export interface ProductUnit {
   id: string;
   tenantId: string;
   productId: string;
+  sku?: string | null;
   name: string;
   factor: number;
   barcode?: string | null;
+  purchasePrice?: number;
+  sellingPrice?: number;
+  stock?: number;
+  attributes?: string | null;
+  sourceSystem?: string | null;
+  sourceCode?: string | null;
+  sourceRelatedCode?: string | null;
+  sourceImportedAt?: string | null;
   active?: boolean;
 }
 

@@ -8,7 +8,7 @@ import { Button } from '../components/ui/Button';
 import { toPng } from 'html-to-image';
 import download from 'downloadjs';
 import { v4 as uuid } from 'uuid';
-import { cashAccountsApi, priceListsApi } from '../lib/api';
+import { cashAccountsApi, priceListsApi, productsApi } from '../lib/api';
 import { applyPriceListAdjustment } from '../lib/priceLists';
 
 // Components
@@ -49,7 +49,7 @@ const accountTypeForPayment = (paymentMethod: PaymentMethod) => (
 );
 
 export default function POS() {
-  const { products, customers, activeTenant, currentUser, addInvoice, addCustomer, categories: appCategories } = useApp();
+  const { products: loadedProducts, customers, activeTenant, currentUser, addInvoice, addCustomer, categories: appCategories } = useApp();
   
   const [searchTerm, setSearchTerm] = useState('');
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
@@ -90,12 +90,59 @@ export default function POS() {
   const [showOrderItemsSheet, setShowOrderItemsSheet] = useState(false);
   const isCashier = currentUser?.role === 'cashier';
 
+  const [remoteProductResults, setRemoteProductResults] = useState<Product[]>([]);
+  const products = useMemo(() => {
+    const byId = new Map<string, Product>();
+    [...loadedProducts, ...remoteProductResults].forEach((product) => byId.set(product.id, product));
+    return Array.from(byId.values());
+  }, [loadedProducts, remoteProductResults]);
+
   useEffect(() => {
-    Promise.all([priceListsApi.list(true), cashAccountsApi.list()]).then(([lists, accounts]) => {
-      setPriceLists(lists); setCashAccounts(accounts);
+    const query = searchTerm.trim();
+    if (query.length < 2) {
+      setRemoteProductResults([]);
+      return;
+    }
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await productsApi.listPage(activeTenant?.id, { search: query, limit: 100, offset: 0 });
+        if (active) setRemoteProductResults(result.items as Product[]);
+      } catch {
+        if (active) setRemoteProductResults([]);
+      }
+    }, 180);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [activeTenant?.id, searchTerm]);
+
+  const priceProductIds = useMemo(
+    () => Array.from(new Set([...loadedProducts, ...remoteProductResults].map((product) => product.id))),
+    [loadedProducts, remoteProductResults]
+  );
+
+  useEffect(() => {
+    if (!priceProductIds.length) return;
+    let active = true;
+    priceListsApi.list(true, priceProductIds).then((lists) => {
+      if (!active) return;
+      setPriceLists((previous) => lists.map((list: any) => {
+        const previousItems = previous.find((item: any) => item.id === list.id)?.items || [];
+        const fetchedIds = new Set((list.items || []).map((item: any) => item.productId));
+        return { ...list, items: [...previousItems.filter((item: any) => !fetchedIds.has(item.productId)), ...(list.items || [])] };
+      }));
       const defaultList = lists.find((list: any) => list.isDefault) || lists[0];
-      setSelectedPriceListId(defaultList?.id || '');
-      setSelectedAccountId(accounts.find((account: any) => account.type === 'cash')?.id || accounts[0]?.id || '');
+      setSelectedPriceListId((current) => current || defaultList?.id || '');
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [priceProductIds]);
+
+  useEffect(() => {
+    cashAccountsApi.list().then((accounts) => {
+      setCashAccounts(accounts);
+      setSelectedAccountId((current) => current || accounts.find((account: any) => account.type === 'cash')?.id || accounts[0]?.id || '');
     }).catch(() => undefined);
   }, []);
 
@@ -259,8 +306,18 @@ export default function POS() {
     return null;
   };
 
-  const handleScannedCode = (code: string) => {
-    const matched = findProductByScanCode(code);
+  const handleScannedCode = async (code: string) => {
+    let matched = findProductByScanCode(code);
+    if (!matched) {
+      try {
+        const remoteProduct = await productsApi.lookup(code) as Product;
+        const normalizedCode = normalizeSearchText(code);
+        const remoteUnit = productUnits(remoteProduct).find((unit) => normalizeSearchText(unit.barcode) === normalizedCode);
+        matched = { product: remoteProduct, unit: remoteUnit || productUnits(remoteProduct)[0] };
+      } catch {
+        matched = null;
+      }
+    }
     if (!matched) {
       setSearchTerm(code);
       setScanHint(`Không tìm thấy mã: ${code}`);
@@ -739,7 +796,7 @@ export default function POS() {
         const code = scannerBufferRef.current.trim();
         scannerBufferRef.current = '';
         if (code.length >= 3) {
-          handleScannedCode(code);
+          void handleScannedCode(code);
         }
         return;
       }
@@ -983,7 +1040,7 @@ export default function POS() {
         onClose={closeScannerModal}
         onDetected={(code) => {
           setScanHint('');
-          handleScannedCode(code);
+          void handleScannedCode(code);
         }}
       />
 

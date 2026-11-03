@@ -3,66 +3,79 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
-import MobileLayout from './components/layout/MobileLayout';
-import LandingPage from './pages/LandingPage';
-import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
-import POS from './pages/POS';
-import Inventory from './pages/Inventory';
-import StockCheck from './pages/StockCheck';
-import Customers from './pages/Customers';
-import CustomerDetail from './pages/CustomerDetail';
-import Debt from './pages/Debt';
-import Invoices from './pages/Invoices';
-import SalesReturns from './pages/SalesReturns';
-import TenantSetup from './pages/TenantSetup';
-import Settings from './pages/Settings';
-import MoreMenu from './pages/MoreMenu';
-import Cashbook from './pages/Cashbook';
-import Purchases from './pages/Purchases';
-import PurchaseReturns from './pages/PurchaseReturns';
-import InventoryOperations from './pages/InventoryOperations';
-import Suppliers from './pages/Suppliers';
-import Partners from './pages/Partners';
-import SupplierDetail from './pages/SupplierDetail';
-import Reports from './pages/Reports';
 import InstallAppPrompt from './components/pwa/InstallAppPrompt';
+
+const MobileLayout = lazy(() => import('./components/layout/MobileLayout'));
+const LandingPage = lazy(() => import('./pages/LandingPage'));
+const Login = lazy(() => import('./pages/Login'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const POS = lazy(() => import('./pages/POS'));
+const Inventory = lazy(() => import('./pages/Inventory'));
+const StockCheck = lazy(() => import('./pages/StockCheck'));
+const CustomerDetail = lazy(() => import('./pages/CustomerDetail'));
+const Debt = lazy(() => import('./pages/Debt'));
+const Invoices = lazy(() => import('./pages/Invoices'));
+const SalesReturns = lazy(() => import('./pages/SalesReturns'));
+const TenantSetup = lazy(() => import('./pages/TenantSetup'));
+const Settings = lazy(() => import('./pages/Settings'));
+const MoreMenu = lazy(() => import('./pages/MoreMenu'));
+const Cashbook = lazy(() => import('./pages/Cashbook'));
+const Purchases = lazy(() => import('./pages/Purchases'));
+const PurchaseReturns = lazy(() => import('./pages/PurchaseReturns'));
+const InventoryOperations = lazy(() => import('./pages/InventoryOperations'));
+const SupplierDetail = lazy(() => import('./pages/SupplierDetail'));
+const Reports = lazy(() => import('./pages/Reports'));
+const Partners = lazy(() => import('./pages/Partners'));
+
+function RouteLoading() {
+  return (
+    <div className="flex min-h-[40vh] items-center justify-center bg-slate-50 p-6 text-sm text-slate-500">
+      <div className="flex items-center gap-2" role="status">
+        <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-200 border-t-sky-600" />
+        Đang tải màn hình…
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   return (
     <AppProvider>
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<LandingPage />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Login isRegister />} />
-          <Route path="/onboarding" element={<TenantSetup />} />
-          
-          <Route path="/app" element={<MobileLayout />}>
-            <Route index element={<Navigate to="/app/dashboard" replace />} />
-            <Route path="dashboard" element={<Dashboard />} />
-            <Route path="pos" element={<POS />} />
-            <Route path="inventory" element={<Inventory />} />
-            <Route path="stock-check" element={<StockCheck />} />
-            <Route path="inventory-operations" element={<InventoryOperations />} />
-            <Route path="customers" element={<Partners />} />
-            <Route path="customers/:id" element={<CustomerDetail />} />
-            <Route path="debt" element={<Debt />} />
-            <Route path="cashbook" element={<Cashbook />} />
-            <Route path="reports" element={<Reports />} />
-            <Route path="purchases" element={<Purchases />} />
-            <Route path="purchase-returns" element={<PurchaseReturns />} />
-            <Route path="suppliers" element={<Partners />} />
-            <Route path="suppliers/:id" element={<SupplierDetail />} />
-            <Route path="invoices" element={<Invoices />} />
-            <Route path="returns" element={<SalesReturns />} />
-            <Route path="settings" element={<Settings />} />
-            <Route path="subscription" element={<Navigate to="/app/settings" replace />} />
-            <Route path="more" element={<MoreMenu />} />
-          </Route>
-        </Routes>
+        <Suspense fallback={<RouteLoading />}>
+          <Routes>
+            <Route path="/" element={<LandingPage />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Login isRegister />} />
+            <Route path="/onboarding" element={<TenantSetup />} />
+
+            <Route path="/app" element={<MobileLayout />}>
+              <Route index element={<Navigate to="/app/dashboard" replace />} />
+              <Route path="dashboard" element={<Dashboard />} />
+              <Route path="pos" element={<POS />} />
+              <Route path="inventory" element={<Inventory />} />
+              <Route path="stock-check" element={<StockCheck />} />
+              <Route path="inventory-operations" element={<InventoryOperations />} />
+              <Route path="customers" element={<Partners />} />
+              <Route path="customers/:id" element={<CustomerDetail />} />
+              <Route path="debt" element={<Debt />} />
+              <Route path="cashbook" element={<Cashbook />} />
+              <Route path="reports" element={<Reports />} />
+              <Route path="purchases" element={<Purchases />} />
+              <Route path="purchase-returns" element={<PurchaseReturns />} />
+              <Route path="suppliers" element={<Partners />} />
+              <Route path="suppliers/:id" element={<SupplierDetail />} />
+              <Route path="invoices" element={<Invoices />} />
+              <Route path="returns" element={<SalesReturns />} />
+              <Route path="settings" element={<Settings />} />
+              <Route path="subscription" element={<Navigate to="/app/settings" replace />} />
+              <Route path="more" element={<MoreMenu />} />
+            </Route>
+          </Routes>
+        </Suspense>
         <InstallAppPrompt />
       </BrowserRouter>
     </AppProvider>

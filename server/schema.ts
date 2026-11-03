@@ -158,10 +158,17 @@ export const products = sqliteTable('products', {
   stock: real('stock').notNull().default(0),
   trackStock: integer('track_stock', { mode: 'boolean' }).notNull().default(true),
   lowStockThreshold: real('low_stock_threshold').notNull().default(10),
+  maxStockThreshold: real('max_stock_threshold').notNull().default(0),
   status: text('status', { enum: ['active', 'inactive'] }).notNull().default('active'),
   barcode: text('barcode'),
   imageUrl: text('image_url'),
   productType: text('product_type', { enum: ['standard', 'combo'] }).notNull().default('standard'),
+  attributes: text('attributes'),
+  attributesJson: text('attributes_json'),
+  sourceSystem: text('source_system'),
+  sourceCode: text('source_code'),
+  sourceRelatedCode: text('source_related_code'),
+  sourceImportedAt: text('source_imported_at'),
 });
 
 export const priceLists = sqliteTable('price_lists', {
@@ -197,9 +204,16 @@ export const productUnits = sqliteTable('product_units', {
   id: text('id').primaryKey(),
   tenantId: text('tenant_id').notNull().references(() => tenants.id),
   productId: text('product_id').notNull().references(() => products.id),
+  sku: text('sku'),
   name: text('name').notNull(),
   factor: real('factor').notNull().default(1),
   barcode: text('barcode'),
+  purchasePrice: real('purchase_price').notNull().default(0),
+  attributes: text('attributes'),
+  sourceSystem: text('source_system'),
+  sourceCode: text('source_code'),
+  sourceRelatedCode: text('source_related_code'),
+  sourceImportedAt: text('source_imported_at'),
   active: integer('active', { mode: 'boolean' }).notNull().default(true),
   createdAt: text('created_at').notNull(),
 });
@@ -210,6 +224,38 @@ export const productComponents = sqliteTable('product_components', {
   comboProductId: text('combo_product_id').notNull().references(() => products.id),
   componentProductId: text('component_product_id').notNull().references(() => products.id),
   quantity: real('quantity').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+
+export const productImportBatches = sqliteTable('product_import_batches', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  sourceSystem: text('source_system').notNull(),
+  fileName: text('file_name').notNull().default(''),
+  sourceHash: text('source_hash').notNull(),
+  status: text('status').notNull().default('completed'),
+  totalRows: integer('total_rows').notNull().default(0),
+  productRows: integer('product_rows').notNull().default(0),
+  unitRows: integer('unit_rows').notNull().default(0),
+  createdCount: integer('created_count').notNull().default(0),
+  updatedCount: integer('updated_count').notNull().default(0),
+  unitCount: integer('unit_count').notNull().default(0),
+  comboCount: integer('combo_count').notNull().default(0),
+  errorCount: integer('error_count').notNull().default(0),
+  createdBy: text('created_by').notNull(),
+  createdAt: text('created_at').notNull(),
+  completedAt: text('completed_at'),
+});
+
+export const productImportIssues = sqliteTable('product_import_issues', {
+  id: text('id').primaryKey(),
+  batchId: text('batch_id').notNull().references(() => productImportBatches.id),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  rowNumber: integer('row_number').notNull(),
+  code: text('code').notNull(),
+  message: text('message').notNull(),
+  sku: text('sku').notNull().default(''),
+  barcode: text('barcode').notNull().default(''),
   createdAt: text('created_at').notNull(),
 });
 

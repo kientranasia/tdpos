@@ -122,7 +122,24 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'products'").get()) {
   addColumnIfMissing('products', 'tax_rate', "tax_rate REAL NOT NULL DEFAULT 0");
   addColumnIfMissing('products', 'product_type', "product_type TEXT NOT NULL DEFAULT 'standard'");
+  addColumnIfMissing('products', 'max_stock_threshold', "max_stock_threshold REAL NOT NULL DEFAULT 0");
+  addColumnIfMissing('products', 'attributes', 'attributes TEXT');
+  addColumnIfMissing('products', 'attributes_json', 'attributes_json TEXT');
+  addColumnIfMissing('products', 'source_system', 'source_system TEXT');
+  addColumnIfMissing('products', 'source_code', 'source_code TEXT');
+  addColumnIfMissing('products', 'source_related_code', 'source_related_code TEXT');
+  addColumnIfMissing('products', 'source_imported_at', 'source_imported_at TEXT');
   sqlite.prepare("UPDATE products SET product_type = 'standard' WHERE product_type IS NULL OR product_type = ''").run();
+}
+
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'product_units'").get()) {
+  addColumnIfMissing('product_units', 'sku', 'sku TEXT');
+  addColumnIfMissing('product_units', 'purchase_price', 'purchase_price REAL NOT NULL DEFAULT 0');
+  addColumnIfMissing('product_units', 'attributes', 'attributes TEXT');
+  addColumnIfMissing('product_units', 'source_system', 'source_system TEXT');
+  addColumnIfMissing('product_units', 'source_code', 'source_code TEXT');
+  addColumnIfMissing('product_units', 'source_related_code', 'source_related_code TEXT');
+  addColumnIfMissing('product_units', 'source_imported_at', 'source_imported_at TEXT');
 }
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'invoice_items'").get()) {
@@ -460,9 +477,16 @@ sqlite.exec(`
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL REFERENCES tenants(id),
     product_id TEXT NOT NULL REFERENCES products(id),
+    sku TEXT,
     name TEXT NOT NULL,
     factor REAL NOT NULL DEFAULT 1,
     barcode TEXT,
+    purchase_price REAL NOT NULL DEFAULT 0,
+    attributes TEXT,
+    source_system TEXT,
+    source_code TEXT,
+    source_related_code TEXT,
+    source_imported_at TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
   );
@@ -473,6 +497,38 @@ sqlite.exec(`
     combo_product_id TEXT NOT NULL REFERENCES products(id),
     component_product_id TEXT NOT NULL REFERENCES products(id),
     quantity REAL NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS product_import_batches (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    source_system TEXT NOT NULL,
+    file_name TEXT NOT NULL DEFAULT '',
+    source_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'completed',
+    total_rows INTEGER NOT NULL DEFAULT 0,
+    product_rows INTEGER NOT NULL DEFAULT 0,
+    unit_rows INTEGER NOT NULL DEFAULT 0,
+    created_count INTEGER NOT NULL DEFAULT 0,
+    updated_count INTEGER NOT NULL DEFAULT 0,
+    unit_count INTEGER NOT NULL DEFAULT 0,
+    combo_count INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS product_import_issues (
+    id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL REFERENCES product_import_batches(id),
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    row_number INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    message TEXT NOT NULL,
+    sku TEXT NOT NULL DEFAULT '',
+    barcode TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
   );
 

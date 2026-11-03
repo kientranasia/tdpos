@@ -1,13 +1,13 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { Search, Plus, AlertTriangle, Package, ArrowUpDown, X, Save, Edit3, Tag, Camera, Layers, Trash2, Upload, Download, ScanLine, Barcode, SlidersHorizontal, ListFilter, Ellipsis, Settings2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Search, Plus, AlertTriangle, Package, ArrowUpDown, X, Save, Edit3, Tag, Camera, Layers, Trash2, Upload, Download, ScanLine, Barcode, SlidersHorizontal, ListFilter, Ellipsis, Settings2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { formatCurrency, normalizeSearchText } from '../lib/utils';
 import { Product } from '../types';
 import { v4 as uuid } from 'uuid';
-import { stockMovementsApi, priceListsApi, productUnitsApi, productComponentsApi, unitsApi } from '../lib/api';
+import { stockMovementsApi, priceListsApi, productUnitsApi, productComponentsApi, unitsApi, productsApi } from '../lib/api';
 import * as XLSX from 'xlsx';
 import { BarcodeScannerModal } from '../components/barcode/BarcodeScannerModal';
 import { CategoryManagerModal, PriceListManagerModal, UnitManagerModal } from '../components/inventory/InventoryManagers';
@@ -19,6 +19,43 @@ type ImportPreviewRow = {
   errors: string[];
   payload: Partial<Product>;
   existingId?: string;
+};
+
+type KiotImportRow = {
+  rowNumber: number;
+  productType: 'standard' | 'combo';
+  category: string;
+  sku: string;
+  barcode: string;
+  name: string;
+  sellingPrice: number;
+  purchasePrice: number;
+  stock: number;
+  lowStockThreshold: number;
+  maxStockThreshold: number;
+  unit: string;
+  baseSku: string;
+  factor: number;
+  attributes: string;
+  relatedSku: string;
+};
+
+type KiotImportPreview = {
+  fileName: string;
+  rows: KiotImportRow[];
+  summary: {
+    totalRows: number;
+    productRows: number;
+    unitRows: number;
+    createdCount: number;
+    updatedCount: number;
+    unitCount: number;
+    comboCount: number;
+    errorCount: number;
+    warningCount: number;
+  };
+  issues: Array<{ rowNumber: number; code: string; message: string; sku: string; barcode: string }>;
+  warnings: Array<{ rowNumber: number; message: string; sku: string }>;
 };
 
 const technicalStockIdPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
@@ -54,6 +91,8 @@ type ProductFormState = {
   taxRate: NumericDraft;
   stock: NumericDraft;
   lowStockThreshold: NumericDraft;
+  maxStockThreshold: NumericDraft;
+  attributes: string;
   imageUrl: string;
   productType: 'standard' | 'combo';
 };
@@ -98,17 +137,26 @@ export default function Inventory() {
   const [stockStatusFilter, setStockStatusFilter] = useState<'all' | 'in_stock' | 'low_stock' | 'out_of_stock'>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'updated_desc' | 'name_asc' | 'stock_asc' | 'stock_desc' | 'price_desc'>('updated_desc');
+  const [inventoryRows, setInventoryRows] = useState<Product[]>([]);
+  const [inventoryTotal, setInventoryTotal] = useState(0);
+  const [inventoryPage, setInventoryPage] = useState(0);
+  const [inventoryLoading, setInventoryLoading] = useState(false);
+  const [inventoryReloadKey, setInventoryReloadKey] = useState(0);
+  const inventoryPageSize = 50;
   const [importing, setImporting] = useState(false);
   const [showImportPreviewModal, setShowImportPreviewModal] = useState(false);
   const [importPreviewRows, setImportPreviewRows] = useState<ImportPreviewRow[]>([]);
   const [selectedImportRows, setSelectedImportRows] = useState<number[]>([]);
+  const [showKiotImportModal, setShowKiotImportModal] = useState(false);
+  const [kiotImportPreview, setKiotImportPreview] = useState<KiotImportPreview | null>(null);
+  const [kiotImportHistory, setKiotImportHistory] = useState<any[]>([]);
   const [showBarcodeScannerModal, setShowBarcodeScannerModal] = useState(false);
   const [variantBarcodeIndex, setVariantBarcodeIndex] = useState<number | null>(null);
   const [componentBarcodeIndex, setComponentBarcodeIndex] = useState<number | null>(null);
   const [showPricingModal, setShowPricingModal] = useState(false);
   const [showInlinePriceListForm, setShowInlinePriceListForm] = useState(false);
   const [priceLists, setPriceLists] = useState<any[]>([]);
-  const [productVariantDrafts, setProductVariantDrafts] = useState<Array<{ id: string; name: string; factor: NumericDraft; barcode: string }>>([]);
+  const [productVariantDrafts, setProductVariantDrafts] = useState<Array<{ id: string; sku: string; name: string; factor: NumericDraft; barcode: string; purchasePrice: NumericDraft }>>([]);
   const [productVariantPriceDrafts, setProductVariantPriceDrafts] = useState<Record<string, NumericDraft>>({});
   const [productComponentDrafts, setProductComponentDrafts] = useState<Array<{ componentProductId: string; quantity: NumericDraft }>>([]);
   const [productPriceDrafts, setProductPriceDrafts] = useState<Record<string, NumericDraft>>({});
@@ -143,6 +191,8 @@ export default function Inventory() {
     taxRate: 0,
     stock: 0,
     lowStockThreshold: 10,
+    maxStockThreshold: 0,
+    attributes: '',
     imageUrl: '',
     productType: 'standard' as 'standard' | 'combo'
   });
@@ -175,6 +225,8 @@ export default function Inventory() {
       taxRate: 0,
       stock: 0,
       lowStockThreshold: 10,
+      maxStockThreshold: 0,
+      attributes: '',
       imageUrl: '',
       productType: 'standard'
     });
@@ -249,7 +301,7 @@ export default function Inventory() {
     }
 
     const variants = productVariantDrafts
-      .map((variant) => ({ id: variant.id, name: variant.name.trim(), factor: Number(variant.factor), barcode: variant.barcode.trim() }))
+      .map((variant) => ({ id: variant.id, sku: variant.sku.trim(), name: variant.name.trim(), factor: Number(variant.factor), barcode: variant.barcode.trim(), purchasePrice: Number(variant.purchasePrice) || 0 }))
       .filter((variant) => variant.name);
     if (productForm.productType === 'standard') {
       if (variants.some((variant) => variant.name === productForm.unit.trim())) {
@@ -308,6 +360,8 @@ export default function Inventory() {
       taxRate: Number(productForm.taxRate) || 0,
       stock: productForm.productType === 'combo' ? 0 : Number(productForm.stock) || 0,
       lowStockThreshold: Number(productForm.lowStockThreshold) || 0,
+      maxStockThreshold: Number(productForm.maxStockThreshold) || 0,
+      attributes: productForm.attributes.trim() || null,
       productType: productForm.productType,
     };
     let success = false;
@@ -349,6 +403,7 @@ export default function Inventory() {
         await priceListsApi.saveItems(list.id, [...existingItems, ...rows]);
       }
       await refreshProducts();
+      setInventoryReloadKey((value) => value + 1);
       setSavingProduct(false);
       setShowProductModal(false);
       resetProductForm();
@@ -372,6 +427,8 @@ export default function Inventory() {
       taxRate: product.taxRate || 0,
       stock: product.stock,
       lowStockThreshold: product.lowStockThreshold,
+      maxStockThreshold: product.maxStockThreshold || 0,
+      attributes: product.attributes || '',
       imageUrl: product.imageUrl || '',
       productType: product.productType || 'standard'
     });
@@ -385,7 +442,7 @@ export default function Inventory() {
       loadProductPriceDrafts(lists, product);
       const loadedVariants = units
         .filter((unit: any) => unit.name !== product.unit || Number(unit.factor) !== 1)
-        .map((unit: any) => ({ id: unit.id || uuid(), name: unit.name, factor: Number(unit.factor) || 1, barcode: unit.barcode || '' }));
+        .map((unit: any) => ({ id: unit.id || uuid(), sku: unit.sku || '', name: unit.name, factor: Number(unit.factor) || 1, barcode: unit.barcode || '', purchasePrice: Number(unit.purchasePrice) || 0 }));
       setProductVariantDrafts(loadedVariants);
       setProductVariantPriceDrafts(Object.fromEntries(loadedVariants.flatMap((variant) => lists.map((list: any) => {
         const saved = list.items?.find((item: any) => item.productId === product.id && item.unitName === variant.name);
@@ -508,6 +565,7 @@ export default function Inventory() {
       setCatalogUnits((previous) => previous.map((unit) => unit.id === unitId ? { ...unit, ...updated } : unit));
       if (currentUnit?.name === productForm.unit) setProductForm((previous) => ({ ...previous, unit: updated.name }));
       await refreshProducts();
+      setInventoryReloadKey((value) => value + 1);
       return true;
     } catch {
       return false;
@@ -617,6 +675,54 @@ export default function Inventory() {
     return ['1', 'true', 'yes', 'y', 'có', 'co'].includes(text);
   };
 
+  const normalizeImportHeader = (value: unknown) => String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+
+  const importText = (value: unknown) => String(value ?? '').trim();
+
+  const isKiotVietHeaders = (headers: string[]) => {
+    const normalized = new Set(headers.map(normalizeImportHeader));
+    const required = ['loaihang', 'nhomhang3cap', 'mahang', 'tenhang', 'giaban', 'giavon', 'tonkho', 'dvt', 'madvtcoban'];
+    return required.every((header) => normalized.has(header));
+  };
+
+  const parseKiotVietRows = (rawRows: Record<string, unknown>[]) => rawRows.map((rawRow, index): KiotImportRow => {
+    const values = new Map(Object.entries(rawRow).map(([key, value]) => [normalizeImportHeader(key), value]));
+    const get = (...keys: string[]) => keys.map((key) => values.get(key)).find((value) => value !== undefined && value !== '') ?? '';
+    const typeText = importText(get('loaihang')).toLowerCase();
+    return {
+      rowNumber: index + 2,
+      productType: typeText.includes('combo') ? 'combo' : 'standard',
+      category: importText(get('nhomhang3cap')) || 'Khác',
+      sku: importText(get('mahang')),
+      barcode: importText(get('mavach')),
+      name: importText(get('tenhang')),
+      sellingPrice: parseNumber(get('giaban'), 0),
+      purchasePrice: parseNumber(get('giavon'), 0),
+      stock: parseNumber(get('tonkho'), 0),
+      lowStockThreshold: parseNumber(get('tonnhoinhat'), 0),
+      maxStockThreshold: parseNumber(get('tonlonnhat'), 0),
+      unit: importText(get('dvt')),
+      baseSku: importText(get('madvtcoban')),
+      factor: parseNumber(get('quydoi'), 1),
+      attributes: importText(get('thuoctinh')),
+      relatedSku: importText(get('mahhienquan')),
+    };
+  });
+
+  const loadKiotImportHistory = async () => {
+    try {
+      setKiotImportHistory(await productsApi.importHistory());
+    } catch {
+      setKiotImportHistory([]);
+    }
+  };
+
   const handleImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -632,6 +738,15 @@ export default function Inventory() {
       const sheet = workbook.Sheets[firstSheetName];
       const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
       if (!rows.length) throw new Error('File rỗng, chưa có dòng dữ liệu.');
+
+      if (isKiotVietHeaders(Object.keys(rows[0]))) {
+        const kiotRows = parseKiotVietRows(rows);
+        const preview = await productsApi.importPreview({ sourceSystem: 'kiot-viet', fileName: file.name, rows: kiotRows });
+        setKiotImportPreview({ fileName: file.name, rows: kiotRows, ...preview });
+        await loadKiotImportHistory();
+        setShowKiotImportModal(true);
+        return;
+      }
 
       const existingBySku = new Map<string, Product>(products.map((p) => [p.sku.trim().toLowerCase(), p]));
       const preview: ImportPreviewRow[] = [];
@@ -649,6 +764,8 @@ export default function Inventory() {
           else if (['sellingprice', 'giaban'].includes(k)) mapped.sellingPrice = value;
           else if (['stock', 'tonkho'].includes(k)) mapped.stock = value;
           else if (['lowstockthreshold', 'muctoncanhbao', 'canhbao'].includes(k)) mapped.lowStockThreshold = value;
+          else if (['maxstockthreshold', 'muctontoida', 'tontoida'].includes(k)) mapped.maxStockThreshold = value;
+          else if (['attributes', 'thuoctinh', 'ghichu'].includes(k)) mapped.attributes = value;
           else if (['status', 'trangthai'].includes(k)) mapped.status = value;
           else if (['trackstock', 'theodoitonkho'].includes(k)) mapped.trackStock = value;
         }
@@ -669,6 +786,8 @@ export default function Inventory() {
           sellingPrice: parseNumber(mapped.sellingPrice, 0),
           stock: parseNumber(mapped.stock, 0),
           lowStockThreshold: parseNumber(mapped.lowStockThreshold, 10),
+          maxStockThreshold: parseNumber(mapped.maxStockThreshold, 0),
+          attributes: String(mapped.attributes || '').trim() || null,
           status: String(mapped.status || '').trim() === 'inactive' ? 'inactive' : 'active',
           trackStock: parseBoolean(mapped.trackStock, true),
         };
@@ -733,6 +852,8 @@ export default function Inventory() {
           stock: row.payload.stock || 0,
           trackStock: row.payload.trackStock ?? true,
           lowStockThreshold: row.payload.lowStockThreshold || 10,
+          maxStockThreshold: row.payload.maxStockThreshold || 0,
+          attributes: row.payload.attributes || null,
           status: row.payload.status || 'active',
         };
         const ok = await addProduct(product);
@@ -746,6 +867,44 @@ export default function Inventory() {
       window.alert(`Import hoàn tất.\nTạo mới: ${created}\nCập nhật: ${updated}\nBỏ qua: ${skipped}`);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Không thể áp dụng import.');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const downloadKiotImportIssues = () => {
+    if (!kiotImportPreview?.issues.length) return;
+    const rows = kiotImportPreview.issues.map((issue) => ({
+      Dòng: issue.rowNumber,
+      Mã_lỗi: issue.code,
+      Nội_dung: issue.message,
+      Mã_hàng: issue.sku,
+      Mã_vạch: issue.barcode,
+    }));
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Lỗi import');
+    XLSX.writeFile(workbook, `loi-import-kiot-viet-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  const applyKiotImport = async () => {
+    if (!kiotImportPreview) return;
+    setFormError('');
+    setImporting(true);
+    try {
+      const result = await productsApi.importBatch({
+        sourceSystem: 'kiot-viet',
+        fileName: kiotImportPreview.fileName,
+        rows: kiotImportPreview.rows,
+      });
+      await refreshProducts();
+      setInventoryReloadKey((value) => value + 1);
+      await loadKiotImportHistory();
+      setShowKiotImportModal(false);
+      setKiotImportPreview(null);
+      window.alert(`Import Kiot Việt hoàn tất.\nTạo mới: ${result.summary?.createdCount || 0}\nCập nhật: ${result.summary?.updatedCount || 0}\nĐơn vị quy đổi: ${result.summary?.unitCount || 0}\nLỗi bị chặn: ${result.summary?.errorCount || 0}`);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Không thể import lô sản phẩm Kiot Việt.');
     } finally {
       setImporting(false);
     }
@@ -787,6 +946,8 @@ export default function Inventory() {
         sellingPrice: 5000,
         stock: 120,
         lowStockThreshold: 20,
+        maxStockThreshold: 200,
+        attributes: 'Màu xanh; size M',
         status: 'active',
         trackStock: true,
       },
@@ -800,6 +961,8 @@ export default function Inventory() {
         sellingPrice: 18000,
         stock: 50,
         lowStockThreshold: 10,
+        maxStockThreshold: 100,
+        attributes: '',
         status: 'active',
         trackStock: true,
       },
@@ -819,25 +982,57 @@ export default function Inventory() {
     URL.revokeObjectURL(link.href);
   };
 
+  useEffect(() => {
+    setInventoryPage(0);
+  }, [searchTerm, categoryFilter]);
+
+  useEffect(() => {
+    if (!activeTenant?.id) {
+      setInventoryRows([]);
+      setInventoryTotal(0);
+      return;
+    }
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      setInventoryLoading(true);
+      try {
+        const result = await productsApi.listPage(activeTenant.id, {
+          category: categoryFilter === 'all' ? undefined : categoryFilter,
+          search: searchTerm.trim() || undefined,
+          limit: inventoryPageSize,
+          offset: inventoryPage * inventoryPageSize,
+        });
+        if (active) {
+          setInventoryRows(result.items as Product[]);
+          setInventoryTotal(result.total);
+        }
+      } catch (error) {
+        if (active) {
+          setInventoryRows([]);
+          setInventoryTotal(0);
+          console.error('Failed to load inventory page:', error);
+        }
+      } finally {
+        if (active) setInventoryLoading(false);
+      }
+    }, searchTerm.trim() ? 180 : 0);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [activeTenant?.id, categoryFilter, inventoryPage, inventoryReloadKey, searchTerm]);
+
   const filteredProducts = useMemo(() => {
-    const keyword = normalizeSearchText(searchTerm);
-    return products.filter((p) => {
-      const matchesKeyword =
-        !keyword ||
-        normalizeSearchText(p.name).includes(keyword) ||
-        normalizeSearchText(p.sku).includes(keyword) ||
-        normalizeSearchText(p.barcode).includes(keyword) ||
-        normalizeSearchText(p.category).includes(keyword);
-      const matchesCategory = categoryFilter === 'all' || p.category === categoryFilter;
+    return inventoryRows.filter((p) => {
       const availableStock = Number(p.availableStock ?? p.stock);
       const matchesStockStatus =
         stockStatusFilter === 'all' ||
         (stockStatusFilter === 'in_stock' && availableStock > p.lowStockThreshold) ||
         (stockStatusFilter === 'low_stock' && availableStock > 0 && availableStock <= p.lowStockThreshold) ||
         (stockStatusFilter === 'out_of_stock' && availableStock <= 0);
-      return matchesKeyword && matchesCategory && matchesStockStatus;
+      return matchesStockStatus;
     });
-  }, [products, searchTerm, categoryFilter, stockStatusFilter]);
+  }, [inventoryRows, stockStatusFilter]);
 
   const visibleProducts = useMemo(() => {
     const rows = [...filteredProducts];
@@ -880,10 +1075,10 @@ export default function Inventory() {
 
   useEffect(() => {
     const productId = searchParams.get('productId');
-    if (!productId || !products.length || showProductModal) return;
-    const product = products.find((item) => item.id === productId);
-    if (!product) return;
-    void openEditProduct(product).finally(() => {
+    if (!productId || showProductModal) return;
+    const localProduct = products.find((item) => item.id === productId);
+    const productPromise = localProduct ? Promise.resolve(localProduct) : productsApi.get(productId);
+    void productPromise.then((product) => openEditProduct(product as Product)).finally(() => {
       const nextParams = new URLSearchParams(searchParams);
       nextParams.delete('productId');
       setSearchParams(nextParams, { replace: true });
@@ -891,16 +1086,16 @@ export default function Inventory() {
   }, [products, searchParams, setSearchParams, showProductModal]);
 
   const inventoryStats = useMemo(() => {
-    const lowStock = products.filter((p) => p.trackStock && Number(p.availableStock ?? p.stock) <= p.lowStockThreshold).length;
-    const totalUnits = products.reduce((sum, p) => sum + (p.stock || 0), 0);
-    const availableUnits = products.reduce((sum, p) => sum + Number(p.availableStock ?? p.stock ?? 0), 0);
-    const totalStockValue = products.reduce((sum, p) => sum + (p.stock || 0) * (p.purchasePrice || 0), 0);
+    const lowStock = inventoryRows.filter((p) => p.trackStock && Number(p.availableStock ?? p.stock) <= p.lowStockThreshold).length;
+    const totalUnits = inventoryRows.reduce((sum, p) => sum + (p.stock || 0), 0);
+    const availableUnits = inventoryRows.reduce((sum, p) => sum + Number(p.availableStock ?? p.stock ?? 0), 0);
+    const totalStockValue = inventoryRows.reduce((sum, p) => sum + (p.stock || 0) * (p.purchasePrice || 0), 0);
     return { lowStock, totalUnits, availableUnits, totalStockValue };
-  }, [products]);
+  }, [inventoryRows]);
 
   const uniqueCategories = useMemo(
-    () => Array.from(new Set(products.map((p) => p.category).filter(Boolean) as string[])).sort((a, b) => a.localeCompare(b, 'vi')),
-    [products]
+    () => categories.map((category) => category.name).filter(Boolean).sort((a, b) => a.localeCompare(b, 'vi')),
+    [categories]
   );
 
   const movementMeta = (type: 'in' | 'out' | 'adjust') => {
@@ -1018,6 +1213,120 @@ export default function Inventory() {
               <Button variant="outline" onClick={() => setShowImportPreviewModal(false)}>Hủy</Button>
               <Button onClick={applyImportPreview} disabled={importing}>
                 {importing ? 'Đang import...' : 'Xác nhận import'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showKiotImportModal && kiotImportPreview && (
+        <div className="fixed inset-0 z-[135] flex items-center justify-center bg-slate-900/60 p-2 backdrop-blur-sm sm:p-4">
+          <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-4 py-3 sm:px-5">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900 sm:text-base">Import Kiot Việt theo lô</h3>
+                <p className="mt-0.5 max-w-[70vw] truncate text-[11px] text-slate-500">{kiotImportPreview.fileName} · đối chiếu barcode trước, SKU sau</p>
+              </div>
+              <button type="button" onClick={() => setShowKiotImportModal(false)} className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-50 hover:text-slate-700" aria-label="Đóng xem trước import">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="shrink-0 space-y-3 border-b border-slate-100 px-4 py-3 sm:px-5">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+                {[
+                  ['Dòng dữ liệu', kiotImportPreview.summary.totalRows, 'text-slate-800'],
+                  ['Sản phẩm', kiotImportPreview.summary.productRows, 'text-slate-800'],
+                  ['Đơn vị quy đổi', kiotImportPreview.summary.unitRows, 'text-sky-700'],
+                  ['Tạo mới', kiotImportPreview.summary.createdCount, 'text-emerald-700'],
+                  ['Cập nhật', kiotImportPreview.summary.updatedCount, 'text-sky-700'],
+                  ['Combo', kiotImportPreview.summary.comboCount, 'text-violet-700'],
+                  ['Dòng bị chặn', kiotImportPreview.summary.errorCount, kiotImportPreview.summary.errorCount ? 'text-rose-700' : 'text-emerald-700'],
+                ].map(([label, value, tone]) => (
+                  <div key={String(label)} className="rounded-lg border border-slate-200 bg-slate-50/70 px-2.5 py-2">
+                    <p className="text-[10px] font-medium text-slate-500">{label}</p>
+                    <p className={`mt-0.5 text-base font-semibold tabular-nums ${tone}`}>{value}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
+                <span>Giá và tồn sẽ ghi vào sản phẩm/đơn vị tương ứng.</span>
+                <span>Tồn thay đổi sẽ tạo thẻ kho điều chỉnh đầu kỳ.</span>
+                <span>Không xóa sản phẩm ngoài file.</span>
+              </div>
+              {kiotImportPreview.warnings.length > 0 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                  Có {kiotImportPreview.warnings.length} cảnh báo. Ví dụ: {kiotImportPreview.warnings.slice(0, 2).map((warning) => `dòng ${warning.rowNumber}: ${warning.message}`).join(' · ')}
+                </div>
+              )}
+              {formError && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{formError}</div>}
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-auto px-4 py-3 sm:px-5">
+              {kiotImportPreview.issues.length > 0 ? (
+                <div className="overflow-hidden rounded-lg border border-rose-200">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rose-100 bg-rose-50 px-3 py-2">
+                    <div>
+                      <p className="text-xs font-semibold text-rose-800">Chi tiết dòng chưa được import ({kiotImportPreview.issues.length})</p>
+                      <p className="mt-0.5 text-[11px] text-rose-700">Các dòng hợp lệ vẫn được xử lý. Sửa các dòng này trong file rồi import lại nếu cần.</p>
+                    </div>
+                    <Button type="button" variant="outline" className="h-8 border-rose-200 bg-white px-2.5 text-xs text-rose-700 hover:bg-rose-50" onClick={downloadKiotImportIssues}>
+                      <Download className="mr-1.5 h-3.5 w-3.5" />Tải danh sách lỗi
+                    </Button>
+                  </div>
+                  <div className="max-h-[min(42vh,420px)] overflow-auto">
+                    <table className="min-w-[720px] w-full text-left text-xs">
+                      <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2">Dòng</th>
+                          <th className="px-3 py-2">Mã lỗi</th>
+                          <th className="px-3 py-2">SKU</th>
+                          <th className="px-3 py-2">Barcode</th>
+                          <th className="px-3 py-2">Nội dung</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {kiotImportPreview.issues.slice(0, 300).map((issue, index) => (
+                          <tr key={`${issue.rowNumber}-${issue.code}-${index}`}>
+                            <td className="px-3 py-2 tabular-nums text-slate-600">{issue.rowNumber}</td>
+                            <td className="px-3 py-2 font-mono text-rose-700">{issue.code}</td>
+                            <td className="px-3 py-2 font-mono text-slate-700">{issue.sku || '—'}</td>
+                            <td className="px-3 py-2 font-mono text-slate-700">{issue.barcode || '—'}</td>
+                            <td className="px-3 py-2 text-slate-700">{issue.message}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {kiotImportPreview.issues.length > 300 && <p className="border-t border-slate-100 px-3 py-2 text-[11px] text-slate-500">Đang hiển thị 300 lỗi đầu tiên. Hãy tải danh sách lỗi để xem đầy đủ.</p>}
+                </div>
+              ) : (
+                <div className="flex min-h-[160px] items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50/60 px-4 text-center">
+                  <div>
+                    <p className="text-sm font-semibold text-emerald-800">File sẵn sàng để import</p>
+                    <p className="mt-1 text-xs text-emerald-700">Không phát hiện xung đột barcode/SKU hoặc dữ liệu không hợp lệ.</p>
+                  </div>
+                </div>
+              )}
+              {kiotImportHistory.length > 0 && (
+                <div className="mt-3 rounded-lg border border-slate-200">
+                  <div className="border-b border-slate-100 px-3 py-2 text-xs font-semibold text-slate-800">Lịch sử import gần nhất</div>
+                  <div className="divide-y divide-slate-100">
+                    {kiotImportHistory.slice(0, 3).map((batch: any) => (
+                      <div key={batch.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-[11px] text-slate-600">
+                        <span className="min-w-0 truncate">{batch.fileName || 'Không có tên file'} · {batch.createdAt ? new Date(batch.createdAt).toLocaleString('vi-VN') : '—'}</span>
+                        <span className="shrink-0 font-medium text-slate-700">{batch.createdCount || 0} tạo · {batch.updatedCount || 0} cập nhật · {batch.errorCount || 0} lỗi</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-slate-100 px-4 py-3 sm:flex-row sm:justify-end sm:px-5">
+              <Button type="button" variant="outline" onClick={() => setShowKiotImportModal(false)}>Hủy</Button>
+              <Button type="button" onClick={applyKiotImport} disabled={importing || (kiotImportPreview.summary.createdCount + kiotImportPreview.summary.updatedCount === 0)}>
+                {importing ? 'Đang import theo lô...' : `Import ${kiotImportPreview.summary.createdCount + kiotImportPreview.summary.updatedCount} sản phẩm`}
               </Button>
             </div>
           </div>
@@ -1275,6 +1584,21 @@ export default function Inventory() {
                   </div>
                </div>
 
+               <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                 <div className="space-y-1">
+                   <label className="text-[11px] font-semibold text-slate-500">Tồn tối thiểu</label>
+                   <Input type="number" min="0" step="any" value={productForm.lowStockThreshold} onChange={e => setProductForm((previous) => ({ ...previous, lowStockThreshold: parseNumericDraft(e.target.value) }))} className="h-8 rounded-lg bg-slate-50 shadow-inner font-semibold text-slate-700 tabular-nums sm:h-9" />
+                 </div>
+                 <div className="space-y-1">
+                   <label className="text-[11px] font-semibold text-slate-500">Tồn tối đa</label>
+                   <Input type="number" min="0" step="any" value={productForm.maxStockThreshold} onChange={e => setProductForm((previous) => ({ ...previous, maxStockThreshold: parseNumericDraft(e.target.value) }))} className="h-8 rounded-lg bg-slate-50 shadow-inner font-semibold text-slate-700 tabular-nums sm:h-9" placeholder="Không giới hạn" />
+                 </div>
+                 <div className="space-y-1 md:col-span-1">
+                   <label className="text-[11px] font-semibold text-slate-500">Thuộc tính / ghi chú nguồn</label>
+                   <Input value={productForm.attributes} onChange={e => setProductForm((previous) => ({ ...previous, attributes: e.target.value }))} className="h-8 rounded-lg bg-slate-50 shadow-inner text-slate-700 sm:h-9" placeholder="Ví dụ: Màu đỏ · size M" />
+                 </div>
+               </div>
+
                <div className="rounded-lg border border-sky-100 bg-sky-50/40 p-3 space-y-2">
                  <div className="flex items-start justify-between gap-3">
                    <div>
@@ -1424,7 +1748,7 @@ export default function Inventory() {
                        <p className="mt-0.5 text-[11px] leading-4 text-slate-500">Một sản phẩm có thể có nhiều màu/loại, mỗi biến thể có mã vạch riêng. Hệ số quy đổi theo <b>{productForm.unit || 'đơn vị cơ sở'}</b>.</p>
                      </div>
                      <div className="flex shrink-0 items-center gap-1.5">
-                       <Button variant="outline" className="h-8 px-2 text-xs" onClick={() => setProductVariantDrafts([...productVariantDrafts, { id: uuid(), name: '', factor: 1, barcode: '' }])}>
+                       <Button variant="outline" className="h-8 px-2 text-xs" onClick={() => setProductVariantDrafts([...productVariantDrafts, { id: uuid(), sku: '', name: '', factor: 1, barcode: '', purchasePrice: 0 }])}>
                          <Plus className="mr-1 h-3 w-3" />Thêm biến thể
                        </Button>
                        <button
@@ -1443,16 +1767,20 @@ export default function Inventory() {
                    {productVariantDrafts.length === 0 && <p className="rounded-md bg-slate-50 px-3 py-1.5 text-[11px] text-slate-500">Chưa có biến thể. Sản phẩm sẽ bán theo {productForm.unit || 'đơn vị cơ sở'}.</p>}
                    {productVariantDrafts.length > 0 && <>
                      <div className="space-y-1.5">
-                       <div className="grid gap-2 px-1 text-[10px] font-medium uppercase tracking-wide text-slate-400 md:grid-cols-[1fr_110px_1fr_32px]">
+                       <div className="grid gap-2 px-1 text-[10px] font-medium uppercase tracking-wide text-slate-400 md:grid-cols-[140px_minmax(160px,1fr)_90px_minmax(160px,1fr)_110px_32px]">
+                         <span>SKU đơn vị</span>
                          <span>Tên biến thể / loại</span>
                          <span>Hệ số</span>
                          <span>Mã vạch riêng</span>
+                         <span>Giá vốn</span>
                          <span className="sr-only">Thao tác</span>
                        </div>
-                       {productVariantDrafts.map((variant, index) => <div key={variant.id} className="grid gap-2 rounded-md border border-slate-100 bg-slate-50/50 p-2 md:grid-cols-[1fr_110px_1fr_32px]">
+                       {productVariantDrafts.map((variant, index) => <div key={variant.id} className="grid gap-2 rounded-md border border-slate-100 bg-slate-50/50 p-2 md:grid-cols-[140px_minmax(160px,1fr)_90px_minmax(160px,1fr)_110px_32px]">
+                         <Input value={variant.sku} placeholder="SKU hộp" onChange={(e) => setProductVariantDrafts((previous) => previous.map((row, i) => i === index ? { ...row, sku: e.target.value } : row))} className="h-9 text-xs" aria-label={`SKU biến thể ${index + 1}`} />
                          <Input value={variant.name} placeholder="Màu/loại, ví dụ Đỏ, Xanh" onChange={(e) => setProductVariantDrafts((previous) => previous.map((row, i) => i === index ? { ...row, name: e.target.value } : row))} className="h-9 text-xs" />
                          <div className="relative"><Input type="text" inputMode="decimal" value={variant.factor} onChange={(e) => setProductVariantDrafts((previous) => previous.map((row, i) => i === index ? { ...row, factor: e.target.value.replace(',', '.') } : row))} className="h-9 pr-10 text-xs" placeholder="1" aria-label={`Hệ số quy đổi biến thể ${index + 1}`} /><span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">× cơ sở</span></div>
                          <div className="relative"><Barcode className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-sky-300" /><Input value={variant.barcode} placeholder="Mã vạch riêng (nếu có)" onChange={(e) => setProductVariantDrafts((previous) => previous.map((row, i) => i === index ? { ...row, barcode: e.target.value } : row))} className="h-9 pl-8 pr-9 text-xs" /><button type="button" aria-label="Quét mã vạch biến thể" title="Quét mã vạch biến thể" onClick={() => { setVariantBarcodeIndex(index); setShowBarcodeScannerModal(true); }} className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-sky-700 hover:bg-sky-50 hover:text-sky-700"><ScanLine className="h-3.5 w-3.5" /></button></div>
+                         <Input type="number" min="0" step="any" value={variant.purchasePrice} placeholder="0" onChange={(e) => setProductVariantDrafts((previous) => previous.map((row, i) => i === index ? { ...row, purchasePrice: e.target.value.replace(',', '.') } : row))} className="h-9 text-right text-xs tabular-nums" aria-label={`Giá vốn biến thể ${index + 1}`} />
                          <button type="button" aria-label={`Xóa biến thể ${index + 1}`} onClick={() => setProductVariantDrafts(productVariantDrafts.filter((_, i) => i !== index))} className="flex h-9 items-center justify-center text-rose-500"><Trash2 className="h-4 w-4" /></button>
                        </div>)}
                      </div>
@@ -1663,7 +1991,7 @@ export default function Inventory() {
           </div>
           <div>
             <h1 className="text-sm font-semibold leading-tight text-slate-900">Hàng hóa</h1>
-            <p className="text-[11px] leading-tight text-slate-500 mt-0.5">{products.length} hàng hóa trong hệ thống</p>
+            <p className="text-[11px] leading-tight text-slate-500 mt-0.5">{inventoryTotal} hàng hóa trong hệ thống</p>
           </div>
         </div>
         
@@ -1736,19 +2064,19 @@ export default function Inventory() {
         <div className="flex-1 overflow-y-auto p-2 lg:p-3">
         <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-4">
           <div className="rounded-lg border border-slate-200 bg-white p-2.5">
-            <p className="text-[10px] text-slate-500">Tồn thực tế</p>
+            <p className="text-[10px] text-slate-500">Tồn thực tế · trang này</p>
             <p className="mt-0.5 text-sm font-semibold text-slate-700 tabular-nums">{inventoryStats.totalUnits}</p>
           </div>
           <div className="rounded-lg border border-slate-200 bg-white p-2.5">
-            <p className="text-[10px] text-slate-500">Tồn khả dụng</p>
+            <p className="text-[10px] text-slate-500">Tồn khả dụng · trang này</p>
             <p className="mt-0.5 text-sm font-semibold text-slate-700 tabular-nums">{inventoryStats.availableUnits}</p>
           </div>
           <div className="rounded-lg border border-slate-200 bg-white p-2.5">
-            <p className="text-[10px] text-slate-500">Giá trị tồn (giá nhập)</p>
+            <p className="text-[10px] text-slate-500">Giá trị tồn · trang này</p>
             <p className="mt-0.5 text-sm font-semibold text-slate-700 tabular-nums">{formatCurrency(inventoryStats.totalStockValue)}</p>
           </div>
           <div className="rounded-lg border border-slate-200 bg-white p-2.5">
-            <p className="text-[10px] text-slate-500">Hàng sắp hết</p>
+            <p className="text-[10px] text-slate-500">Sắp hết · trang này</p>
             <p className={`mt-0.5 text-sm font-semibold tabular-nums ${inventoryStats.lowStock > 0 ? 'text-amber-700' : 'text-slate-700'}`}>
               {inventoryStats.lowStock}
             </p>
@@ -1808,6 +2136,12 @@ export default function Inventory() {
         </div>
 
         <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          {inventoryLoading && (
+            <div className="flex items-center gap-2 border-b border-slate-100 bg-sky-50/60 px-3 py-2 text-xs text-sky-700" role="status">
+              <span className="h-3 w-3 animate-spin rounded-full border-2 border-sky-200 border-t-sky-600" />
+              Đang tải danh sách hàng hóa…
+            </div>
+          )}
           {/* Mobile View: High-polish Cards */}
           <div className="grid grid-cols-1 gap-px bg-slate-100 lg:hidden">
             {visibleProducts.map(product => (
@@ -1815,7 +2149,10 @@ export default function Inventory() {
                 <div className="flex justify-between items-start">
                   <div className="space-y-1">
                     <button type="button" className="block text-left text-xs font-semibold text-slate-500 font-mono leading-none hover:text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); void openEditProduct(product); }}>{product.sku}</button>
-                    <button type="button" className="block text-left font-semibold text-slate-900 text-base leading-tight tracking-tight hover:text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); void openEditProduct(product); }}>{product.name}</button>
+                    <div className="flex items-center gap-1.5">
+                      <button type="button" className="block min-w-0 text-left font-semibold text-slate-900 text-base leading-tight tracking-tight hover:text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); void openEditProduct(product); }}>{product.name}</button>
+                      {product.productType === 'combo' && <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${product.components?.length ? 'bg-violet-50 text-violet-700' : 'bg-amber-50 text-amber-700'}`}>{product.components?.length ? 'Combo' : 'Thiếu thành phần'}</span>}
+                    </div>
                   </div>
                     <div className="flex items-center gap-2">
                     <button
@@ -1856,6 +2193,11 @@ export default function Inventory() {
                   <span className="text-[11px] font-medium text-slate-600 bg-slate-100 px-2 py-1 rounded-md leading-none ring-1 ring-slate-200/50">{product.category}</span>
                   <span className="text-[11px] font-medium text-slate-600 bg-slate-100 px-2 py-1 rounded-md leading-none ring-1 ring-slate-200/50">{product.unit}</span>
                 </div>
+                {product.units && product.units.filter((unit: any) => unit.name !== product.unit || Number(unit.factor) !== 1).length > 0 && (
+                  <p className="truncate text-[10px] text-slate-500" title={product.units.filter((unit: any) => unit.name !== product.unit || Number(unit.factor) !== 1).map((unit: any) => `${unit.sku || '—'} · ${unit.name} ×${unit.factor} · vốn ${formatCompactCurrency(unit.purchasePrice)} · bán ${formatCompactCurrency(unit.sellingPrice)}`).join(' | ')}>
+                    Đơn vị phụ: {product.units.filter((unit: any) => unit.name !== product.unit || Number(unit.factor) !== 1).slice(0, 2).map((unit: any) => `${unit.sku || '—'} · ${unit.name} ×${unit.factor} · ${formatCompactCurrency(unit.sellingPrice)}`).join(' | ')}
+                  </p>
+                )}
 
                 <div className="grid grid-cols-3 gap-2 pt-3 border-t border-slate-100">
                   <div className="space-y-1">
@@ -1865,6 +2207,7 @@ export default function Inventory() {
                     }`}>
                       {Number(product.availableStock ?? product.stock)} <span className="text-[11px] text-slate-400 font-medium ml-0.5">{product.unit}</span>
                     </div>
+                    {Number(product.maxStockThreshold || 0) > 0 && <div className="text-[10px] text-slate-400">Tối đa {Number(product.maxStockThreshold)}</div>}
                   </div>
                   <div className="text-right space-y-1">
                     <div className="text-xs font-medium text-slate-500">Giá nhập</div>
@@ -1912,8 +2255,12 @@ export default function Inventory() {
                     </td>
                     <td className="px-2 py-1.5 align-middle">
                       <div className="min-w-0">
-                        <button type="button" className="block max-w-full truncate text-left font-semibold text-slate-900 tracking-tight text-xs leading-tight hover:text-sky-700 hover:underline" onClick={() => void openEditProduct(product)}>{product.name}</button>
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <button type="button" className="block max-w-full truncate text-left font-semibold text-slate-900 tracking-tight text-xs leading-tight hover:text-sky-700 hover:underline" onClick={() => void openEditProduct(product)}>{product.name}</button>
+                          {product.productType === 'combo' && <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${product.components?.length ? 'bg-violet-50 text-violet-700' : 'bg-amber-50 text-amber-700'}`}>{product.components?.length ? 'Combo' : 'Thiếu thành phần'}</span>}
+                        </div>
                         {product.barcode && <div className="text-[10px] text-slate-500 font-mono truncate">{product.barcode}</div>}
+                        {product.units && product.units.filter((unit: any) => unit.name !== product.unit || Number(unit.factor) !== 1).length > 0 && <div className="truncate text-[10px] text-slate-500" title={product.units.filter((unit: any) => unit.name !== product.unit || Number(unit.factor) !== 1).map((unit: any) => `${unit.sku || '—'} · ${unit.name} ×${unit.factor} · vốn ${formatCompactCurrency(unit.purchasePrice)} · bán ${formatCompactCurrency(unit.sellingPrice)}`).join(' | ')}>Đơn vị phụ: {product.units.filter((unit: any) => unit.name !== product.unit || Number(unit.factor) !== 1).slice(0, 2).map((unit: any) => `${unit.sku || '—'} · ${unit.name} ×${unit.factor} · ${formatCompactCurrency(unit.sellingPrice)}`).join(' | ')}</div>}
                       </div>
                     </td>
                     <td className="px-2 py-1.5 align-middle">
@@ -1947,6 +2294,7 @@ export default function Inventory() {
                           <span className="text-[10px] text-slate-500">{product.unit}</span>
                           {Number(product.availableStock ?? product.stock) <= product.lowStockThreshold && <AlertTriangle className="h-3 w-3" />}
                         </div>
+                        {Number(product.maxStockThreshold || 0) > 0 && <span className="mt-0.5 text-[10px] text-slate-400">Tối đa {Number(product.maxStockThreshold)}</span>}
                       </div>
                     </td>
                     <td className="px-2 py-1.5 align-middle">
@@ -1993,6 +2341,33 @@ export default function Inventory() {
               <p className="text-slate-300 font-semibold uppercase tracking-[0.25em] text-xs">Dữ liệu hàng hóa trống</p>
             </div>
           )}
+        </div>
+
+        <div className="mt-3 flex flex-col gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 sm:flex-row sm:items-center sm:justify-between">
+          <span>
+            {inventoryTotal === 0 ? 'Không có hàng hóa phù hợp' : `Hiển thị ${inventoryPage * inventoryPageSize + 1}–${Math.min((inventoryPage + 1) * inventoryPageSize, inventoryTotal)} / ${inventoryTotal}`}
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1 px-2"
+              disabled={inventoryPage === 0 || inventoryLoading}
+              onClick={() => setInventoryPage((page) => Math.max(0, page - 1))}
+            >
+              <ChevronLeft className="h-3.5 w-3.5" /> Trước
+            </Button>
+            <span className="min-w-[72px] text-center tabular-nums">Trang {inventoryPage + 1} / {Math.max(1, Math.ceil(inventoryTotal / inventoryPageSize))}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1 px-2"
+              disabled={(inventoryPage + 1) * inventoryPageSize >= inventoryTotal || inventoryLoading}
+              onClick={() => setInventoryPage((page) => page + 1)}
+            >
+              Sau <ChevronRight className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
 
         <div className="mt-3 rounded-lg border border-slate-200 bg-white overflow-hidden">

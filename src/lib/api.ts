@@ -103,6 +103,17 @@ export const unitsApi = {
 export const productsApi = {
   list: (tenantId?: string, filters?: { category?: string; search?: string }) =>
     request<any[]>('/products', { params: { tenantId: tenantId || '', ...filters } }),
+  listPage: (tenantId?: string, filters?: { category?: string; search?: string; limit?: number; offset?: number }) =>
+    request<{ items: any[]; total: number; offset: number; limit: number }>('/products', {
+      params: Object.fromEntries([
+        ['tenantId', tenantId || ''],
+        ['includeMeta', 'true'],
+        ...Object.entries(filters || {})
+          .filter(([, value]) => value !== undefined && value !== null && value !== '')
+          .map(([key, value]) => [key, String(value)]),
+      ]),
+    }),
+  summary: (tenantId?: string) => request<{ total: number; totalStock: number; stockValue: number; lowStock: number }>('/products/summary', { params: { tenantId: tenantId || '' } }),
   get: (id: string) => request<any>(`/products/${id}`),
   create: (data: any) => request<any>('/products', { method: 'POST', body: data }),
   update: (id: string, data: any) => request<any>(`/products/${id}`, { method: 'PATCH', body: data }),
@@ -110,10 +121,14 @@ export const productsApi = {
   adjustStock: (id: string, quantity: number, type: 'increase' | 'decrease', note?: string) =>
     request<any>(`/products/${id}/stock`, { method: 'POST', body: { quantity, type, note } }),
   lookup: (code: string) => request<any>(`/products/lookup`, { params: { code } }),
+  importPreview: (data: { sourceSystem: string; fileName?: string; rows: any[] }) => request<any>('/products/import/preview', { method: 'POST', body: data }),
+  importBatch: (data: { sourceSystem: string; fileName?: string; rows: any[] }) => request<any>('/products/import', { method: 'POST', body: data }),
+  importHistory: () => request<any[]>('/products/import-history'),
+  importIssues: (batchId: string) => request<{ batch: any; issues: any[] }>(`/products/import-history/${encodeURIComponent(batchId)}/issues`),
 };
 
 export const priceListsApi = {
-  list: (includeItems = true) => request<any[]>('/price-lists', { params: { includeItems: String(includeItems) } }),
+  list: (includeItems = true, productIds?: string[]) => request<any[]>('/price-lists', { params: { includeItems: String(includeItems), productIds: productIds?.join(',') || '' } }),
   get: (id: string) => request<any>(`/price-lists/${id}`),
   create: (data: any) => request<any>('/price-lists', { method: 'POST', body: data }),
   update: (id: string, data: any) => request<any>(`/price-lists/${id}`, { method: 'PATCH', body: data }),
@@ -229,7 +244,7 @@ export const reportsApi = {
 };
 
 export const stockMovementsApi = {
-  list: (productId?: string) => request<any[]>('/stock-movements', { params: { productId: productId || '', _ts: String(Date.now()) } }),
+  list: (productId?: string, options?: { limit?: number; all?: boolean }) => request<any[]>('/stock-movements', { params: { productId: productId || '', limit: options?.limit ? String(options.limit) : '', all: options?.all ? 'true' : '', _ts: String(Date.now()) } }),
   stockCheck: (productId: string, actualStock: number, note?: string) =>
     request<any>('/stock-check', { method: 'POST', body: { productId, actualStock, note } }),
 };
