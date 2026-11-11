@@ -195,10 +195,26 @@ export default function AdminPanel() {
 
   const handleOpenTenantDetail = async (tenantId: string) => {
     try {
-      const detail = await adminApi.tenants.get(tenantId);
-      setActiveTenantDetail(detail);
+      const [detail, database] = await Promise.all([
+        adminApi.tenants.get(tenantId),
+        adminApi.tenants.database(tenantId),
+      ]);
+      setActiveTenantDetail({ ...detail, databaseHealth: database });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Không thể tải chi tiết tenant.');
+    }
+  };
+
+  const handleProvisionTenantDatabase = async (tenantId: string) => {
+    try {
+      setActionLoadingKey(`provision-${tenantId}`);
+      await adminApi.tenants.provisionDatabase(tenantId);
+      await handleOpenTenantDetail(tenantId);
+      await loadAdminData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Không thể khởi tạo lại database tenant.');
+    } finally {
+      setActionLoadingKey('');
     }
   };
 
@@ -527,6 +543,14 @@ export default function AdminPanel() {
               <div><p className="text-slate-500 text-xs uppercase">Business model</p><p className="font-bold">{activeTenantDetail.settings?.insights?.businessModel || '-'}</p></div>
               <div><p className="text-slate-500 text-xs uppercase">Staff size</p><p className="font-bold">{activeTenantDetail.settings?.insights?.staffSize || '-'}</p></div>
               <div><p className="text-slate-500 text-xs uppercase">Monthly orders est.</p><p className="font-bold">{activeTenantDetail.settings?.insights?.monthlyOrdersEstimate || '-'}</p></div>
+              <div><p className="text-slate-500 text-xs uppercase">Database</p><p className="font-bold uppercase">{activeTenantDetail.databaseHealth?.integrity || activeTenantDetail.databaseStatus || '-'}</p></div>
+              <div><p className="text-slate-500 text-xs uppercase">Schema version</p><p className="font-bold">{activeTenantDetail.databaseHealth?.schemaVersion ?? '-'}</p></div>
+              <div className="md:col-span-2 flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-3">
+                <span className="text-xs text-slate-400">{activeTenantDetail.databaseHealth?.sizeBytes ? `${Math.round(activeTenantDetail.databaseHealth.sizeBytes / 1024)} KB` : 'Chưa có file tenant'}</span>
+                <Button type="button" variant="ghost" className="h-8 px-3 text-xs" onClick={() => handleProvisionTenantDatabase(activeTenantDetail.id)} disabled={actionLoadingKey === `provision-${activeTenantDetail.id}`}>
+                  {actionLoadingKey === `provision-${activeTenantDetail.id}` ? 'Đang kiểm tra...' : 'Provision / kiểm tra lại'}
+                </Button>
+              </div>
               <div className="md:col-span-2"><p className="text-slate-500 text-xs uppercase">Sales channels</p><p className="font-bold">{Array.isArray(activeTenantDetail.settings?.insights?.salesChannels) && activeTenantDetail.settings?.insights?.salesChannels.length ? activeTenantDetail.settings?.insights?.salesChannels.join(', ') : '-'}</p></div>
               <div className="md:col-span-2"><p className="text-slate-500 text-xs uppercase">Primary goal</p><p className="font-bold">{activeTenantDetail.settings?.insights?.primaryGoal || '-'}</p></div>
             </div>

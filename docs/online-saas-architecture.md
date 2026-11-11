@@ -45,6 +45,16 @@ tenant by sending a tenant id in the request body.
   provision time.
 - User changes made by the tenant owner are mirrored to the control registry so
   the next login can be resolved without allowing a client to choose a tenant.
+- Tenant backups are encrypted with the instance secret and stored in a
+  tenant-specific directory. Restore validates the checksum and SQLite
+  integrity, writes a safety snapshot, and replaces only the active tenant
+  database; it does not overwrite the control database.
+- Platform-admin statistics and audit logs aggregate from tenant databases in
+  per-tenant mode, so newly created products, invoices, debt, and tenant
+  activity are not silently omitted from the SaaS console.
+- Tenant database health can be inspected and provisioning can be retried from
+  the platform-admin API. User creation is enforced against the assigned
+  package seat limit for both platform admins and tenant owners.
 - This first isolation adapter uses SQLite files to keep the online branch
   deployable with the existing application. PostgreSQL remains the target
   engine before high-scale production rollout; the provider boundary is kept
@@ -60,8 +70,10 @@ tenant by sending a tenant id in the request body.
    migrator and run schema-version checks for existing tenant files.
 4. Migrate the current SQLite data into the first tenant database and verify
    product, stock, invoice, debt, cashbook, user, and permission counts.
-5. Add per-tenant backup/restore, migration status, audit logs, and failure
-   recovery before opening tenant creation to production operations.
+5. Move the existing SQLite backup/restore and health checks to the final
+   provider abstraction, then add object-storage backup retention, restore
+   drills, and failure recovery before opening tenant creation to production
+   operations.
 
 PostgreSQL is the target online engine. SQLite remains the offline engine.
 

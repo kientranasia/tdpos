@@ -22,6 +22,16 @@ type RegistryOptions = {
   dataDir: string;
 };
 
+export type TenantDatabaseInspection = {
+  tenantId: string;
+  databaseKey: string;
+  exists: boolean;
+  open: boolean;
+  sizeBytes: number;
+  schemaVersion: number | null;
+  integrity: 'ok' | 'error' | 'missing' | 'unavailable';
+};
+
 const tenantContext = new AsyncLocalStorage<TenantContext>();
 
 // These tables are intentionally global. They contain platform metadata needed
@@ -125,6 +135,19 @@ export class TenantDatabaseRegistry {
     return path.join(this.tenantDir, `tenant-${digest}.db`);
   }
 
+  private tenantStorageKey(tenantId: string) {
+    return path.basename(this.databaseFileFor(tenantId), '.db');
+  }
+
+  databasePath(tenantId: string) {
+    return this.databaseFileFor(tenantId);
+  }
+
+  backupDirectory(tenantId: string, sharedRoot: string) {
+    if (!PER_TENANT_DATABASES) return path.join(sharedRoot, 'backups');
+    return path.join(this.dataDir, 'backups', this.tenantStorageKey(tenantId));
+  }
+
   private createSchema(target: SqliteDatabase) {
     const objects = this.controlSqlite.prepare(
       "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'table' THEN 1 WHEN 'index' THEN 2 WHEN 'trigger' THEN 3 WHEN 'view' THEN 4 ELSE 5 END, name",
@@ -223,7 +246,7 @@ export class TenantDatabaseRegistry {
     update.run(...columns.map((column) => tenant[column]), tenant.id);
   }
 
-  private openTenantContext(tenantId: string) {
+  private openTenantContext(tenantId: string, hydrateFromControl = true) {
     const filePath = this.databaseFileFor(tenantId);
     const tenantKey = path.basename(filePath);
     const sqlite = new Database(filePath);
@@ -232,7 +255,7 @@ export class TenantDatabaseRegistry {
     try {
       if (!hasTable(sqlite, 'tenants')) this.createSchema(sqlite);
       else this.ensureSchema(sqlite);
-      this.copyTenantData(sqlite, tenantId);
+      if (hydrateFromControl) this.copyTenantData(sqlite, tenantId);
       sqlite.pragma('user_version = 1');
       const databaseNow = new Date().toISOString();
       this.updateControlStatus(tenantId, 'ready', tenantKey, databaseNow);
@@ -264,6 +287,24 @@ export class TenantDatabaseRegistry {
     return this.ensureTenantDatabase(tenantId);
   }
 
+  inspectTenantDatabase(tenantId: string): TenantDatabaseInspection {
+    const filePath = this.databaseFileFor(tenantId);
+    const databaseKey = path.basename(filePath);
+    if (!fs.existsSync(filePath)) {
+      return { tenantId, databaseKey, exists: false, open: this.contexts.has(tenantId), sizeBytes: 0, schemaVersion: null, integrity: 'missing' };
+    }
+    try {
+      const stat = fs.statSync(filePath);
+      const sqlite = this.contexts.get(tenantId)?.sqlite || new Database(filePath, { readonly: true });
+      const schemaVersion = Number(sqlite.pragma('user_version', { simple: true }));
+      const integrity = sqlite.pragma('integrity_check', { simple: true }) === 'ok' ? 'ok' : 'error';
+      if (!this.contexts.has(tenantId)) sqlite.close();
+      return { tenantId, databaseKey, exists: true, open: this.contexts.has(tenantId), sizeBytes: stat.size, schemaVersion, integrity };
+    } catch {
+      return { tenantId, databaseKey, exists: true, open: this.contexts.has(tenantId), sizeBytes: 0, schemaVersion: null, integrity: 'unavailable' };
+    }
+  }
+
   syncTenantRecord(tenantId: string) {
     if (!PER_TENANT_DATABASES) return;
     const context = this.ensureTenantDatabase(tenantId);
@@ -272,13 +313,18 @@ export class TenantDatabaseRegistry {
     this.syncTenantRow(context.sqlite, tenant);
   }
 
-  deleteTenantDatabase(tenantId: string) {
+  closeTenantDatabase(tenantId: string) {
     if (!PER_TENANT_DATABASES) return;
     const context = this.contexts.get(tenantId);
     if (context) {
       context.sqlite.close();
       this.contexts.delete(tenantId);
     }
+  }
+
+  deleteTenantDatabase(tenantId: string) {
+    if (!PER_TENANT_DATABASES) return;
+    this.closeTenantDatabase(tenantId);
     const filePath = this.databaseFileFor(tenantId);
     // The filename is derived from the tenant id and never comes from a
     // request path. Remove SQLite sidecar files as well so deleted tenant
@@ -286,6 +332,36 @@ export class TenantDatabaseRegistry {
     for (const candidate of [filePath, `${filePath}-wal`, `${filePath}-shm`]) {
       fs.rmSync(candidate, { force: true });
     }
+  }
+
+  replaceTenantDatabase(tenantId: string, sourcePath: string) {
+    if (!PER_TENANT_DATABASES) throw new Error('Tenant database mode is not enabled.');
+    const destinationPath = this.databaseFileFor(tenantId);
+    this.closeTenantDatabase(tenantId);
+    for (const candidate of [destinationPath, `${destinationPath}-wal`, `${destinationPath}-shm`]) {
+      fs.rmSync(candidate, { force: true });
+    }
+    fs.renameSync(sourcePath, destinationPath);
+    fs.chmodSync(destinationPath, 0o600);
+
+    // Restore must not rehydrate rows from the control database: doing so
+    // would re-introduce records that were intentionally absent in the
+    // selected snapshot. Open the restored file schema-only and mirror the
+    // restored login registry back to the control database.
+    const context = this.openTenantContext(tenantId, false);
+    this.contexts.set(tenantId, context);
+    const restoredUsers = context.sqlite.prepare('SELECT * FROM users WHERE tenant_id = ?').all(tenantId) as Array<Record<string, unknown>>;
+    const restoreUsers = this.controlSqlite.transaction((users: Array<Record<string, unknown>>) => {
+      this.controlSqlite.prepare('DELETE FROM users WHERE tenant_id = ?').run(tenantId);
+      const insert = this.controlSqlite.prepare(
+        'INSERT INTO users (id, name, email, password, phone, role, tenant_id, status, session_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      );
+      for (const user of users) {
+        insert.run(user.id, user.name, user.email, user.password, user.phone ?? null, user.role, user.tenant_id, user.status, user.session_version ?? 1);
+      }
+    });
+    restoreUsers(restoredUsers);
+    return context;
   }
 
   syncUserToControl(user: Record<string, unknown>) {

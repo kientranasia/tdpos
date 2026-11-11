@@ -308,6 +308,10 @@ export const adminApi = {
       request<any>(`/admin/tenants/${id}`, { method: 'PATCH', body: data, admin: true }),
     setStatus: (id: string, status: string) =>
       request<any>(`/admin/tenants/${id}/status`, { method: 'POST', body: { status }, admin: true }),
+    database: (id: string) =>
+      request<any>(`/admin/tenants/${id}/database`, { admin: true }),
+    provisionDatabase: (id: string) =>
+      request<any>(`/admin/tenants/${id}/database/provision`, { method: 'POST', body: {}, admin: true }),
     delete: (id: string) =>
       request<any>(`/admin/tenants/${id}`, { method: 'DELETE', admin: true }),
   },

@@ -107,6 +107,34 @@ try {
   assert(productsA.response.ok && productsA.body?.some((item) => item.sku === 'TENANT-A-001'), 'Tenant A cannot see its own product');
   assert(productsB.response.ok && !productsB.body?.some((item) => item.sku === 'TENANT-A-001'), 'Tenant B can see Tenant A product');
 
+  const adminStats = await request('/api/admin/stats', { headers: adminAuth });
+  assert(adminStats.response.ok && adminStats.body?.totalProducts >= 1, `Admin stats did not read tenant database: ${JSON.stringify(adminStats.body)}`);
+  assert(adminStats.body?.databaseMode === 'per_tenant', `Admin stats database mode invalid: ${JSON.stringify(adminStats.body)}`);
+
+  const databaseHealth = await request(`/api/admin/tenants/${tenantA.id}/database`, { headers: adminAuth });
+  assert(databaseHealth.response.ok && databaseHealth.body?.integrity === 'ok', `Tenant database health invalid: ${JSON.stringify(databaseHealth.body)}`);
+
+  const backup = await request('/api/backups', { method: 'POST', headers: authA, body: '{}' });
+  assert(backup.response.status === 201, `Tenant backup failed: ${JSON.stringify(backup.body)}`);
+  assert(String(backup.body?.filePath).startsWith('backups/tenant-'), `Tenant backup path is not isolated: ${JSON.stringify(backup.body)}`);
+  assert(fs.existsSync(path.join(dataDir, backup.body.filePath)), 'Tenant backup file was not written');
+
+  const postBackupProduct = await request('/api/products', {
+    method: 'POST',
+    headers: authA,
+    body: JSON.stringify({ name: 'Created After Backup', sku: 'TENANT-A-002', category: 'Test', unit: 'Cái', purchasePrice: 12, sellingPrice: 24 }),
+  });
+  assert(postBackupProduct.response.status === 201, `Post-backup product creation failed: ${JSON.stringify(postBackupProduct.body)}`);
+  const restore = await request('/api/backups/restore', {
+    method: 'POST',
+    headers: authA,
+    body: JSON.stringify({ backupId: backup.body.id }),
+  });
+  assert(restore.response.ok, `Tenant restore failed: ${JSON.stringify(restore.body)}`);
+  for (let attempt = 0; attempt < 20 && server.exitCode === null; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
   const control = new Database(path.join(dataDir, 'tdpos.db'));
   const statusRows = control.prepare('SELECT id, database_status, database_key FROM tenants WHERE id IN (?, ?) ORDER BY id').all(tenantA.id, tenantB.id);
   assert(statusRows.length === 2 && statusRows.every((row) => row.database_status === 'ready' && row.database_key), `Control database status invalid: ${JSON.stringify(statusRows)}`);
@@ -116,10 +144,17 @@ try {
     const row = tenantDb.prepare('SELECT COUNT(*) AS count FROM products WHERE sku = ?').get('TENANT-A-001');
     if (tenant.id === tenantA.id) assert(row.count === 1, 'Tenant A database is missing its product');
     if (tenant.id === tenantB.id) assert(row.count === 0, 'Tenant B database contains Tenant A product');
+    if (tenant.id === tenantA.id) {
+      const removed = tenantDb.prepare('SELECT COUNT(*) AS count FROM products WHERE sku = ?').get('TENANT-A-002');
+      const backupLog = tenantDb.prepare('SELECT COUNT(*) AS count FROM backup_logs WHERE id = ?').get(backup.body.id);
+      const auditLog = tenantDb.prepare("SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'backup_restore_requested' AND entity_id = ?").get(backup.body.id);
+      assert(removed.count === 0, 'Tenant restore kept a product created after the snapshot');
+      assert(backupLog.count === 1 && auditLog.count === 1, 'Tenant restore did not preserve backup history');
+    }
     tenantDb.close();
   }
   control.close();
-  console.log(JSON.stringify({ ok: true, tenants: 2, isolatedSku: 'TENANT-A-001', mode: 'per_tenant' }));
+  console.log(JSON.stringify({ ok: true, tenants: 2, isolatedSku: 'TENANT-A-001', mode: 'per_tenant', backup: true, adminStats: true }));
 } finally {
   server.kill('SIGTERM');
   fs.rmSync(dataDir, { recursive: true, force: true });

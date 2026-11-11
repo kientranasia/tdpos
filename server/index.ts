@@ -28,6 +28,7 @@ import {
   isAllowedSetupRequest,
   INSTANCE_SECRET,
   INSTANCE_ID,
+  PER_TENANT_DATABASES,
 } from './runtimeConfig';
 import { bootstrapAdminAccount } from './bootstrapAdmin';
 
@@ -653,10 +654,11 @@ app.get('/api/backups', (req, res) => {
 app.post('/api/backups', async (req, res) => {
   try {
     if (!ensureOwner(req, res)) return;
-    const backupDir = path.join(path.dirname(DB_PATH), 'backups');
+    const dataRoot = path.dirname(DB_PATH);
+    const backupDir = tenantRegistry.backupDirectory(req.user.tenantId, dataRoot);
     fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
     fs.chmodSync(backupDir, 0o700);
-    const fileName = `hkdplus-${new Date().toISOString().replace(/[:.]/g, '-')}.db.enc`;
+    const fileName = `hkdplus-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.db.enc`;
     const filePath = path.join(backupDir, fileName);
     const rawPath = path.join(backupDir, `${fileName}.raw`);
     await sqlite.backup(rawPath);
@@ -666,7 +668,7 @@ app.post('/api/backups', async (req, res) => {
       id: uuid(),
       tenantId: req.user.tenantId,
       instanceId: INSTANCE_ID,
-      filePath: `backups/${fileName}`,
+      filePath: path.relative(dataRoot, filePath),
       sizeBytes: stat.size,
       checksumSha256: sha256File(filePath),
       schemaVersion: 1,
@@ -690,9 +692,16 @@ app.post('/api/backups/restore', async (req, res) => {
     const backupId = String(req.body?.backupId || '');
     const backup = db.select().from(schema.backupLogs).where(and(eq(schema.backupLogs.id, backupId), eq(schema.backupLogs.tenantId, req.user.tenantId))).get();
     if (!backup) return res.status(404).json({ error: 'Không tìm thấy bản sao lưu' });
-    const backupDir = path.resolve(path.dirname(DB_PATH), 'backups');
-    const sourcePath = path.resolve(path.dirname(DB_PATH), backup.filePath);
-    if (!sourcePath.startsWith(`${backupDir}${path.sep}`) || !fs.existsSync(sourcePath)) {
+    const dataRoot = path.dirname(DB_PATH);
+    const backupDir = path.resolve(tenantRegistry.backupDirectory(req.user.tenantId, dataRoot));
+    const sourcePath = path.resolve(dataRoot, backup.filePath);
+    // Backups created before per-tenant storage used the shared backups
+    // directory. Keep those records restorable while restricting the source
+    // to either the current tenant directory or that exact legacy root.
+    const legacyBackupDir = path.resolve(dataRoot, 'backups');
+    const allowedBackupRoots = [backupDir, ...(PER_TENANT_DATABASES ? [legacyBackupDir] : [])];
+    const isAllowedBackupPath = allowedBackupRoots.some((root) => sourcePath.startsWith(`${root}${path.sep}`));
+    if (!isAllowedBackupPath || !fs.existsSync(sourcePath)) {
       return res.status(400).json({ error: 'Đường dẫn bản sao lưu không hợp lệ' });
     }
     if (backup.instanceId && backup.instanceId !== INSTANCE_ID) {
@@ -701,7 +710,7 @@ app.post('/api/backups/restore', async (req, res) => {
     if (backup.checksumSha256 && sha256File(sourcePath) !== backup.checksumSha256) {
       return res.status(400).json({ error: 'Bản sao lưu đã bị thay đổi hoặc hỏng.' });
     }
-    stagedPath = path.join(backupDir, `restore-${Date.now()}.db`);
+    stagedPath = path.join(backupDir, `restore-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.db`);
     if (sourcePath.endsWith('.enc')) await decryptBackupFile(sourcePath, stagedPath);
     else fs.copyFileSync(sourcePath, stagedPath);
     fs.chmodSync(stagedPath, 0o600);
@@ -709,13 +718,31 @@ app.post('/api/backups/restore', async (req, res) => {
       fs.rmSync(stagedPath, { force: true });
       return res.status(400).json({ error: 'Bản sao lưu không vượt qua kiểm tra toàn vẹn SQLite.' });
     }
-    const safetyPath = path.join(backupDir, `before-restore-${Date.now()}.db.enc`);
+    const safetyPath = path.join(backupDir, `before-restore-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.db.enc`);
     const safetyRawPath = `${safetyPath}.raw`;
     await sqlite.backup(safetyRawPath);
     await encryptBackupFile(safetyRawPath, safetyPath);
-    writeTenantAudit(req, 'backup_restore_requested', 'backup', backup.id, { safetyPath: path.basename(safetyPath) });
-    sqlite.close();
-    fs.renameSync(stagedPath, DB_PATH);
+    // The backup log is written after the snapshot is created, so preserve
+    // the selected backup record and the restore event inside the restored
+    // database before it replaces the active file.
+    const stagedDatabase = new Database(stagedPath);
+    try {
+      stagedDatabase.prepare(
+        'INSERT OR IGNORE INTO backup_logs (id, tenant_id, instance_id, file_path, size_bytes, checksum_sha256, schema_version, verified, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).run(backup.id, backup.tenantId, backup.instanceId, backup.filePath, backup.sizeBytes, backup.checksumSha256, backup.schemaVersion, backup.verified ? 1 : 0, backup.createdBy, backup.createdAt);
+      stagedDatabase.prepare(
+        'INSERT INTO audit_logs (id, actor_type, actor_id, action, entity_type, entity_id, tenant_id, meta, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).run(uuid(), 'tenant_user', req.user.id, 'backup_restore_requested', 'backup', backup.id, req.user.tenantId, JSON.stringify({ safetyPath: path.basename(safetyPath) }), new Date().toISOString());
+    } finally {
+      stagedDatabase.close();
+    }
+    if (PER_TENANT_DATABASES) {
+      tenantRegistry.replaceTenantDatabase(req.user.tenantId, stagedPath);
+    } else {
+      sqlite.close();
+      fs.renameSync(stagedPath, DB_PATH);
+    }
+    stagedPath = null;
     res.json({ success: true, message: 'Đã khôi phục dữ liệu. Máy chủ sẽ khởi động lại.' });
     setTimeout(() => process.exit(0), 250);
   } catch (err) {

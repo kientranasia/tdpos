@@ -1,12 +1,11 @@
 import express, { Request, Response, NextFunction } from 'express';
 import { db, tenantRegistry } from './db';
 import * as schema from './schema';
-import { eq, sql, desc } from 'drizzle-orm';
+import { and, eq, sql, desc } from 'drizzle-orm';
 import { v4 as uuid } from 'uuid';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { JWT_SECRET } from './runtimeConfig';
-import { MIN_PASSWORD_LENGTH } from './runtimeConfig';
+import { DATABASE_MODE, JWT_SECRET, MIN_PASSWORD_LENGTH, PER_TENANT_DATABASES } from './runtimeConfig';
 
 const router = express.Router();
 const MONTHLY_SUBSCRIPTION_PRICE = 150000;
@@ -60,6 +59,27 @@ const writeAuditLog = (adminId: string, action: string, entityType: string, enti
     meta: meta ? JSON.stringify(redactSensitiveMeta(meta)) : null,
     createdAt: new Date().toISOString(),
   }).run();
+};
+
+const tenantRows = () => db.select().from(schema.tenants).all();
+const tenantDatabase = (tenantId: string) => tenantRegistry.ensureTenantDatabase(tenantId).db;
+
+const tenantOperationalStats = (tenantId: string) => {
+  const tenantDb = tenantDatabase(tenantId);
+  const productCount = tenantDb.select({ count: sql<number>`count(*)` }).from(schema.products).where(eq(schema.products.tenantId, tenantId)).get();
+  const customerCount = tenantDb.select({ count: sql<number>`count(*)` }).from(schema.customers).where(eq(schema.customers.tenantId, tenantId)).get();
+  const invoiceCount = tenantDb.select({ count: sql<number>`count(*)` }).from(schema.invoices).where(eq(schema.invoices.tenantId, tenantId)).get();
+  const revenue = tenantDb.select({ total: sql<number>`COALESCE(SUM(paid_amount), 0)` }).from(schema.invoices).where(eq(schema.invoices.tenantId, tenantId)).get();
+  const debt = tenantDb.select({ total: sql<number>`COALESCE(SUM(total_debt), 0)` }).from(schema.customers).where(eq(schema.customers.tenantId, tenantId)).get();
+  const users = tenantDb.select({ count: sql<number>`count(*)` }).from(schema.users).where(eq(schema.users.tenantId, tenantId)).get();
+  return {
+    productCount: Number(productCount?.count || 0),
+    customerCount: Number(customerCount?.count || 0),
+    invoiceCount: Number(invoiceCount?.count || 0),
+    revenue: Number(revenue?.total || 0),
+    debt: Number(debt?.total || 0),
+    userCount: Number(users?.count || 0),
+  };
 };
 
 // Admin Auth Middleware
@@ -172,36 +192,38 @@ const ensureAdminRole = (req: Request, res: Response, roles: Array<'super_admin'
 router.get('/stats', (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin', 'support'])) return;
-    const totalTenants = db.select({ count: sql<number>`count(*)` }).from(schema.tenants).get();
-    const activeTenants = db.select({ count: sql<number>`count(*)` }).from(schema.tenants)
-      .where(eq(schema.tenants.status, 'active')).get();
-    const totalUsers = db.select({ count: sql<number>`count(*)` }).from(schema.users).get();
-    const totalProducts = db.select({ count: sql<number>`count(*)` }).from(schema.products).get();
-    const totalCustomers = db.select({ count: sql<number>`count(*)` }).from(schema.customers).get();
-    const totalInvoices = db.select({ count: sql<number>`count(*)` }).from(schema.invoices).get();
+    const allTenants = tenantRows();
+    const operationalStats = allTenants.map((tenant) => {
+      try {
+        return { ...tenantOperationalStats(tenant.id), databaseError: false };
+      } catch (error) {
+        console.error(`Tenant stats unavailable for ${tenant.id}:`, error);
+        return { productCount: 0, customerCount: 0, invoiceCount: 0, revenue: 0, debt: 0, userCount: 0, databaseError: true };
+      }
+    });
+    const totalTenants = allTenants.length;
+    const activeTenants = allTenants.filter((tenant) => tenant.status === 'active').length;
+    const totalUsers = operationalStats.reduce((sum, value) => sum + value.userCount, 0);
+    const totalProducts = operationalStats.reduce((sum, value) => sum + value.productCount, 0);
+    const totalCustomers = operationalStats.reduce((sum, value) => sum + value.customerCount, 0);
+    const totalInvoices = operationalStats.reduce((sum, value) => sum + value.invoiceCount, 0);
     const pendingSubscriptions = db.select({ count: sql<number>`count(*)` }).from(schema.subscriptions)
       .where(eq(schema.subscriptions.status, 'pending_review')).get();
-
-    // Calculate total revenue across all tenants
-    const revenueResult = db.select({
-      total: sql<number>`COALESCE(SUM(paid_amount), 0)`
-    }).from(schema.invoices).get();
-
-    // Calculate total debt across all customers
-    const debtResult = db.select({
-      total: sql<number>`COALESCE(SUM(total_debt), 0)`
-    }).from(schema.customers).get();
+    const totalRevenue = operationalStats.reduce((sum, value) => sum + value.revenue, 0);
+    const totalDebt = operationalStats.reduce((sum, value) => sum + value.debt, 0);
 
     res.json({
-      totalTenants: totalTenants?.count || 0,
-      activeTenants: activeTenants?.count || 0,
-      totalUsers: totalUsers?.count || 0,
-      totalProducts: totalProducts?.count || 0,
-      totalCustomers: totalCustomers?.count || 0,
-      totalInvoices: totalInvoices?.count || 0,
+      totalTenants,
+      activeTenants,
+      totalUsers,
+      totalProducts,
+      totalCustomers,
+      totalInvoices,
       pendingSubscriptions: pendingSubscriptions?.count || 0,
-      totalRevenue: revenueResult?.total || 0,
-      totalDebt: debtResult?.total || 0,
+      totalRevenue,
+      totalDebt,
+      databaseMode: DATABASE_MODE,
+      databaseErrors: operationalStats.filter((value) => value.databaseError).length,
     });
   } catch (err) {
     console.error('GET /api/admin/stats error:', err);
@@ -355,6 +377,7 @@ router.get('/tenants', (req, res) => {
         userCount: userCount?.count || 0,
         productCount: productCount?.count || 0,
         invoiceCount: invoiceCount?.count || 0,
+        databaseHealth: tenantRegistry.inspectTenantDatabase(t.id),
       };
     });
 
@@ -393,10 +416,37 @@ router.get('/tenants/:id', (req, res) => {
       productCount: productCount?.count || 0,
       customerCount: customerCount?.count || 0,
       invoiceCount: invoiceCount?.count || 0,
+      databaseHealth: tenantRegistry.inspectTenantDatabase(req.params.id),
     });
   } catch (err) {
     console.error('GET /api/admin/tenants/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.get('/tenants/:id/database', (req, res) => {
+  try {
+    if (!ensureAdminRole(req, res, ['super_admin', 'admin', 'support'])) return;
+    const tenant = db.select({ id: schema.tenants.id }).from(schema.tenants).where(eq(schema.tenants.id, req.params.id)).get();
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+    res.json({ mode: DATABASE_MODE, ...tenantRegistry.inspectTenantDatabase(req.params.id) });
+  } catch (err) {
+    console.error('GET /api/admin/tenants/:id/database error:', err);
+    res.status(500).json({ error: 'Không thể kiểm tra database tenant' });
+  }
+});
+
+router.post('/tenants/:id/database/provision', (req, res) => {
+  try {
+    if (!ensureAdminRole(req, res, ['super_admin'])) return;
+    const tenant = db.select({ id: schema.tenants.id }).from(schema.tenants).where(eq(schema.tenants.id, req.params.id)).get();
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+    tenantRegistry.provisionTenantDatabase(req.params.id);
+    writeAuditLog(req.user.id, 'tenant_database_provisioned', 'tenant_database', req.params.id, req.params.id, { mode: DATABASE_MODE });
+    res.json({ mode: DATABASE_MODE, ...tenantRegistry.inspectTenantDatabase(req.params.id) });
+  } catch (err) {
+    console.error('POST /api/admin/tenants/:id/database/provision error:', err);
+    res.status(500).json({ error: 'Không thể khởi tạo lại database tenant' });
   }
 });
 
@@ -644,19 +694,25 @@ router.get('/users', (req, res) => {
 router.post('/users', (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin'])) return;
-    const allowedRoles = ['owner', 'manager', 'cashier', 'warehouse'] as const;
+    const allowedRoles = ['owner', 'manager', 'cashier', 'warehouse', 'accountant'] as const;
     if (!allowedRoles.includes(req.body.role)) {
-      return res.status(400).json({ error: 'Invalid role. Allowed: owner, manager, cashier' });
+      return res.status(400).json({ error: 'Invalid role. Allowed: owner, manager, cashier, warehouse, accountant' });
     }
     const tenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, req.body.tenantId)).get();
     if (!tenant) {
       return res.status(404).json({ error: 'Tenant not found' });
     }
+    const tenantDb = tenantDatabase(tenant.id);
+    const userCount = tenantDb.select({ count: sql<number>`count(*)` }).from(schema.users)
+      .where(eq(schema.users.tenantId, tenant.id)).get();
+    if (Number(tenant.maxUsers || 0) > 0 && Number(userCount?.count || 0) >= Number(tenant.maxUsers)) {
+      return res.status(409).json({ error: `Gói hiện tại giới hạn ${tenant.maxUsers} tài khoản.` });
+    }
     if (!req.body.password || String(req.body.password).length < MIN_PASSWORD_LENGTH) return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
     const user = {
       id: uuid(),
       name: String(req.body.name || '').trim(),
-      email: String(req.body.email || '').trim().toLowerCase(),
+      email: safeEmail(req.body.email),
       phone: String(req.body.phone || '').trim(),
       role: req.body.role,
       tenantId: req.body.tenantId,
@@ -665,6 +721,8 @@ router.post('/users', (req, res) => {
       password: bcrypt.hashSync(String(req.body.password), 12),
     };
     if (!user.name || !user.email) return res.status(400).json({ error: 'Name and email are required' });
+    const duplicateEmail = db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.email, user.email)).get();
+    if (duplicateEmail) return res.status(409).json({ error: 'Email đã được sử dụng.' });
     db.insert(schema.users).values(user).run();
     tenantRegistry.syncUserToTenant(user);
     writeAuditLog(req.user.id, 'user_created', 'user', user.id, user.tenantId, { role: user.role });
@@ -680,14 +738,19 @@ router.patch('/users/:id', (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin'])) return;
     if (req.body.role) {
-      const allowedRoles = ['owner', 'manager', 'cashier'] as const;
+      const allowedRoles = ['owner', 'manager', 'cashier', 'warehouse', 'accountant'] as const;
       if (!allowedRoles.includes(req.body.role)) {
-        return res.status(400).json({ error: 'Invalid role. Allowed: owner, manager, cashier' });
+        return res.status(400).json({ error: 'Invalid role. Allowed: owner, manager, cashier, warehouse, accountant' });
       }
     }
     const updates: Record<string, any> = {};
     for (const field of ['name', 'email', 'phone', 'role', 'status']) {
       if (req.body?.[field] !== undefined) updates[field] = field === 'email' ? String(req.body[field]).trim().toLowerCase() : String(req.body[field]).trim();
+    }
+    if (updates.email) {
+      const duplicateEmail = db.select({ id: schema.users.id }).from(schema.users)
+        .where(and(eq(schema.users.email, updates.email), sql`${schema.users.id} != ${req.params.id}`)).get();
+      if (duplicateEmail) return res.status(409).json({ error: 'Email đã được sử dụng.' });
     }
     if (req.body.password) {
       if (String(req.body.password).length < MIN_PASSWORD_LENGTH) return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
@@ -877,9 +940,23 @@ router.get('/audit-logs', (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin', 'support'])) return;
     const { tenantId, limit = '100' } = req.query;
-    let logs = db.select().from(schema.auditLogs).orderBy(desc(schema.auditLogs.createdAt)).all();
-    if (tenantId) logs = logs.filter((log) => log.tenantId === tenantId);
-    res.json(logs.slice(0, Number(limit) || 100).map((log) => ({
+    const requestedTenantId = tenantId ? String(tenantId) : '';
+    // In per-tenant mode tenant activity is written to the tenant database;
+    // the control database contains only platform-admin activity. Returning
+    // control rows alone would make the SaaS audit screen silently incomplete.
+    let logs = db.select().from(schema.auditLogs).all();
+    if (PER_TENANT_DATABASES) {
+      logs = logs.filter((log) => log.actorType === 'admin');
+      const tenants = requestedTenantId
+        ? tenantRows().filter((tenant) => tenant.id === requestedTenantId)
+        : tenantRows();
+      for (const tenant of tenants) {
+        logs = logs.concat(tenantDatabase(tenant.id).select().from(schema.auditLogs).all());
+      }
+    }
+    if (requestedTenantId) logs = logs.filter((log) => log.tenantId === requestedTenantId);
+    logs.sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+    res.json(logs.slice(0, Math.min(500, Math.max(1, Number(limit) || 100))).map((log) => ({
       ...log,
       meta: log.meta ? JSON.parse(log.meta) : null,
     })));
