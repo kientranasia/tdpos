@@ -1,0 +1,7 @@
+# Cloudflare terminates public HTTPS. The tunnel connects to this gateway over
+# HTTP, so the explicit http:// address prevents Caddy's automatic HTTPS
+# redirect from creating a loop behind the tunnel.
+http://{$HKDPLUS_HOSTNAME:hkdsmart.trandao.vn} {
+  encode gzip zstd
+  reverse_proxy web:80
+}

@@ -21,17 +21,31 @@ Mặc định:
 
 Các biến môi trường quan trọng: `JWT_SECRET`, `API_PORT`, `HKDPLUS_INSTANCE_SECRET`, `HKDPLUS_LICENSE_PUBLIC_KEY`, `HKDPLUS_LICENSE_SERVER_URL` (tùy chọn, dùng khi có license server online).
 
-## Cài đặt Docker trong mạng LAN
+## Cài đặt Docker cho bản online (Cloudflare Tunnel)
 
 ```bash
 docker compose up -d --build
 ```
 
-Web mặc định mở qua HTTPS nội bộ tại `https://hkdplus.lan` (cổng `443`); cổng `80` chỉ dùng để chuyển hướng sang HTTPS. Nếu cổng 80/443 đang được dùng, đặt `WEB_HTTP_PORT` và `WEB_HTTPS_PORT` rồi chạy `docker compose up -d --build`. API không public ra ngoài, chỉ được reverse proxy trong mạng Docker chuyển tiếp. Dữ liệu SQLite nằm trong volume `tdpos_data`.
+Compose chính dành cho máy chủ online đứng sau Cloudflare Tunnel. Cloudflare xử lý HTTPS công khai; gateway trên máy chủ chỉ lắng nghe HTTP nội bộ, mặc định tại `127.0.0.1:4534`. API không public ra ngoài, chỉ được reverse proxy trong mạng Docker chuyển tiếp. Dữ liệu SQLite nằm trong volume `tdpos_data`.
+
+Trong cấu hình Cloudflare Tunnel, đặt service của hostname `hkdsmart.trandao.vn` tới:
+
+```text
+http://127.0.0.1:4534
+```
+
+Nếu `cloudflared` chạy trong container riêng, `127.0.0.1` là chính container đó; khi ấy dùng địa chỉ host mà container truy cập được hoặc dùng network mode phù hợp. Không trỏ tunnel vào cổng HTTPS nội bộ của bản offline.
+
+Không bật redirect HTTPS ở origin. Nếu Cloudflare đang để chế độ `Flexible`, đổi sang `Full` hoặc `Full (strict)` khi đi qua origin HTTPS trực tiếp; với Cloudflare Tunnel hiện tại, origin HTTP như trên là cấu hình đơn giản và tránh vòng lặp redirect.
+
+Nếu đổi hostname hoặc cổng, tạo `.env` từ `.env.prod.example` và đặt `HKDPLUS_HOSTNAME`, `HKDPLUS_PUBLIC_URL`, `WEB_HTTP_PORT` tương ứng trước khi chạy Compose.
 
 Docker không chạy seed và không tạo tài khoản mặc định. Lần đầu, owner đăng ký trên máy chủ hoặc dùng setup token một lần; sau đó owner tạo các tài khoản nhân viên trong Cài đặt → Nhân viên & quyền.
 
 Nếu khởi động với cơ sở dữ liệu trống, mã khởi tạo owner một lần được in trong log API (`docker compose logs api`). Chỉ gửi mã này cho người quản trị cửa hàng; mã sẽ vô hiệu ngay sau khi owner đầu tiên được tạo. Không sao chép file `.env` phát triển vào gói cài đặt khách hàng; secret production phải để trống để instance tự sinh hoặc thay bằng secret ngẫu nhiên riêng cho khách hàng.
+
+## Cài đặt Docker offline trong mạng LAN
 
 Để chạy gói offline có reverse proxy và HTTPS nội bộ:
 
