@@ -4,6 +4,7 @@ import * as schema from './schema';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { DATA_DIR } from './runtimeConfig';
+import { TenantDatabaseRegistry } from './tenantDatabase';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -85,6 +86,10 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
   addColumnIfMissing('tenants', 'package_name', "package_name TEXT NOT NULL DEFAULT 'Starter 1'");
   addColumnIfMissing('tenants', 'max_users', 'max_users INTEGER NOT NULL DEFAULT 1');
   addColumnIfMissing('tenants', 'package_price_monthly', 'package_price_monthly REAL NOT NULL DEFAULT 150000');
+  addColumnIfMissing('tenants', 'database_engine', "database_engine TEXT NOT NULL DEFAULT 'shared_sqlite'");
+  addColumnIfMissing('tenants', 'database_key', "database_key TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing('tenants', 'database_status', "database_status TEXT NOT NULL DEFAULT 'shared'");
+  addColumnIfMissing('tenants', 'database_provisioned_at', 'database_provisioned_at TEXT');
   if (process.env.OFFLINE_MODE !== 'false') {
     sqlite.prepare("UPDATE tenants SET max_users = 25 WHERE package_code = 'starter_1' AND max_users = 1").run();
   }
@@ -809,5 +814,17 @@ if (!defaultPackage) {
   `).run('pkg-starter-1', 'starter_1', 'Starter 1', 1, 150000, 1, 'active', now);
 }
 
-export const db = drizzle(sqlite, { schema });
-export { sqlite, DB_PATH };
+const controlDb = drizzle(sqlite, { schema });
+// The proxy keeps the existing route code intact while selecting a tenant
+// database from the request-scoped context on the SaaS branch.
+const tenantDatabaseRegistry = new TenantDatabaseRegistry({
+  controlSqlite: sqlite,
+  controlDb,
+  dataDir: DATA_DIR,
+});
+const tenantAwareDb = tenantDatabaseRegistry.createDbProxy(controlDb);
+const tenantAwareSqlite = tenantDatabaseRegistry.createSqliteProxy(sqlite);
+
+export const db = tenantAwareDb;
+export const tenantRegistry = tenantDatabaseRegistry;
+export { controlDb, tenantAwareSqlite as sqlite, DB_PATH };

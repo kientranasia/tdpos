@@ -29,6 +29,10 @@ export const tenants = sqliteTable('tenants', {
   subscriptionStartAt: text('subscription_start_at'),
   subscriptionEndAt: text('subscription_end_at'),
   settings: text('settings'), // JSON string for TenantSettings
+  databaseEngine: text('database_engine').notNull().default('shared_sqlite'),
+  databaseKey: text('database_key').notNull().default(''),
+  databaseStatus: text('database_status').notNull().default('shared'),
+  databaseProvisionedAt: text('database_provisioned_at'),
   createdAt: text('created_at').notNull(),
 });
 

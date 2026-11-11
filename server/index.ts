@@ -3,7 +3,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import Database from 'better-sqlite3';
 import cors from 'cors';
 import morgan from 'morgan';
-import { db } from './db';
+import { controlDb, db, tenantRegistry } from './db';
 import * as schema from './schema';
 import { eq, desc, and, like, sql, inArray, ne } from 'drizzle-orm';
 import { v4 as uuid } from 'uuid';
@@ -17,6 +17,7 @@ import { pipeline } from 'stream/promises';
 import { DB_PATH, sqlite } from './db';
 import {
   API_PORT,
+  DATABASE_MODE,
   ENABLE_PLATFORM_ADMIN,
   JWT_SECRET,
   MIN_PASSWORD_LENGTH,
@@ -248,7 +249,14 @@ const authenticateUser = (req: Request, res: Response, next: NextFunction) => {
       return res.status(401).json({ error: 'Phiên đăng nhập đã bị thu hồi' });
     }
     req.user = { ...decoded, id: user.id, email: user.email, tenantId: user.tenantId, role: user.role, sessionVersion: user.sessionVersion };
-    next();
+    // The JWT is validated against the control database first. All following
+    // tenant routes run inside this request-scoped database context.
+    try {
+      return tenantRegistry.runWithTenantDatabase(user.tenantId, () => next());
+    } catch (err) {
+      console.error('Tenant database routing error:', err);
+      return res.status(503).json({ error: 'Tenant database chưa sẵn sàng. Vui lòng thử lại sau.' });
+    }
   } catch (err) {
     return res.status(401).json({ error: 'Invalid token' });
   }
@@ -585,8 +593,9 @@ app.get('/api/system/status', (req, res) => {
       addresses: ownerOnly ? interfaces : [],
       localUrl: ownerOnly ? (process.env.HKDPLUS_PUBLIC_URL || 'https://hkdplus.lan') : null,
       apiPort: PORT,
-      database: 'SQLite',
-      dataPath: ownerOnly ? path.dirname(DB_PATH) : null,
+      database: DATABASE_MODE === 'per_tenant' ? 'SQLite per tenant' : 'SQLite',
+      databaseMode: DATABASE_MODE,
+      dataPath: OFFLINE_MODE && ownerOnly ? path.dirname(DB_PATH) : null,
       license: license ? { status: license.status, customerName: license.customerName, expiresAt: license.expiresAt, lastValidatedAt: license.lastValidatedAt } : { status: 'unlicensed' },
       tenantId: req.user.tenantId,
     });
@@ -1125,7 +1134,8 @@ app.post('/api/users', async (req, res) => {
     }
 
     const existing = db.select().from(schema.users).where(eq(schema.users.email, email)).get();
-    if (existing) return res.status(400).json({ error: 'Email already exists' });
+    const globalExisting = controlDb.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.email, email)).get();
+    if (existing || globalExisting) return res.status(400).json({ error: 'Email already exists' });
 
     const hashedPassword = await bcrypt.hash(password, 12);
     const user = {
@@ -1141,6 +1151,7 @@ app.post('/api/users', async (req, res) => {
     };
 
     db.insert(schema.users).values(user).run();
+    tenantRegistry.syncUserToControl(user);
     writeTenantAudit(req, 'user_created', 'user', user.id, { role: user.role, email: user.email });
     const { password: _password, ...response } = user;
     res.status(201).json(response);
@@ -1189,6 +1200,7 @@ app.patch('/api/users/:id', async (req, res) => {
     writeTenantAudit(req, 'user_updated', 'user', existing.id, { role: updates.role || existing.role, status: updates.status || existing.status, passwordChanged: Boolean(updates.password) });
     const updated = db.select().from(schema.users).where(eq(schema.users.id, existing.id)).get();
     if (!updated) return res.status(404).json({ error: 'User not found' });
+    tenantRegistry.syncUserToControl(updated);
     const { password: _password, ...response } = updated;
     res.json(response);
   } catch (err) {
@@ -1208,6 +1220,7 @@ app.delete('/api/users/:id', (req, res) => {
       return res.status(400).json({ error: 'Cannot delete owner account' });
     }
     db.delete(schema.users).where(eq(schema.users.id, req.params.id)).run();
+    tenantRegistry.deleteUserFromControl(existing.id);
     writeTenantAudit(req, 'user_deleted', 'user', existing.id, { role: existing.role });
     res.json({ success: true });
   } catch (err) {

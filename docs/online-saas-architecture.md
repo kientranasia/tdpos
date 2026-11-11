@@ -34,21 +34,33 @@ tenant by sending a tenant id in the request body.
   bootstrap runs only when the admin table is empty.
 - `HKDPLUS_PUBLIC_URL`, `HKDPLUS_HOSTNAME`, and `CORS_ORIGINS` are deployment
   settings, so a Cloudflare hostname can be changed without changing code.
-- The current data provider is still one SQLite database. It is not yet
-  presented as database-per-tenant isolation.
+- `DATABASE_MODE=per_tenant` enables a request-scoped SQLite database file for
+  each tenant under the data volume. The control database keeps tenant/user
+  registry data and platform-admin records; business routes are routed to the
+  tenant file after JWT validation.
+- Provisioning is idempotent: a tenant database is created from the current
+  schema and only that tenant's rows are copied. Global permission/package
+  definitions are copied; child rows are selected through their tenant-owned
+  parent. The control record stores database key, engine, status, and the last
+  provision time.
+- User changes made by the tenant owner are mirrored to the control registry so
+  the next login can be resolved without allowing a client to choose a tenant.
+- This first isolation adapter uses SQLite files to keep the online branch
+  deployable with the existing application. PostgreSQL remains the target
+  engine before high-scale production rollout; the provider boundary is kept
+  separate so that migration does not touch the offline branch.
 
 ## Database migration plan
 
-1. Introduce a control-plane database provider and tenant registry.
+1. Replace the SQLite tenant adapter with the PostgreSQL provider for hosted
+   production, while keeping SQLite as the offline provider.
 2. Add a tenant database record with a stable database key and provisioning
    status; never expose connection credentials to the client.
 3. Extract the existing schema/migrations into a reusable tenant-database
-   migrator.
-4. Implement idempotent tenant provisioning from the platform admin.
-5. Add a request-scoped tenant database provider to the API.
-6. Migrate the current SQLite data into the first tenant database and verify
+   migrator and run schema-version checks for existing tenant files.
+4. Migrate the current SQLite data into the first tenant database and verify
    product, stock, invoice, debt, cashbook, user, and permission counts.
-7. Add per-tenant backup/restore, migration status, audit logs, and failure
+5. Add per-tenant backup/restore, migration status, audit logs, and failure
    recovery before opening tenant creation to production operations.
 
 PostgreSQL is the target online engine. SQLite remains the offline engine.

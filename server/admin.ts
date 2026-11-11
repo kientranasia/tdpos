@@ -1,5 +1,5 @@
 import express, { Request, Response, NextFunction } from 'express';
-import { db } from './db';
+import { db, tenantRegistry } from './db';
 import * as schema from './schema';
 import { eq, sql, desc } from 'drizzle-orm';
 import { v4 as uuid } from 'uuid';
@@ -336,15 +336,16 @@ router.get('/tenants', (req, res) => {
 
     // Enrich with user count per tenant
     const enriched = allTenants.map(t => {
-      const userCount = db.select({ count: sql<number>`count(*)` })
+      const tenantDb = tenantRegistry.ensureTenantDatabase(t.id).db;
+      const userCount = tenantDb.select({ count: sql<number>`count(*)` })
         .from(schema.users)
         .where(eq(schema.users.tenantId, t.id))
         .get();
-      const productCount = db.select({ count: sql<number>`count(*)` })
+      const productCount = tenantDb.select({ count: sql<number>`count(*)` })
         .from(schema.products)
         .where(eq(schema.products.tenantId, t.id))
         .get();
-      const invoiceCount = db.select({ count: sql<number>`count(*)` })
+      const invoiceCount = tenantDb.select({ count: sql<number>`count(*)` })
         .from(schema.invoices)
         .where(eq(schema.invoices.tenantId, t.id))
         .get();
@@ -372,15 +373,16 @@ router.get('/tenants/:id', (req, res) => {
       .where(eq(schema.tenants.id, req.params.id)).get();
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
-    const users = db.select().from(schema.users)
+    const tenantDb = tenantRegistry.ensureTenantDatabase(req.params.id).db;
+    const users = tenantDb.select().from(schema.users)
       .where(eq(schema.users.tenantId, req.params.id)).all();
-    const productCount = db.select({ count: sql<number>`count(*)` })
+    const productCount = tenantDb.select({ count: sql<number>`count(*)` })
       .from(schema.products)
       .where(eq(schema.products.tenantId, req.params.id)).get();
-    const customerCount = db.select({ count: sql<number>`count(*)` })
+    const customerCount = tenantDb.select({ count: sql<number>`count(*)` })
       .from(schema.customers)
       .where(eq(schema.customers.tenantId, req.params.id)).get();
-    const invoiceCount = db.select({ count: sql<number>`count(*)` })
+    const invoiceCount = tenantDb.select({ count: sql<number>`count(*)` })
       .from(schema.invoices)
       .where(eq(schema.invoices.tenantId, req.params.id)).get();
 
@@ -399,7 +401,7 @@ router.get('/tenants/:id', (req, res) => {
 });
 
 // Create new tenant (with owner user)
-router.post('/tenants', (req, res) => {
+router.post('/tenants', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin'])) return;
     const { tenant: tenantData, owner: ownerData } = req.body || {};
@@ -470,6 +472,10 @@ router.post('/tenants', (req, res) => {
       tx.insert(schema.users).values(owner).run();
     });
 
+    // Provision the tenant database only after the control transaction has
+    // committed, so a retry can safely resume without creating duplicates.
+    await tenantRegistry.provisionTenantDatabase(tenantId);
+
     const created = db.select().from(schema.tenants)
       .where(eq(schema.tenants.id, tenantId)).get();
     writeAuditLog(req.user.id, 'tenant_created', 'tenant', tenantId, tenantId, { ownerEmail });
@@ -515,6 +521,7 @@ router.patch('/tenants/:id', (req, res) => {
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'No valid fields to update' });
     db.update(schema.tenants).set(updates)
       .where(eq(schema.tenants.id, req.params.id)).run();
+    tenantRegistry.syncTenantRecord(req.params.id);
 
     const updated = db.select().from(schema.tenants)
       .where(eq(schema.tenants.id, req.params.id)).get();
@@ -551,6 +558,7 @@ router.post('/tenants/:id/status', (req, res) => {
         .set({ sessionVersion: sql`${schema.users.sessionVersion} + 1` })
         .where(eq(schema.users.tenantId, req.params.id)).run();
     });
+    tenantRegistry.syncTenantRecord(req.params.id);
 
     const updated = db.select().from(schema.tenants)
       .where(eq(schema.tenants.id, req.params.id)).get();
@@ -584,6 +592,7 @@ router.delete('/tenants/:id', (req, res) => {
     db.delete(schema.users).where(eq(schema.users.tenantId, tenantId)).run();
     db.delete(schema.subscriptions).where(eq(schema.subscriptions.tenantId, tenantId)).run();
     db.delete(schema.tenants).where(eq(schema.tenants.id, tenantId)).run();
+    tenantRegistry.deleteTenantDatabase(tenantId);
     writeAuditLog(req.user.id, 'tenant_deleted', 'tenant', tenantId, tenantId);
 
     res.json({ success: true });
@@ -657,6 +666,7 @@ router.post('/users', (req, res) => {
     };
     if (!user.name || !user.email) return res.status(400).json({ error: 'Name and email are required' });
     db.insert(schema.users).values(user).run();
+    tenantRegistry.syncUserToTenant(user);
     writeAuditLog(req.user.id, 'user_created', 'user', user.id, user.tenantId, { role: user.role });
     const { password: _, ...userData } = user;
     res.status(201).json(userData);
@@ -689,6 +699,7 @@ router.patch('/users/:id', (req, res) => {
     const updated = db.select().from(schema.users)
       .where(eq(schema.users.id, req.params.id)).get();
     if (!updated) return res.status(404).json({ error: 'User not found' });
+    tenantRegistry.syncUserToTenant(updated);
     const { password: _, ...userData } = updated;
     writeAuditLog(req.user.id, 'user_updated', 'user', req.params.id, userData.tenantId, req.body);
     res.json(userData);
@@ -704,6 +715,7 @@ router.delete('/users/:id', (req, res) => {
     const existing = db.select().from(schema.users).where(eq(schema.users.id, req.params.id)).get();
     db.delete(schema.users).where(eq(schema.users.id, req.params.id)).run();
     if (existing) {
+      tenantRegistry.deleteUserFromTenant(existing.tenantId, existing.id);
       writeAuditLog(req.user.id, 'user_deleted', 'user', req.params.id, existing.tenantId);
     }
     res.json({ success: true });

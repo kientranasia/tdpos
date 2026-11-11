@@ -12,6 +12,7 @@ services:
       NODE_ENV: production
       API_PORT: 3101
       OFFLINE_MODE: "true"
+      DATABASE_MODE: "shared"
       JWT_SECRET: ${JWT_SECRET:-}
       HKDPLUS_INSTANCE_SECRET: ${HKDPLUS_INSTANCE_SECRET:-}
       HKDPLUS_INSTANCE_ID: ${HKDPLUS_INSTANCE_ID:-}

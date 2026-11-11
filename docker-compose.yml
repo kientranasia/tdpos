@@ -14,6 +14,7 @@ services:
       # The default Compose stack is for the online deployment behind
       # Cloudflare Tunnel. Use docker-compose.offline.yml for LAN/offline.
       OFFLINE_MODE: ${OFFLINE_MODE:-false}
+      DATABASE_MODE: ${DATABASE_MODE:-shared}
       ENABLE_PLATFORM_ADMIN: ${ENABLE_PLATFORM_ADMIN:-false}
       ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-}
       ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}

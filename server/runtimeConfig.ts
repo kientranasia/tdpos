@@ -9,6 +9,12 @@ const parseBoolean = (value: string | undefined, fallback: boolean) => {
 
 export const OFFLINE_MODE = parseBoolean(process.env.OFFLINE_MODE, true);
 export const ENABLE_PLATFORM_ADMIN = !OFFLINE_MODE && parseBoolean(process.env.ENABLE_PLATFORM_ADMIN, false);
+// Online SaaS can opt into one SQLite file per tenant while the shared
+// database remains the safe default until the migration has been verified.
+export const DATABASE_MODE = !OFFLINE_MODE && process.env.DATABASE_MODE?.trim().toLowerCase() === 'per_tenant'
+  ? 'per_tenant'
+  : 'shared';
+export const PER_TENANT_DATABASES = DATABASE_MODE === 'per_tenant';
 export const API_PORT = Number(process.env.API_PORT || 3101);
 export const DATA_DIR = path.resolve(process.env.HKDPLUS_DATA_DIR || path.join(process.cwd(), 'data'));
 const configuredSetupToken = process.env.HKDPLUS_SETUP_TOKEN?.trim() || '';

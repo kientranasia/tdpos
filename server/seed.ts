@@ -34,6 +34,10 @@ sqlite.exec(`
     subscription_start_at TEXT,
     subscription_end_at TEXT,
     settings TEXT,
+    database_engine TEXT NOT NULL DEFAULT 'shared_sqlite',
+    database_key TEXT NOT NULL DEFAULT '',
+    database_status TEXT NOT NULL DEFAULT 'shared',
+    database_provisioned_at TEXT,
     created_at TEXT NOT NULL
   );
 
