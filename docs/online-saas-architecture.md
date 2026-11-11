@@ -34,6 +34,9 @@ tenant by sending a tenant id in the request body.
   bootstrap runs only when the admin table is empty.
 - `HKDPLUS_PUBLIC_URL`, `HKDPLUS_HOSTNAME`, and `CORS_ORIGINS` are deployment
   settings, so a Cloudflare hostname can be changed without changing code.
+- The production Compose gateway listens on the host port configured by
+  `WEB_HTTP_PORT` (default `6666`) and expects the Cloudflare Tunnel to use an
+  HTTP origin; public HTTPS remains terminated at Cloudflare.
 - `DATABASE_MODE=per_tenant` enables a request-scoped SQLite database file for
   each tenant under the data volume. The control database keeps tenant/user
   registry data and platform-admin records; business routes are routed to the

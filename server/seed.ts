@@ -278,15 +278,18 @@ if (!existingStarterPackage) {
 // explicitly used for the hosted control plane, credentials must be supplied
 // by the operator; never create or print a known password.
 if (ENABLE_PLATFORM_ADMIN) {
-  const bootstrapAdminEmail = process.env.ADMIN_BOOTSTRAP_EMAIL?.trim();
-  const bootstrapAdminPassword = process.env.ADMIN_BOOTSTRAP_PASSWORD || '';
-  const bootstrapAdminName = process.env.ADMIN_BOOTSTRAP_NAME?.trim() || 'System Admin';
-  const bootstrapAdminRole = process.env.ADMIN_BOOTSTRAP_ROLE?.trim() || 'super_admin';
-  if (!bootstrapAdminEmail || bootstrapAdminPassword.length < MIN_PASSWORD_LENGTH) {
-    throw new Error(`ADMIN_BOOTSTRAP_EMAIL và ADMIN_BOOTSTRAP_PASSWORD (ít nhất ${MIN_PASSWORD_LENGTH} ký tự) là bắt buộc khi ENABLE_PLATFORM_ADMIN=true.`);
-  }
-  const existingAdmin = sqlite.prepare('SELECT id FROM admin_users WHERE email = ?').get(bootstrapAdminEmail);
-  if (!existingAdmin) {
+  const adminCount = sqlite.prepare('SELECT COUNT(*) AS count FROM admin_users').get() as { count: number };
+  // Bootstrap credentials are only required while the control plane has no
+  // administrator. This keeps Docker restarts safe after the first setup and
+  // allows operators to remove the one-time password from the environment.
+  if (Number(adminCount?.count || 0) === 0) {
+    const bootstrapAdminEmail = process.env.ADMIN_BOOTSTRAP_EMAIL?.trim();
+    const bootstrapAdminPassword = process.env.ADMIN_BOOTSTRAP_PASSWORD || '';
+    const bootstrapAdminName = process.env.ADMIN_BOOTSTRAP_NAME?.trim() || 'System Admin';
+    const bootstrapAdminRole = process.env.ADMIN_BOOTSTRAP_ROLE?.trim() || 'super_admin';
+    if (!bootstrapAdminEmail || bootstrapAdminPassword.length < MIN_PASSWORD_LENGTH) {
+      throw new Error(`ADMIN_BOOTSTRAP_EMAIL và ADMIN_BOOTSTRAP_PASSWORD (ít nhất ${MIN_PASSWORD_LENGTH} ký tự) là bắt buộc khi tạo platform admin đầu tiên.`);
+    }
     const now = new Date().toISOString();
     const adminPassword = bcrypt.hashSync(bootstrapAdminPassword, 12);
     sqlite.prepare(`

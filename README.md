@@ -27,23 +27,23 @@ Các biến môi trường quan trọng: `JWT_SECRET`, `API_PORT`, `HKDPLUS_INST
 docker compose up -d --build
 ```
 
-Compose chính dành cho máy chủ online đứng sau Cloudflare Tunnel. Cloudflare xử lý HTTPS công khai; gateway trên máy chủ chỉ lắng nghe HTTP nội bộ, mặc định tại `127.0.0.1:4534`. API không public ra ngoài, chỉ được reverse proxy trong mạng Docker chuyển tiếp. Dữ liệu SQLite nằm trong volume `tdpos_data`.
+Compose chính dành cho máy chủ online đứng sau Cloudflare Tunnel. Cloudflare xử lý HTTPS công khai; gateway trên máy chủ chỉ lắng nghe HTTP nội bộ, mặc định tại `127.0.0.1:6666`. Online mặc định dùng một database SQLite riêng cho mỗi tenant; API không public ra ngoài, chỉ được reverse proxy trong mạng Docker chuyển tiếp. Dữ liệu nằm trong volume `tdpos_data`.
 
 Trong cấu hình Cloudflare Tunnel, đặt service của hostname `hkdsmart.trandao.vn` tới:
 
 ```text
-http://127.0.0.1:4534
+http://127.0.0.1:6666
 ```
 
 Nếu `cloudflared` chạy trong container riêng, `127.0.0.1` là chính container đó; khi ấy dùng địa chỉ host mà container truy cập được hoặc dùng network mode phù hợp. Không trỏ tunnel vào cổng HTTPS nội bộ của bản offline.
 
 Không bật redirect HTTPS ở origin. Nếu Cloudflare đang để chế độ `Flexible`, đổi sang `Full` hoặc `Full (strict)` khi đi qua origin HTTPS trực tiếp; với Cloudflare Tunnel hiện tại, origin HTTP như trên là cấu hình đơn giản và tránh vòng lặp redirect.
 
-Nếu đổi hostname hoặc cổng, tạo `.env` từ `.env.prod.example` và đặt `HKDPLUS_HOSTNAME`, `HKDPLUS_PUBLIC_URL`, `WEB_HTTP_PORT` tương ứng trước khi chạy Compose.
+Nếu đổi hostname hoặc cổng, tạo `.env` từ `.env.prod.example` và đặt `HKDPLUS_HOSTNAME`, `HKDPLUS_PUBLIC_URL`, `WEB_HTTP_PORT` tương ứng trước khi chạy Compose. Với deployment hiện tại, giữ nguyên `COMPOSE_PROJECT_NAME=tdpos` để không đổi tên volume dữ liệu.
 
-Docker không chạy seed và không tạo tài khoản mặc định. Lần đầu, owner đăng ký trên máy chủ hoặc dùng setup token một lần; sau đó owner tạo các tài khoản nhân viên trong Cài đặt → Nhân viên & quyền.
+Online SaaS không cho khách tự đăng ký tenant. Lần đầu, điền `ADMIN_BOOTSTRAP_EMAIL` và `ADMIN_BOOTSTRAP_PASSWORD` trong `.env`, khởi động stack rồi đăng nhập khu vực quản trị nền tảng để tạo tenant và tài khoản owner thủ công. Sau khi platform admin đã được tạo, có thể bỏ mật khẩu bootstrap khỏi môi trường; các lần khởi động sau sẽ không tạo lại admin.
 
-Nếu khởi động với cơ sở dữ liệu trống, mã khởi tạo owner một lần được in trong log API (`docker compose logs api`). Chỉ gửi mã này cho người quản trị cửa hàng; mã sẽ vô hiệu ngay sau khi owner đầu tiên được tạo. Không sao chép file `.env` phát triển vào gói cài đặt khách hàng; secret production phải để trống để instance tự sinh hoặc thay bằng secret ngẫu nhiên riêng cho khách hàng.
+Không sao chép file `.env` phát triển vào production. Các secret như `JWT_SECRET` và `HKDPLUS_INSTANCE_SECRET` phải là giá trị riêng của instance; có thể để trống ở lần đầu để hệ thống tự sinh và lưu vào volume dữ liệu. Giữ lại `COMPOSE_PROJECT_NAME=tdpos` nếu đang nâng cấp deployment hiện tại để không đổi volume dữ liệu.
 
 ## Cài đặt Docker offline trong mạng LAN
 
