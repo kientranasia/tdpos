@@ -43,6 +43,14 @@ export interface TenantSettings {
     close: string;
   };
   defaultLanguage: string;
+  branding?: {
+    appName?: string;
+    browserTitle?: string;
+    shortName?: string;
+    themeColor?: string;
+    logoUrl?: string;
+    footerText?: string;
+  };
   invoice?: {
     storeDisplayName?: string;
     headerLine1?: string;
@@ -209,6 +217,9 @@ export interface PurchaseItem {
   total: number;
   unitFactor?: number;
   baseQuantity?: number;
+  isGift?: boolean;
+  sellingPrice?: number;
+  note?: string;
 }
 
 export interface Purchase {

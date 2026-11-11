@@ -7,9 +7,13 @@ RUN npm ci
 
 COPY . .
 
+RUN mkdir -p /app/data && chown -R node:node /app
+
 ENV NODE_ENV=production
 ENV API_PORT=3101
 
+USER node
+
 EXPOSE 3101
 
-CMD ["sh", "-c", "npm run seed && npm run server"]
+CMD ["sh", "-c", "npm run init && npm run server"]

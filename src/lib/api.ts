@@ -20,10 +20,11 @@ interface RequestOptions {
   body?: any;
   params?: Record<string, string>;
   admin?: boolean;
+  setupToken?: string;
 }
 
 async function request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, params, admin = false } = options;
+  const { method = 'GET', body, params, admin = false, setupToken } = options;
 
   let url = `${API_ROOT}${endpoint}`;
   if (params) {
@@ -38,6 +39,7 @@ async function request<T>(endpoint: string, options: RequestOptions = {}): Promi
   const headers: Record<string, string> = {};
   if (body) headers['Content-Type'] = 'application/json';
   if (token) headers.Authorization = `Bearer ${token}`;
+  if (setupToken) headers['X-HKD-Setup-Token'] = setupToken;
 
   const res = await fetch(url, {
     method,
@@ -58,6 +60,7 @@ export const tenantsApi = {
   list: () => request<any[]>('/tenants'),
   get: (id: string) => request<any>(`/tenants/${id}`),
   update: (id: string, data: any) => request<any>(`/tenants/${id}`, { method: 'PATCH', body: data }),
+  completeSetup: (id: string) => request<any>(`/tenants/${id}/complete-setup`, { method: 'POST' }),
 };
 
 // ─── Users ─────────────────────────────────────────────────
@@ -101,9 +104,9 @@ export const unitsApi = {
 
 // ─── Products ──────────────────────────────────────────────
 export const productsApi = {
-  list: (tenantId?: string, filters?: { category?: string; search?: string }) =>
+  list: (tenantId?: string, filters?: { category?: string; search?: string; productType?: 'standard' | 'combo' }) =>
     request<any[]>('/products', { params: { tenantId: tenantId || '', ...filters } }),
-  listPage: (tenantId?: string, filters?: { category?: string; search?: string; limit?: number; offset?: number }) =>
+  listPage: (tenantId?: string, filters?: { category?: string; search?: string; productType?: 'standard' | 'combo' | 'all'; status?: 'active' | 'inactive' | 'all'; limit?: number; offset?: number }) =>
     request<{ items: any[]; total: number; offset: number; limit: number }>('/products', {
       params: Object.fromEntries([
         ['tenantId', tenantId || ''],
@@ -134,6 +137,7 @@ export const priceListsApi = {
   update: (id: string, data: any) => request<any>(`/price-lists/${id}`, { method: 'PATCH', body: data }),
   remove: (id: string) => request<any>(`/price-lists/${id}`, { method: 'DELETE' }),
   saveItems: (id: string, items: any[]) => request<any[]>(`/price-lists/${id}/items`, { method: 'PUT', body: { items } }),
+  saveProductPrices: (productId: string, prices: any[]) => request<any>('/price-lists/product-prices', { method: 'PUT', body: { productId, prices } }),
 };
 
 export const productUnitsApi = {
@@ -277,8 +281,8 @@ export const dashboardApi = {
 export const authApi = {
   login: (email: string, password: string) =>
     request<any>('/auth/login', { method: 'POST', body: { email, password } }),
-  register: (name: string, email: string, password: string, storeName: string) =>
-    request<any>('/auth/register', { method: 'POST', body: { name, email, password, storeName } }),
+  register: (name: string, email: string, password: string, storeName: string, setupToken?: string) =>
+    request<any>('/auth/register', { method: 'POST', body: { name, email, password, storeName }, setupToken }),
   me: () => request<any>('/auth/me'),
   saveSession: (token: string) => localStorage.setItem(USER_TOKEN_KEY, token),
   clearSession: () => localStorage.removeItem(USER_TOKEN_KEY),

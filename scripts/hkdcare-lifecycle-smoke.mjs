@@ -22,8 +22,8 @@ const assert = (condition, message) => {
 const login = await request('/api/auth/login', {
   method: 'POST',
   body: JSON.stringify({
-    email: process.env.HKDPLUS_SMOKE_EMAIL || 'owner@hkdplus.local',
-    password: process.env.HKDPLUS_SMOKE_PASSWORD || '123456',
+    email: process.env.HKDPLUS_SMOKE_EMAIL,
+    password: process.env.HKDPLUS_SMOKE_PASSWORD,
   }),
 });
 assert(login.response.ok && login.body?.token, 'Đăng nhập lifecycle smoke thất bại');

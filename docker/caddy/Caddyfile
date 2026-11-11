@@ -1,0 +1,9 @@
+{
+  auto_https prefer_wildcard
+}
+
+{$HKDPLUS_HOSTNAME:hkdplus.lan} {
+  tls internal
+  encode gzip zstd
+  reverse_proxy web:80
+}

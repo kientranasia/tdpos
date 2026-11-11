@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
+import { useApp } from './context/AppContext';
 import InstallAppPrompt from './components/pwa/InstallAppPrompt';
 
 const MobileLayout = lazy(() => import('./components/layout/MobileLayout'));
@@ -41,9 +42,33 @@ function RouteLoading() {
   );
 }
 
+function TenantBranding() {
+  const { activeTenant } = useApp();
+
+  useEffect(() => {
+    const branding = activeTenant?.settings?.branding;
+    const appName = branding?.appName?.trim() || activeTenant?.name?.trim() || 'HKD Smart';
+    const browserTitle = branding?.browserTitle?.trim() || appName;
+    document.title = browserTitle;
+    const themeColor = branding?.themeColor?.trim();
+    if (themeColor && /^#[0-9a-f]{6}$/i.test(themeColor)) {
+      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', themeColor);
+    }
+    const icon = branding?.logoUrl || activeTenant?.logoUrl;
+    if (icon) {
+      document.querySelector('link[rel="icon"]')?.setAttribute('href', icon);
+      document.querySelector('link[rel="apple-touch-icon"]')?.setAttribute('href', icon);
+    }
+    document.querySelector('meta[name="apple-mobile-web-app-title"]')?.setAttribute('content', branding?.shortName?.trim() || appName);
+  }, [activeTenant]);
+
+  return null;
+}
+
 export default function App() {
   return (
     <AppProvider>
+      <TenantBranding />
       <BrowserRouter>
         <Suspense fallback={<RouteLoading />}>
           <Routes>

@@ -3,11 +3,12 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { DATA_DIR } from './runtimeConfig';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'tdpos.db');
+const DB_PATH = path.join(DATA_DIR, 'tdpos.db');
 
 // Ensure the data directory exists
 import fs from 'fs';
@@ -38,6 +39,11 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
   if (!hasColumn('users', 'password')) {
     sqlite.exec('ALTER TABLE users ADD COLUMN password TEXT');
   }
+  addColumnIfMissing('users', 'session_version', 'session_version INTEGER NOT NULL DEFAULT 1');
+}
+
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'admin_users'").get()) {
+  addColumnIfMissing('admin_users', 'session_version', 'session_version INTEGER NOT NULL DEFAULT 1');
 }
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'customers'").get()) {
@@ -59,6 +65,14 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
   }
 }
 
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'backup_logs'").get()) {
+  addColumnIfMissing('backup_logs', 'tenant_id', 'tenant_id TEXT');
+  addColumnIfMissing('backup_logs', 'instance_id', 'instance_id TEXT');
+  addColumnIfMissing('backup_logs', 'checksum_sha256', 'checksum_sha256 TEXT');
+  addColumnIfMissing('backup_logs', 'schema_version', 'schema_version INTEGER');
+  addColumnIfMissing('backup_logs', 'verified', 'verified INTEGER NOT NULL DEFAULT 0');
+}
+
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenants'").get()) {
   addColumnIfMissing('tenants', 'trial_start_at', 'trial_start_at TEXT');
   addColumnIfMissing('tenants', 'trial_end_at', 'trial_end_at TEXT');
@@ -71,10 +85,35 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
   addColumnIfMissing('tenants', 'package_name', "package_name TEXT NOT NULL DEFAULT 'Starter 1'");
   addColumnIfMissing('tenants', 'max_users', 'max_users INTEGER NOT NULL DEFAULT 1');
   addColumnIfMissing('tenants', 'package_price_monthly', 'package_price_monthly REAL NOT NULL DEFAULT 150000');
-  // Các cột billing cũ chỉ giữ để tương thích migration; instance local không còn trial.
-sqlite.prepare("UPDATE tenants SET status = 'active', subscription_status = 'active' WHERE status = 'trial' OR subscription_status = 'trial'").run();
+  if (process.env.OFFLINE_MODE !== 'false') {
+    sqlite.prepare("UPDATE tenants SET max_users = 25 WHERE package_code = 'starter_1' AND max_users = 1").run();
+  }
+  // Các cột billing cũ chỉ giữ để tương thích migration. Không tự động nâng
+  // trạng thái trial lên active khi khởi động; entitlement phải được quyết định
+  // bởi luồng quản trị/giấy phép tương ứng.
 sqlite.prepare("UPDATE tenants SET name = 'HKDPlus Demo', legal_name = 'Hộ kinh doanh demo', address = 'Quận 1, Thành phố Hồ Chí Minh' WHERE name LIKE 'TDPOS%'").run();
 sqlite.prepare("UPDATE users SET email = 'owner@hkdplus.local' WHERE email = 'owner@tdpos.vn' AND id = 'user-owner-demo'").run();
+}
+
+// Legacy local backups were created before backup ownership metadata existed.
+// Only backfill when this is a single-tenant offline instance; never guess an
+// owner in a hosted multi-tenant database.
+if (process.env.OFFLINE_MODE !== 'false'
+  && sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'backup_logs'").get()
+  && sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenants'").get()) {
+  const tenantRows = sqlite.prepare('SELECT id FROM tenants').all() as Array<{ id: string }>;
+  if (tenantRows.length === 1) {
+    sqlite.prepare("UPDATE backup_logs SET tenant_id = ? WHERE tenant_id IS NULL OR tenant_id = ''").run(tenantRows[0].id);
+  }
+}
+
+const backupDirectory = path.join(DATA_DIR, 'backups');
+if (fs.existsSync(backupDirectory)) {
+  fs.chmodSync(backupDirectory, 0o700);
+  for (const backupName of fs.readdirSync(backupDirectory)) {
+    const backupPath = path.join(backupDirectory, backupName);
+    if (fs.statSync(backupPath).isFile()) fs.chmodSync(backupPath, 0o600);
+  }
 }
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'invoices'").get()) {
@@ -165,7 +204,11 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'purchase_items'").get()) {
   addColumnIfMissing('purchase_items', 'unit_factor', 'unit_factor REAL NOT NULL DEFAULT 1');
   addColumnIfMissing('purchase_items', 'base_quantity', 'base_quantity REAL NOT NULL DEFAULT 0');
+  addColumnIfMissing('purchase_items', 'is_gift', 'is_gift INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing('purchase_items', 'selling_price', 'selling_price REAL NOT NULL DEFAULT 0');
+  addColumnIfMissing('purchase_items', 'note', "note TEXT NOT NULL DEFAULT ''");
   sqlite.prepare('UPDATE purchase_items SET base_quantity = quantity * unit_factor WHERE base_quantity = 0').run();
+  sqlite.prepare("UPDATE purchase_items SET selling_price = 0 WHERE selling_price IS NULL").run();
 }
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'invoices'").get()) {
@@ -203,8 +246,13 @@ sqlite.exec(`
 
   CREATE TABLE IF NOT EXISTS backup_logs (
     id TEXT PRIMARY KEY,
+    tenant_id TEXT,
+    instance_id TEXT,
     file_path TEXT NOT NULL,
     size_bytes INTEGER NOT NULL DEFAULT 0,
+    checksum_sha256 TEXT,
+    schema_version INTEGER,
+    verified INTEGER NOT NULL DEFAULT 0,
     created_by TEXT,
     created_at TEXT NOT NULL
   );
@@ -306,7 +354,10 @@ sqlite.exec(`
     quantity REAL NOT NULL,
     price REAL NOT NULL,
     tax_rate REAL NOT NULL DEFAULT 0,
-    total REAL NOT NULL
+    total REAL NOT NULL,
+    is_gift INTEGER NOT NULL DEFAULT 0,
+    selling_price REAL NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT ''
   );
 
   CREATE TABLE IF NOT EXISTS payable_ledger (
@@ -514,6 +565,10 @@ sqlite.exec(`
     updated_count INTEGER NOT NULL DEFAULT 0,
     unit_count INTEGER NOT NULL DEFAULT 0,
     combo_count INTEGER NOT NULL DEFAULT 0,
+    component_count INTEGER NOT NULL DEFAULT 0,
+    combo_with_components INTEGER NOT NULL DEFAULT 0,
+    combo_missing_components INTEGER NOT NULL DEFAULT 0,
+    component_warning_count INTEGER NOT NULL DEFAULT 0,
     error_count INTEGER NOT NULL DEFAULT 0,
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -601,6 +656,13 @@ sqlite.exec(`
     total REAL NOT NULL
   );
 `);
+
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'product_import_batches'").get()) {
+  addColumnIfMissing('product_import_batches', 'component_count', 'component_count INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing('product_import_batches', 'combo_with_components', 'combo_with_components INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing('product_import_batches', 'combo_missing_components', 'combo_missing_components INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing('product_import_batches', 'component_warning_count', 'component_warning_count INTEGER NOT NULL DEFAULT 0');
+}
 
 // Returns can be created without an original invoice. Older local databases
 // created these columns as NOT NULL, so rebuild both small tables once while
@@ -728,7 +790,7 @@ const roleDefaults: Record<string, string[]> = {
   owner: permissionDefinitions.map(([code]) => code),
   manager: permissionDefinitions.filter(([code]) => !['settings.manage_users', 'settings.manage_permissions', 'sales.cancel'].includes(code)).map(([code]) => code),
   cashier: ['sales.view', 'sales.create', 'partners.view', 'partners.create', 'debt.view'],
-  warehouse: ['inventory.view', 'inventory.adjust', 'inventory.view_cost', 'inventory.manage_pricing', 'purchases.view', 'purchases.create', 'purchases.approve', 'purchases.return', 'partners.view'],
+  warehouse: ['inventory.view', 'inventory.create', 'inventory.adjust', 'inventory.view_cost', 'inventory.manage_pricing', 'purchases.view', 'purchases.create', 'purchases.approve', 'purchases.return', 'partners.view'],
   accountant: ['dashboard.view', 'purchases.view', 'partners.view', 'debt.view', 'debt.collect', 'cashbook.view', 'cashbook.create', 'reports.view', 'reports.export'],
 };
 for (const [role, codes] of Object.entries(roleDefaults)) {

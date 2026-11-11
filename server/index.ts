@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
+import Database from 'better-sqlite3';
 import cors from 'cors';
 import morgan from 'morgan';
 import { db } from './db';
@@ -12,13 +13,26 @@ import crypto from 'crypto';
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
-import adminRouter from './admin';
-import { bootstrapAdminAccount } from './bootstrapAdmin';
+import { pipeline } from 'stream/promises';
 import { DB_PATH, sqlite } from './db';
+import {
+  API_PORT,
+  ENABLE_PLATFORM_ADMIN,
+  JWT_SECRET,
+  MIN_PASSWORD_LENGTH,
+  OFFLINE_MODE,
+  SETUP_TOKEN,
+  SETUP_TOKEN_GENERATED,
+  allowedCorsOrigins,
+  isAllowedSetupRequest,
+  INSTANCE_SECRET,
+  INSTANCE_ID,
+} from './runtimeConfig';
 
 const app = express();
-const PORT = process.env.API_PORT || 3001;
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-for-dev-only';
+const PORT = API_PORT;
+
+app.disable('x-powered-by');
 
 const normalizeSearchText = (value: unknown) => String(value ?? '')
   .normalize('NFD')
@@ -54,7 +68,7 @@ const withTenantAccess = (tenant: any) => {
   if (!tenant) return null;
   return {
     ...tenant,
-    accessBlocked: false,
+    accessBlocked: tenant.status === 'suspended',
     settings: tenant.settings ? JSON.parse(tenant.settings) : undefined,
   };
 };
@@ -69,9 +83,136 @@ declare global {
 }
 
 // ─── Middleware ─────────────────────────────────────────────
-app.use(cors({ origin: true }));
+app.use(cors({
+  origin: (origin, callback) => {
+    const developmentOrigins = process.env.NODE_ENV !== 'production' ? ['http://localhost:3000', 'http://127.0.0.1:3000'] : [];
+    if (!origin || allowedCorsOrigins.includes(origin) || developmentOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Origin không được phép'));
+  },
+  credentials: false,
+}));
 app.use(express.json({ limit: '20mb' }));
 app.use(morgan('dev'));
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=()');
+  next();
+});
+
+const publicPasswordError = 'Mật khẩu phải có ít nhất 10 ký tự.';
+class BusinessError extends Error {
+  constructor(public statusCode: number, message: string) {
+    super(message);
+  }
+}
+const isValidPassword = (value: unknown) => typeof value === 'string' && value.length >= MIN_PASSWORD_LENGTH;
+const safeEmail = (value: unknown) => String(value || '').trim().toLowerCase();
+type LoginAttempt = { failures: number; firstFailureAt: number; blockedUntil: number };
+const loginAttempts = new Map<string, LoginAttempt>();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_BLOCK_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 8;
+const loginAttemptKey = (req: Request, email: string) => `${req.ip || 'unknown'}:${email}`;
+const isLoginBlocked = (key: string) => {
+  const now = Date.now();
+  const entry = loginAttempts.get(key);
+  if (!entry) return false;
+  if (entry.blockedUntil > now) return true;
+  if (entry.firstFailureAt + LOGIN_WINDOW_MS <= now) loginAttempts.delete(key);
+  return false;
+};
+const recordLoginFailure = (key: string) => {
+  const now = Date.now();
+  const existing = loginAttempts.get(key);
+  const entry = !existing || existing.firstFailureAt + LOGIN_WINDOW_MS <= now
+    ? { failures: 1, firstFailureAt: now, blockedUntil: 0 }
+    : { ...existing, failures: existing.failures + 1 };
+  if (entry.failures >= LOGIN_MAX_FAILURES) entry.blockedUntil = now + LOGIN_BLOCK_MS;
+  loginAttempts.set(key, entry);
+};
+const clearLoginFailures = (key: string) => loginAttempts.delete(key);
+const hasAnyUser = () => Boolean(sqlite.prepare('SELECT 1 FROM users LIMIT 1').get());
+const writeTenantAudit = (req: Request, action: string, entityType: string, entityId: string, meta: Record<string, unknown> = {}) => {
+  db.insert(schema.auditLogs).values({
+    id: uuid(), actorType: 'tenant_user', actorId: req.user.id, action, entityType, entityId,
+    tenantId: req.user.tenantId, meta: JSON.stringify(meta), createdAt: new Date().toISOString(),
+  }).run();
+};
+
+const sha256File = (filePath: string) => {
+  const hash = crypto.createHash('sha256');
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest('hex');
+};
+
+const BACKUP_MAGIC = Buffer.from('HKDENC1');
+const BACKUP_IV_LENGTH = 12;
+const BACKUP_TAG_LENGTH = 16;
+const backupKey = () => crypto.createHash('sha256').update(INSTANCE_SECRET).digest();
+
+const encryptBackupFile = async (sourcePath: string, destinationPath: string) => {
+  const iv = crypto.randomBytes(BACKUP_IV_LENGTH);
+  const cipher = crypto.createCipheriv('aes-256-gcm', backupKey(), iv);
+  const output = fs.createWriteStream(destinationPath, { mode: 0o600 });
+  output.write(Buffer.concat([BACKUP_MAGIC, iv]));
+  await pipeline(fs.createReadStream(sourcePath), cipher, output);
+  fs.appendFileSync(destinationPath, cipher.getAuthTag());
+  fs.chmodSync(destinationPath, 0o600);
+  fs.rmSync(sourcePath, { force: true });
+};
+
+const decryptBackupFile = async (sourcePath: string, destinationPath: string) => {
+  const stat = fs.statSync(sourcePath);
+  const headerLength = BACKUP_MAGIC.length + BACKUP_IV_LENGTH;
+  if (stat.size <= headerLength + BACKUP_TAG_LENGTH) throw new Error('Backup mã hóa không hợp lệ.');
+  const descriptor = fs.openSync(sourcePath, 'r');
+  try {
+    const header = Buffer.alloc(headerLength);
+    const tag = Buffer.alloc(BACKUP_TAG_LENGTH);
+    fs.readSync(descriptor, header, 0, header.length, 0);
+    fs.readSync(descriptor, tag, 0, tag.length, stat.size - BACKUP_TAG_LENGTH);
+    if (!header.subarray(0, BACKUP_MAGIC.length).equals(BACKUP_MAGIC)) throw new Error('Backup mã hóa không hợp lệ.');
+    const iv = header.subarray(BACKUP_MAGIC.length);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', backupKey(), iv);
+    decipher.setAuthTag(tag);
+    await pipeline(
+      fs.createReadStream(sourcePath, { start: headerLength, end: stat.size - BACKUP_TAG_LENGTH - 1 }),
+      decipher,
+      fs.createWriteStream(destinationPath, { mode: 0o600 }),
+    );
+    fs.chmodSync(destinationPath, 0o600);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+};
+
+const verifySqliteFile = (filePath: string) => {
+  const candidate = new Database(filePath, { readonly: false });
+  try {
+    const result = candidate.pragma('integrity_check', { simple: true });
+    if (result !== 'ok') return false;
+    // Restored sessions must not inherit tokens that were issued before the restore.
+    if (candidate.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'").get()) {
+      const userColumns = candidate.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>;
+      if (!userColumns.some((column) => column.name === 'session_version')) {
+        candidate.exec('ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1');
+      }
+      candidate.prepare('UPDATE users SET session_version = COALESCE(session_version, 1) + 1').run();
+    }
+    if (candidate.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'admin_users'").get()) {
+      const adminColumns = candidate.prepare('PRAGMA table_info(admin_users)').all() as Array<{ name: string }>;
+      if (!adminColumns.some((column) => column.name === 'session_version')) {
+        candidate.exec('ALTER TABLE admin_users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1');
+      }
+      candidate.prepare('UPDATE admin_users SET session_version = COALESCE(session_version, 1) + 1').run();
+    }
+    return true;
+  } finally {
+    candidate.close();
+  }
+};
 
 // Auth Middleware
 const authenticateUser = (req: Request, res: Response, next: NextFunction) => {
@@ -82,8 +223,22 @@ const authenticateUser = (req: Request, res: Response, next: NextFunction) => {
 
   const token = authHeader.split(' ')[1];
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
-    req.user = decoded;
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }) as any;
+    if (!decoded?.id || !decoded?.tenantId || !decoded?.sessionVersion) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    const user = db.select().from(schema.users).where(and(
+      eq(schema.users.id, decoded.id),
+      eq(schema.users.tenantId, decoded.tenantId),
+    )).get();
+    const tenant = user ? db.select().from(schema.tenants).where(eq(schema.tenants.id, user.tenantId)).get() : null;
+    if (!user || !tenant || user.status !== 'active' || tenant.status === 'suspended') {
+      return res.status(401).json({ error: 'Phiên đăng nhập không còn hiệu lực' });
+    }
+    if (Number(decoded.sessionVersion) !== Number(user.sessionVersion || 1)) {
+      return res.status(401).json({ error: 'Phiên đăng nhập đã bị thu hồi' });
+    }
+    req.user = { ...decoded, id: user.id, email: user.email, tenantId: user.tenantId, role: user.role, sessionVersion: user.sessionVersion };
     next();
   } catch (err) {
     return res.status(401).json({ error: 'Invalid token' });
@@ -104,6 +259,8 @@ const ensureRole = (req: Request, res: Response, roles: string[]) => {
   }
   return true;
 };
+
+const ensureOwner = (req: Request, res: Response) => ensureRole(req, res, ['owner']);
 
 const hasPermission = (req: Request, code: string) => {
   if (req.user?.role === 'owner') return true;
@@ -134,46 +291,113 @@ const ensurePermission = (req: Request, res: Response, code: string) => {
   return true;
 };
 
+const ensureAnyPermission = (req: Request, res: Response, codes: string[]) => {
+  if (codes.some((code) => hasPermission(req, code))) return true;
+  res.status(403).json({ error: `Bạn không có quyền: ${codes.join(' hoặc ')}` });
+  return false;
+};
+
+const canReadCatalog = (req: Request) => hasPermission(req, 'inventory.view') || hasPermission(req, 'sales.view') || hasPermission(req, 'dashboard.view');
+const redactProductForUser = (req: Request, product: any) => {
+  if (hasPermission(req, 'inventory.view_cost')) return product;
+  return {
+    ...product,
+    purchasePrice: 0,
+    units: Array.isArray(product.units) ? product.units.map((unit: any) => ({ ...unit, purchasePrice: 0 })) : product.units,
+  };
+};
+
+const productWritableFields = [
+  'sku', 'name', 'category', 'unit', 'purchasePrice', 'sellingPrice', 'taxRate', 'stock', 'trackStock',
+  'lowStockThreshold', 'maxStockThreshold', 'status', 'barcode', 'imageUrl', 'productType', 'attributes',
+  'attributesJson', 'sourceSystem', 'sourceCode', 'sourceRelatedCode', 'sourceImportedAt',
+] as const;
+const pickProductFields = (body: any) => {
+  const result: Record<string, unknown> = {};
+  for (const field of productWritableFields) {
+    if (body?.[field] !== undefined) result[field] = body[field];
+  }
+  if (result.name !== undefined) result.name = String(result.name).trim().slice(0, 500);
+  if (result.sku !== undefined) result.sku = String(result.sku).trim().slice(0, 160);
+  if (result.barcode !== undefined) result.barcode = String(result.barcode || '').trim().slice(0, 160) || null;
+  if (result.productType !== undefined && result.productType !== 'standard' && result.productType !== 'combo') throw new Error('Loại hàng hóa không hợp lệ.');
+  if (result.imageUrl !== undefined) {
+    const imageUrl = String(result.imageUrl || '').trim();
+    if (imageUrl && (!/^data:image\/(png|jpeg|webp);base64,/i.test(imageUrl) || imageUrl.length > 2_000_000)) throw new Error('Ảnh sản phẩm không hợp lệ hoặc quá lớn.');
+    result.imageUrl = imageUrl || null;
+  }
+  for (const field of ['purchasePrice', 'sellingPrice', 'taxRate', 'stock', 'lowStockThreshold', 'maxStockThreshold']) {
+    if (result[field] !== undefined) {
+      const numeric = Number(result[field]);
+      if (!Number.isFinite(numeric) || numeric < 0) throw new Error(`Trường ${field} không hợp lệ.`);
+      result[field] = numeric;
+    }
+  }
+  return result;
+};
+
 // ─── Health Check ───────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 // ─── Admin Routes ───────────────────────────────────────────
-app.use('/api/admin', adminRouter);
+// The customer/offline build deliberately has no separate technical admin surface.
+// A platform admin can only be enabled explicitly for a non-offline deployment.
+if (ENABLE_PLATFORM_ADMIN) {
+  const { default: adminRouter } = await import('./admin');
+  app.use('/api/admin', adminRouter);
+}
 
 // ─── Tenant Auth (Login/Register) ───────────────────────────
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = safeEmail(req.body?.email);
+    const password = req.body?.password;
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
+    const attemptKey = loginAttemptKey(req, email);
+    if (isLoginBlocked(attemptKey)) return res.status(429).json({ error: 'Tài khoản hoặc địa chỉ mạng tạm thời bị giới hạn đăng nhập. Vui lòng thử lại sau.' });
 
     const user = db.select().from(schema.users)
       .where(eq(schema.users.email, email)).get();
 
-    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-    if (user.status !== 'active') return res.status(403).json({ error: 'Account inactive' });
+    if (!user) {
+      recordLoginFailure(attemptKey);
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    if (user.status !== 'active') {
+      recordLoginFailure(attemptKey);
+      return res.status(403).json({ error: 'Account inactive' });
+    }
 
     // Verify password
     if (user.password) {
       const isMatch = await bcrypt.compare(password, user.password);
-      if (!isMatch) return res.status(401).json({ error: 'Invalid credentials' });
+      if (!isMatch) {
+        recordLoginFailure(attemptKey);
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
     } else {
       // Handle users without passwords (maybe imported or social login)
+      recordLoginFailure(attemptKey);
       return res.status(401).json({ error: 'Password not set for this account' });
     }
 
     // Get tenant for this user
     const tenant = db.select().from(schema.tenants)
       .where(eq(schema.tenants.id, user.tenantId)).get();
+    if (!tenant || tenant.status === 'suspended') {
+      return res.status(403).json({ error: 'Cửa hàng đang bị khóa.' });
+    }
+    clearLoginFailures(attemptKey);
 
     // Create JWT
     const token = jwt.sign(
-      { id: user.id, email: user.email, tenantId: user.tenantId, role: user.role },
+      { id: user.id, email: user.email, tenantId: user.tenantId, role: user.role, sessionVersion: user.sessionVersion || 1 },
       JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: '12h', algorithm: 'HS256' }
     );
 
     const { password: _, ...userData } = user;
@@ -190,10 +414,18 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { name, email, password, storeName } = req.body;
+    if (!OFFLINE_MODE || hasAnyUser()) {
+      return res.status(403).json({ error: 'Đăng ký công khai đã bị khóa. Owner cần tạo nhân viên trong Cài đặt.' });
+    }
+    if (!isAllowedSetupRequest(req.ip, req.headers['x-hkd-setup-token'] as string | undefined)) {
+      return res.status(403).json({ error: 'Khởi tạo owner chỉ được thực hiện trên máy chủ hoặc bằng setup token.' });
+    }
+    const { name, password, storeName } = req.body || {};
+    const email = safeEmail(req.body?.email);
     if (!email || !name || !storeName || !password) {
       return res.status(400).json({ error: 'name, email, password, and storeName required' });
     }
+    if (!isValidPassword(password)) return res.status(400).json({ error: publicPasswordError });
 
     // Check if user exists
     const existingUser = db.select().from(schema.users).where(eq(schema.users.email, email)).get();
@@ -204,31 +436,8 @@ app.post('/api/auth/register', async (req, res) => {
     const now = new Date().toISOString();
 
     // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 12);
 
-    // Create tenant
-    db.insert(schema.tenants).values({
-      id: tenantId,
-      name: storeName,
-      address: '',
-      phone: '',
-      timezone: 'Asia/Ho_Chi_Minh',
-      currency: 'VND',
-      invoicePrefix: 'INV',
-      status: 'pending_setup',
-      trialStartAt: null,
-      trialEndAt: null,
-      subscriptionStatus: 'active',
-      subscriptionPlan: 'yearly',
-      subscriptionPriceMonthly: 150000,
-      packageCode: 'starter_1',
-      packageName: 'HKDPlus Local',
-      maxUsers: 1,
-      packagePriceMonthly: 150000,
-      createdAt: now,
-    }).run();
-
-    // Create owner user
     const userValues = {
       id: userId,
       name,
@@ -237,8 +446,32 @@ app.post('/api/auth/register', async (req, res) => {
       role: 'owner' as const,
       tenantId,
       status: 'active' as const,
+      sessionVersion: 1,
     };
-    db.insert(schema.users).values(userValues).run();
+    db.transaction((tx) => {
+      if (hasAnyUser()) throw new Error('SETUP_ALREADY_COMPLETED');
+      tx.insert(schema.tenants).values({
+        id: tenantId,
+        name: storeName,
+        address: '',
+        phone: '',
+        timezone: 'Asia/Ho_Chi_Minh',
+        currency: 'VND',
+        invoicePrefix: 'INV',
+        status: 'pending_setup',
+        trialStartAt: null,
+        trialEndAt: null,
+        subscriptionStatus: 'active',
+        subscriptionPlan: 'yearly',
+        subscriptionPriceMonthly: 150000,
+        packageCode: 'starter_1',
+        packageName: 'HKDPlus Local',
+        maxUsers: 25,
+        packagePriceMonthly: 150000,
+        createdAt: now,
+      }).run();
+      tx.insert(schema.users).values(userValues).run();
+    });
     ensureDefaultCashAccounts(tenantId);
 
     const tenant = db.select().from(schema.tenants)
@@ -246,9 +479,9 @@ app.post('/api/auth/register', async (req, res) => {
 
     // Create JWT
     const token = jwt.sign(
-      { id: userId, email, tenantId, role: 'owner' },
+      { id: userId, email, tenantId, role: 'owner', sessionVersion: 1 },
       JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: '12h', algorithm: 'HS256' }
     );
 
     const { password: _, ...userData } = userValues;
@@ -258,6 +491,9 @@ app.post('/api/auth/register', async (req, res) => {
       token,
     });
   } catch (err) {
+    if (err instanceof Error && err.message === 'SETUP_ALREADY_COMPLETED') {
+      return res.status(403).json({ error: 'Khởi tạo cửa hàng đã hoàn tất.' });
+    }
     console.error('POST /api/auth/register error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -281,11 +517,15 @@ app.get('/api/auth/me', authenticateUser, (req, res) => {
   }
 });
 
+app.get('/api/setup/status', (_req, res) => {
+  res.json({ offlineMode: OFFLINE_MODE, setupRequired: OFFLINE_MODE && !hasAnyUser(), setupTokenRequired: Boolean(SETUP_TOKEN) });
+});
+
 app.use('/api', authenticateUser);
 
 const getMachineHash = () => {
   const network = Object.values(os.networkInterfaces()).flat().filter(Boolean).map((item) => `${item?.mac}:${item?.address}`).sort().join('|');
-  return crypto.createHash('sha256').update(`${os.hostname()}|${network}|${process.env.HKDPLUS_INSTANCE_SECRET || 'local-instance'}`).digest('hex');
+  return crypto.createHash('sha256').update(`${os.hostname()}|${network}|${INSTANCE_SECRET}`).digest('hex');
 };
 const getInstanceId = () => process.env.HKDPLUS_INSTANCE_ID?.trim() || crypto.createHash('sha256').update(getMachineHash()).digest('hex').slice(0, 24);
 const persistLicenseToken = (token: string) => {
@@ -328,14 +568,16 @@ app.get('/api/system/status', (req, res) => {
   try {
     const interfaces = Object.values(os.networkInterfaces()).flat().filter((item) => item && !item.internal && item.family === 'IPv4').map((item) => item?.address).filter(Boolean);
     const license = db.select().from(schema.licenseInstances).get();
+    const ownerOnly = req.user.role === 'owner';
     res.json({
-      product: 'HKDCare',
+      product: 'HKD Smart',
+      instanceId: INSTANCE_ID,
       hostname: os.hostname(),
-      addresses: interfaces,
-      localUrl: 'http://hkd.care',
+      addresses: ownerOnly ? interfaces : [],
+      localUrl: ownerOnly ? (process.env.HKDPLUS_PUBLIC_URL || 'https://hkdplus.lan') : null,
       apiPort: PORT,
       database: 'SQLite',
-      dataPath: path.dirname(DB_PATH),
+      dataPath: ownerOnly ? path.dirname(DB_PATH) : null,
       license: license ? { status: license.status, customerName: license.customerName, expiresAt: license.expiresAt, lastValidatedAt: license.lastValidatedAt } : { status: 'unlicensed' },
       tenantId: req.user.tenantId,
     });
@@ -361,7 +603,7 @@ app.get('/api/tax-profile', (req, res) => {
 
 app.patch('/api/tax-profile', (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_users')) return;
+    if (!ensureOwner(req, res)) return;
     const existing = db.select().from(schema.taxProfiles).where(eq(schema.taxProfiles.tenantId, req.user.tenantId)).get();
     const data = { name: String(req.body?.name || 'Mặc định'), taxMethod: String(req.body?.taxMethod || 'Chưa cấu hình'), defaultTaxRate: Math.max(0, Number(req.body?.defaultTaxRate) || 0), taxCode: req.body?.taxCode ? String(req.body.taxCode) : null, active: req.body?.active !== false };
     if (existing) db.update(schema.taxProfiles).set(data).where(eq(schema.taxProfiles.id, existing.id)).run();
@@ -380,8 +622,10 @@ app.get('/api/document-sequences', (req, res) => {
 
 app.get('/api/backups', (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.view')) return;
-    res.json(db.select().from(schema.backupLogs).orderBy(desc(schema.backupLogs.createdAt)).limit(20).all());
+    if (!ensureOwner(req, res)) return;
+    res.json(db.select().from(schema.backupLogs)
+      .where(eq(schema.backupLogs.tenantId, req.user.tenantId))
+      .orderBy(desc(schema.backupLogs.createdAt)).limit(20).all());
   } catch (err) {
     console.error('GET /api/backups error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -390,15 +634,30 @@ app.get('/api/backups', (req, res) => {
 
 app.post('/api/backups', async (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_users')) return;
+    if (!ensureOwner(req, res)) return;
     const backupDir = path.join(path.dirname(DB_PATH), 'backups');
-    fs.mkdirSync(backupDir, { recursive: true });
-    const fileName = `hkdplus-${new Date().toISOString().replace(/[:.]/g, '-')}.db`;
+    fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(backupDir, 0o700);
+    const fileName = `hkdplus-${new Date().toISOString().replace(/[:.]/g, '-')}.db.enc`;
     const filePath = path.join(backupDir, fileName);
-    await sqlite.backup(filePath);
+    const rawPath = path.join(backupDir, `${fileName}.raw`);
+    await sqlite.backup(rawPath);
+    await encryptBackupFile(rawPath, filePath);
     const stat = fs.statSync(filePath);
-    const log = { id: uuid(), filePath: `backups/${fileName}`, sizeBytes: stat.size, createdBy: req.user.id, createdAt: new Date().toISOString() };
+    const log = {
+      id: uuid(),
+      tenantId: req.user.tenantId,
+      instanceId: INSTANCE_ID,
+      filePath: `backups/${fileName}`,
+      sizeBytes: stat.size,
+      checksumSha256: sha256File(filePath),
+      schemaVersion: 1,
+      verified: true,
+      createdBy: req.user.id,
+      createdAt: new Date().toISOString(),
+    };
     db.insert(schema.backupLogs).values(log).run();
+    writeTenantAudit(req, 'backup_created', 'backup', log.id, { sizeBytes: log.sizeBytes });
     res.status(201).json(log);
   } catch (err) {
     console.error('POST /api/backups error:', err);
@@ -407,23 +666,42 @@ app.post('/api/backups', async (req, res) => {
 });
 
 app.post('/api/backups/restore', async (req, res) => {
+  let stagedPath: string | null = null;
   try {
-    if (!ensurePermission(req, res, 'settings.manage_users')) return;
+    if (!ensureOwner(req, res)) return;
     const backupId = String(req.body?.backupId || '');
-    const backup = db.select().from(schema.backupLogs).where(eq(schema.backupLogs.id, backupId)).get();
+    const backup = db.select().from(schema.backupLogs).where(and(eq(schema.backupLogs.id, backupId), eq(schema.backupLogs.tenantId, req.user.tenantId))).get();
     if (!backup) return res.status(404).json({ error: 'Không tìm thấy bản sao lưu' });
     const backupDir = path.resolve(path.dirname(DB_PATH), 'backups');
     const sourcePath = path.resolve(path.dirname(DB_PATH), backup.filePath);
     if (!sourcePath.startsWith(`${backupDir}${path.sep}`) || !fs.existsSync(sourcePath)) {
       return res.status(400).json({ error: 'Đường dẫn bản sao lưu không hợp lệ' });
     }
-    const safetyPath = path.join(backupDir, `before-restore-${Date.now()}.db`);
-    await sqlite.backup(safetyPath);
+    if (backup.instanceId && backup.instanceId !== INSTANCE_ID) {
+      return res.status(400).json({ error: 'Bản sao lưu thuộc instance khác.' });
+    }
+    if (backup.checksumSha256 && sha256File(sourcePath) !== backup.checksumSha256) {
+      return res.status(400).json({ error: 'Bản sao lưu đã bị thay đổi hoặc hỏng.' });
+    }
+    stagedPath = path.join(backupDir, `restore-${Date.now()}.db`);
+    if (sourcePath.endsWith('.enc')) await decryptBackupFile(sourcePath, stagedPath);
+    else fs.copyFileSync(sourcePath, stagedPath);
+    fs.chmodSync(stagedPath, 0o600);
+    if (!verifySqliteFile(stagedPath)) {
+      fs.rmSync(stagedPath, { force: true });
+      return res.status(400).json({ error: 'Bản sao lưu không vượt qua kiểm tra toàn vẹn SQLite.' });
+    }
+    const safetyPath = path.join(backupDir, `before-restore-${Date.now()}.db.enc`);
+    const safetyRawPath = `${safetyPath}.raw`;
+    await sqlite.backup(safetyRawPath);
+    await encryptBackupFile(safetyRawPath, safetyPath);
+    writeTenantAudit(req, 'backup_restore_requested', 'backup', backup.id, { safetyPath: path.basename(safetyPath) });
     sqlite.close();
-    fs.copyFileSync(sourcePath, DB_PATH);
+    fs.renameSync(stagedPath, DB_PATH);
     res.json({ success: true, message: 'Đã khôi phục dữ liệu. Máy chủ sẽ khởi động lại.' });
     setTimeout(() => process.exit(0), 250);
   } catch (err) {
+    if (stagedPath) fs.rmSync(stagedPath, { force: true });
     console.error('POST /api/backups/restore error:', err);
     res.status(500).json({ error: 'Không thể khôi phục bản sao lưu' });
   }
@@ -506,7 +784,7 @@ const rolePermissionRows = (role: string, tenantId: string) => {
 
 app.get('/api/roles', (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    if (!ensureOwner(req, res)) return;
     const permissionCount = new Map<string, number>();
     for (const role of builtInRoles) permissionCount.set(role, db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, role)).all().filter((grant) => grant.allowed).length);
     const builtIns = [
@@ -534,7 +812,7 @@ app.get('/api/roles', (req, res) => {
 
 app.get('/api/roles/:code/permissions', (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    if (!ensureOwner(req, res)) return;
     const grants = rolePermissionRows(req.params.code, req.user.tenantId);
     const grantMap = new Map<string, boolean>(grants.map((grant) => [String(grant.permissionCode), Boolean(grant.allowed)] as [string, boolean]));
     res.json(db.select().from(schema.permissions).all().map((permission) => ({ ...permission, allowed: Boolean(grantMap.get(permission.code)) })));
@@ -546,7 +824,7 @@ app.get('/api/roles/:code/permissions', (req, res) => {
 
 app.post('/api/roles', (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    if (!ensureOwner(req, res)) return;
     const code = String(req.body?.code || '').trim().toLowerCase();
     const name = String(req.body?.name || '').trim();
     const description = String(req.body?.description || '').trim();
@@ -573,7 +851,7 @@ app.post('/api/roles', (req, res) => {
 
 app.patch('/api/roles/:code', (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    if (!ensureOwner(req, res)) return;
     if (isBuiltInRole(req.params.code)) return res.status(400).json({ error: 'Không sửa vai trò mặc định' });
     const profile = roleProfileFor(req.user.tenantId, req.params.code);
     if (!profile) return res.status(404).json({ error: 'Không tìm thấy vai trò' });
@@ -592,7 +870,7 @@ app.patch('/api/roles/:code', (req, res) => {
 
 app.put('/api/roles/:code/permissions', (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    if (!ensureOwner(req, res)) return;
     if (isBuiltInRole(req.params.code)) return res.status(400).json({ error: 'Không sửa quyền vai trò mặc định' });
     const profile = roleProfileFor(req.user.tenantId, req.params.code);
     if (!profile) return res.status(404).json({ error: 'Không tìm thấy vai trò' });
@@ -606,6 +884,9 @@ app.put('/api/roles/:code/permissions', (req, res) => {
         tx.insert(schema.roleProfilePermissions).values({ id: uuid(), roleProfileId: profile.id, permissionCode: entry.code, allowed: entry.allowed, updatedAt: now }).run();
       }
       tx.update(schema.roleProfiles).set({ updatedAt: now }).where(eq(schema.roleProfiles.id, profile.id)).run();
+      tx.update(schema.users)
+        .set({ sessionVersion: sql`${schema.users.sessionVersion} + 1` })
+        .where(and(eq(schema.users.tenantId, req.user.tenantId), eq(schema.users.role, profile.code as any))).run();
     });
     res.json({ success: true });
   } catch (err) {
@@ -616,7 +897,7 @@ app.put('/api/roles/:code/permissions', (req, res) => {
 
 app.delete('/api/roles/:code', (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    if (!ensureOwner(req, res)) return;
     if (isBuiltInRole(req.params.code)) return res.status(400).json({ error: 'Không xóa vai trò mặc định' });
     const profile = roleProfileFor(req.user.tenantId, req.params.code);
     if (!profile) return res.status(404).json({ error: 'Không tìm thấy vai trò' });
@@ -632,7 +913,7 @@ app.delete('/api/roles/:code', (req, res) => {
 
 app.get('/api/users/:id/permissions', (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    if (!ensureOwner(req, res)) return;
     const user = db.select().from(schema.users).where(and(eq(schema.users.id, req.params.id), eq(schema.users.tenantId, req.user.tenantId))).get();
     if (!user) return res.status(404).json({ error: 'User not found' });
     const permissions = db.select().from(schema.permissions).all();
@@ -649,7 +930,7 @@ app.get('/api/users/:id/permissions', (req, res) => {
 
 app.put('/api/users/:id/permissions', (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_permissions')) return;
+    if (!ensureOwner(req, res)) return;
     const user = db.select().from(schema.users).where(and(eq(schema.users.id, req.params.id), eq(schema.users.tenantId, req.user.tenantId))).get();
     if (!user) return res.status(404).json({ error: 'User not found' });
     const entries = Array.isArray(req.body?.permissions) ? req.body.permissions : [];
@@ -660,6 +941,9 @@ app.put('/api/users/:id/permissions', (req, res) => {
         if (typeof entry?.code !== 'string' || typeof entry?.allowed !== 'boolean') continue;
         tx.insert(schema.userPermissions).values({ id: uuid(), tenantId: req.user.tenantId, userId: user.id, permissionCode: entry.code, allowed: entry.allowed, updatedAt: now }).run();
       }
+      tx.update(schema.users)
+        .set({ sessionVersion: sql`${schema.users.sessionVersion} + 1` })
+        .where(eq(schema.users.id, user.id)).run();
     });
     res.json({ success: true });
   } catch (err) {
@@ -705,22 +989,58 @@ app.get('/api/tenants/:id', (req, res) => {
 
 app.patch('/api/tenants/:id', (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_users')) return;
+    if (!ensureOwner(req, res)) return;
     if (req.params.id !== req.user.tenantId) {
       return res.status(403).json({ error: 'Forbidden' });
     }
-    const body = req.body;
-    const updateData: any = { ...body };
-    if (body.settings) {
-      updateData.settings = JSON.stringify(body.settings);
+    const body = req.body || {};
+    const updateData: Record<string, unknown> = {};
+    const writableFields = ['name', 'legalName', 'address', 'province', 'district', 'ward', 'phone', 'email', 'taxInfo', 'invoicePrefix'] as const;
+    for (const field of writableFields) {
+      if (body[field] !== undefined) updateData[field] = String(body[field] ?? '').trim();
     }
+    if (body.logoUrl !== undefined) {
+      const logoUrl = String(body.logoUrl || '').trim();
+      if (logoUrl && (!/^data:image\/(png|jpeg|webp);base64,/i.test(logoUrl) || logoUrl.length > 2_000_000)) {
+        return res.status(400).json({ error: 'Logo không hợp lệ hoặc vượt quá 1.5 MB.' });
+      }
+      updateData.logoUrl = logoUrl || null;
+    }
+    if (body.settings !== undefined) {
+      if (!body.settings || typeof body.settings !== 'object' || Array.isArray(body.settings)) {
+        return res.status(400).json({ error: 'Cấu hình cửa hàng không hợp lệ.' });
+      }
+      const serializedSettings = JSON.stringify(body.settings);
+      if (serializedSettings.length > 250_000) return res.status(400).json({ error: 'Cấu hình cửa hàng quá lớn.' });
+      updateData.settings = serializedSettings;
+    }
+    if (!Object.keys(updateData).length) return res.status(400).json({ error: 'Không có trường hợp lệ để cập nhật.' });
     db.update(schema.tenants).set(updateData).where(eq(schema.tenants.id, req.params.id)).run();
     const updated = db.select().from(schema.tenants).where(eq(schema.tenants.id, req.params.id)).get();
     if (!updated) return res.status(404).json({ error: 'Tenant not found' });
+    writeTenantAudit(req, 'tenant_updated', 'tenant', req.params.id, { fields: Object.keys(updateData) });
     res.json(withTenantAccess(updated));
   } catch (err) {
     console.error('PATCH /api/tenants/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/tenants/:id/complete-setup', (req, res) => {
+  try {
+    if (!ensureOwner(req, res)) return;
+    if (req.params.id !== req.user.tenantId) return res.status(403).json({ error: 'Forbidden' });
+    const tenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, req.params.id)).get();
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+    if (tenant.status !== 'active') {
+      db.update(schema.tenants).set({ status: 'active' }).where(eq(schema.tenants.id, req.params.id)).run();
+      writeTenantAudit(req, 'tenant_setup_completed', 'tenant', req.params.id);
+    }
+    const updated = db.select().from(schema.tenants).where(eq(schema.tenants.id, req.params.id)).get();
+    res.json(withTenantAccess(updated));
+  } catch (err) {
+    console.error('POST /api/tenants/:id/complete-setup error:', err);
+    res.status(500).json({ error: 'Không thể hoàn tất thiết lập cửa hàng' });
   }
 });
 
@@ -751,7 +1071,7 @@ app.get('/api/subscriptions/me', (req, res) => {
 
 app.get('/api/users', (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_users')) return;
+    if (!ensureOwner(req, res)) return;
     const users = db.select().from(schema.users)
       .where(eq(schema.users.tenantId, req.user.tenantId)).all();
     res.json(users.map(({ password: _, ...user }) => user));
@@ -763,7 +1083,7 @@ app.get('/api/users', (req, res) => {
 
 app.get('/api/users/:id', (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_users')) return;
+    if (!ensureOwner(req, res)) return;
     const user = db.select().from(schema.users)
       .where(and(eq(schema.users.id, req.params.id), eq(schema.users.tenantId, req.user.tenantId))).get();
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -777,10 +1097,18 @@ app.get('/api/users/:id', (req, res) => {
 
 app.post('/api/users', async (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_users')) return;
-    const { name, email, password, phone, role, status } = req.body || {};
+    if (!ensureOwner(req, res)) return;
+    const { name, password, phone, role, status } = req.body || {};
+    const email = safeEmail(req.body?.email);
     if (!name || !email || !password || !role) {
       return res.status(400).json({ error: 'name, email, password, role are required' });
+    }
+    if (!isValidPassword(password)) return res.status(400).json({ error: publicPasswordError });
+
+    const tenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, req.user.tenantId)).get();
+    const userCount = db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.tenantId, req.user.tenantId)).all().length;
+    if (tenant && Number(tenant.maxUsers || 0) > 0 && userCount >= Number(tenant.maxUsers)) {
+      return res.status(409).json({ error: `Gói hiện tại giới hạn ${tenant.maxUsers} tài khoản.` });
     }
 
     if (role === 'owner' || (!isBuiltInRole(role) && !roleProfileFor(req.user.tenantId, role))) {
@@ -790,7 +1118,7 @@ app.post('/api/users', async (req, res) => {
     const existing = db.select().from(schema.users).where(eq(schema.users.email, email)).get();
     if (existing) return res.status(400).json({ error: 'Email already exists' });
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 12);
     const user = {
       id: uuid(),
       name,
@@ -800,9 +1128,11 @@ app.post('/api/users', async (req, res) => {
       role,
       tenantId: req.user.tenantId,
       status: status === 'inactive' ? 'inactive' as const : 'active' as const,
+      sessionVersion: 1,
     };
 
     db.insert(schema.users).values(user).run();
+    writeTenantAudit(req, 'user_created', 'user', user.id, { role: user.role, email: user.email });
     const { password: _password, ...response } = user;
     res.status(201).json(response);
   } catch (err) {
@@ -813,7 +1143,7 @@ app.post('/api/users', async (req, res) => {
 
 app.patch('/api/users/:id', async (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_users')) return;
+    if (!ensureOwner(req, res)) return;
     const existing = db.select().from(schema.users)
       .where(and(eq(schema.users.id, req.params.id), eq(schema.users.tenantId, req.user.tenantId)))
       .get();
@@ -828,16 +1158,26 @@ app.patch('/api/users/:id', async (req, res) => {
       if (nextRole !== 'owner' && !isBuiltInRole(nextRole) && !roleProfileFor(req.user.tenantId, nextRole)) {
         return res.status(400).json({ error: 'Vai trò không hợp lệ hoặc chưa được tạo trong cửa hàng.' });
       }
-      if (existing.id === req.user.id && nextRole !== 'owner') {
-        return res.status(400).json({ error: 'Owner cannot downgrade own role' });
+      if (nextRole === 'owner' && (req.user.role !== 'owner' || existing.id !== req.user.id)) {
+        return res.status(403).json({ error: 'Chỉ owner hiện tại mới được giữ vai trò owner.' });
+      }
+      if (existing.id === req.user.id && nextRole !== existing.role) {
+        return res.status(400).json({ error: 'Không được tự thay đổi vai trò của chính mình.' });
       }
       updates.role = nextRole;
     }
     if (req.body.password) {
-      updates.password = await bcrypt.hash(req.body.password, 10);
+      if (!isValidPassword(req.body.password)) return res.status(400).json({ error: publicPasswordError });
+      updates.password = await bcrypt.hash(req.body.password, 12);
     }
 
+    if (existing.id === req.user.id && req.body.status === 'inactive') {
+      return res.status(400).json({ error: 'Không được tự khóa tài khoản owner.' });
+    }
+    if (Object.keys(updates).length > 0) updates.sessionVersion = Number(existing.sessionVersion || 1) + 1;
+
     db.update(schema.users).set(updates).where(eq(schema.users.id, existing.id)).run();
+    writeTenantAudit(req, 'user_updated', 'user', existing.id, { role: updates.role || existing.role, status: updates.status || existing.status, passwordChanged: Boolean(updates.password) });
     const updated = db.select().from(schema.users).where(eq(schema.users.id, existing.id)).get();
     if (!updated) return res.status(404).json({ error: 'User not found' });
     const { password: _password, ...response } = updated;
@@ -850,7 +1190,7 @@ app.patch('/api/users/:id', async (req, res) => {
 
 app.delete('/api/users/:id', (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'settings.manage_users')) return;
+    if (!ensureOwner(req, res)) return;
     const existing = db.select().from(schema.users)
       .where(and(eq(schema.users.id, req.params.id), eq(schema.users.tenantId, req.user.tenantId)))
       .get();
@@ -859,6 +1199,7 @@ app.delete('/api/users/:id', (req, res) => {
       return res.status(400).json({ error: 'Cannot delete owner account' });
     }
     db.delete(schema.users).where(eq(schema.users.id, req.params.id)).run();
+    writeTenantAudit(req, 'user_deleted', 'user', existing.id, { role: existing.role });
     res.json({ success: true });
   } catch (err) {
     console.error('DELETE /api/users/:id error:', err);
@@ -883,7 +1224,9 @@ app.get('/api/categories', (req, res) => {
 app.post('/api/categories', (req, res) => {
   try {
     if (!ensurePermission(req, res, 'inventory.create')) return;
-    const category = { id: uuid(), ...req.body, tenantId: req.user.tenantId };
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Tên danh mục là bắt buộc' });
+    const category = { id: uuid(), tenantId: req.user.tenantId, name, description: String(req.body?.description || '').trim() };
     db.insert(schema.categories).values(category).run();
     res.status(201).json(category);
   } catch (err) {
@@ -1240,6 +1583,72 @@ app.get('/api/price-lists', (req, res) => {
   }
 });
 
+app.put('/api/price-lists/product-prices', (req, res) => {
+  try {
+    if (!ensureAnyPermission(req, res, ['inventory.manage_pricing', 'purchases.create'])) return;
+    const productId = String(req.body?.productId || '').trim();
+    const requestedPrices = Array.isArray(req.body?.prices) ? req.body.prices : [];
+    const product = db.select().from(schema.products).where(and(
+      eq(schema.products.id, productId),
+      eq(schema.products.tenantId, req.user.tenantId),
+    )).get();
+    if (!product) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+    if (product.productType === 'combo') return res.status(400).json({ error: 'Không thiết lập giá nhập cho sản phẩm combo' });
+    if (requestedPrices.length > 200) return res.status(400).json({ error: 'Số dòng giá vượt quá giới hạn cho phép' });
+
+    const extraUnits = db.select().from(schema.productUnits).where(and(
+      eq(schema.productUnits.tenantId, req.user.tenantId),
+      eq(schema.productUnits.productId, product.id),
+      eq(schema.productUnits.active, true),
+    )).all();
+    const allowedUnits = [{ name: product.unit, factor: 1 }, ...extraUnits.map((unit) => ({ name: unit.name, factor: Number(unit.factor || 1) }))];
+    const now = new Date().toISOString();
+    let baseSellingPrice: number | null = null;
+    const savedItems: any[] = [];
+
+    db.transaction((tx) => {
+      for (const row of requestedPrices) {
+        const priceListId = String(row?.priceListId || '').trim();
+        const unitName = String(row?.unitName || '').trim();
+        const unitFactor = Number(row?.unitFactor || 1);
+        if (!priceListId || !unitName || !Number.isFinite(unitFactor) || unitFactor <= 0) throw new Error('Thông tin đơn vị hoặc bảng giá không hợp lệ');
+        const list = tx.select().from(schema.priceLists).where(and(
+          eq(schema.priceLists.id, priceListId),
+          eq(schema.priceLists.tenantId, req.user.tenantId),
+        )).get();
+        if (!list) throw new Error('Không tìm thấy bảng giá');
+        const validUnit = allowedUnits.find((unit) => unit.name.trim().toLowerCase() === unitName.toLowerCase() && Math.abs(unit.factor - unitFactor) < 0.000001);
+        if (!validUnit) throw new Error(`Đơn vị ${unitName} không thuộc sản phẩm`);
+        const existing = tx.select().from(schema.priceListItems).where(and(
+          eq(schema.priceListItems.priceListId, list.id),
+          eq(schema.priceListItems.productId, product.id),
+          eq(schema.priceListItems.unitName, validUnit.name),
+        )).get();
+        const hasPrice = row?.price !== null && row?.price !== undefined && String(row.price).trim() !== '';
+        if (!hasPrice) {
+          if (existing) tx.delete(schema.priceListItems).where(eq(schema.priceListItems.id, existing.id)).run();
+          continue;
+        }
+        const price = Number(row.price);
+        if (!Number.isFinite(price) || price < 0) throw new Error(`Giá bán của ${unitName} không hợp lệ`);
+        if (existing) {
+          tx.update(schema.priceListItems).set({ unitFactor: validUnit.factor, price }).where(eq(schema.priceListItems.id, existing.id)).run();
+        } else {
+          tx.insert(schema.priceListItems).values({ id: uuid(), tenantId: req.user.tenantId, priceListId: list.id, productId: product.id, unitName: validUnit.name, unitFactor: validUnit.factor, price, createdAt: now }).run();
+        }
+        savedItems.push({ priceListId: list.id, productId: product.id, unitName: validUnit.name, unitFactor: validUnit.factor, price });
+        if (list.isDefault && validUnit.name.trim().toLowerCase() === product.unit.trim().toLowerCase() && Math.abs(validUnit.factor - 1) < 0.000001) baseSellingPrice = price;
+      }
+      if (baseSellingPrice !== null) tx.update(schema.products).set({ sellingPrice: baseSellingPrice }).where(eq(schema.products.id, product.id)).run();
+    });
+
+    res.json({ product: db.select().from(schema.products).where(eq(schema.products.id, product.id)).get(), items: savedItems });
+  } catch (err) {
+    console.error('PUT /api/price-lists/product-prices error:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể lưu thiết lập giá' });
+  }
+});
+
 app.get('/api/price-lists/:id', (req, res) => {
   try {
     const list = db.select().from(schema.priceLists).where(and(eq(schema.priceLists.id, req.params.id), eq(schema.priceLists.tenantId, req.user.tenantId))).get();
@@ -1341,15 +1750,26 @@ app.put('/api/price-lists/:id/items', (req, res) => {
 
 app.get('/api/products/lookup', (req, res) => {
   try {
+    if (!ensureAnyPermission(req, res, ['inventory.view', 'sales.view'])) return;
     const code = String(req.query.code || '').trim().toLowerCase();
     if (!code) return res.status(400).json({ error: 'Thiếu mã cần tra cứu' });
-    const rows = db.select().from(schema.products).where(eq(schema.products.tenantId, req.user.tenantId)).all();
-    const unit = db.select().from(schema.productUnits).where(eq(schema.productUnits.tenantId, req.user.tenantId)).all().find((row) => String(row.barcode || '').trim().toLowerCase() === code);
+    const rows = db.select().from(schema.products).where(and(
+      eq(schema.products.tenantId, req.user.tenantId),
+      eq(schema.products.status, 'active'),
+    )).all();
+    const activeProductIds = new Set(rows.map((row) => row.id));
+    const unit = db.select().from(schema.productUnits).where(eq(schema.productUnits.tenantId, req.user.tenantId)).all().find((row) => (
+      activeProductIds.has(row.productId)
+      && (
+      String(row.barcode || '').trim().toLowerCase() === code
+      || String(row.sku || row.sourceCode || '').trim().toLowerCase() === code
+      )
+    ));
     const product = rows.find((row) => row.sku.toLowerCase() === code || String(row.barcode || '').toLowerCase() === code) || unit;
     if (!product) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
     const resolved = 'productId' in product ? db.select().from(schema.products).where(eq(schema.products.id, product.productId)).get() : product;
     if (!resolved) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
-    res.json(withStockAvailability(req.user.tenantId, resolved, loadDefaultPriceLookup(req.user.tenantId)));
+    res.json(redactProductForUser(req, withStockAvailability(req.user.tenantId, resolved, loadDefaultPriceLookup(req.user.tenantId))));
   } catch (err) {
     console.error('GET /api/products/lookup error:', err);
     res.status(500).json({ error: 'Không thể tra cứu mã sản phẩm' });
@@ -1358,14 +1778,22 @@ app.get('/api/products/lookup', (req, res) => {
 
 app.get('/api/products', (req, res) => {
   try {
-    const { category, search } = req.query;
+    if (!ensureAnyPermission(req, res, ['inventory.view', 'sales.view'])) return;
+    const { category, search, productType } = req.query;
+    const requestedStatus = String(req.query.status || '').toLowerCase();
+    const includeInactive = String(req.query.includeInactive || '').toLowerCase() === 'true';
     const allTenantProducts = db.select().from(schema.products)
       .where(eq(schema.products.tenantId, req.user.tenantId)).all();
-    let allProducts = allTenantProducts;
+    let allProducts = includeInactive || requestedStatus === 'all'
+      ? allTenantProducts
+      : allTenantProducts.filter((product) => product.status === (requestedStatus === 'inactive' ? 'inactive' : 'active'));
 
     // Apply additional filters in-memory for simplicity
     if (category && category !== 'all') {
       allProducts = allProducts.filter(p => p.category === category);
+    }
+    if (productType && productType !== 'all') {
+      allProducts = allProducts.filter(p => p.productType === productType);
     }
     if (search) {
       const searchStr = normalizeSearchText(search);
@@ -1392,7 +1820,7 @@ app.get('/api/products', (req, res) => {
     const offset = Number.isFinite(parsedOffset) && parsedOffset > 0 ? Math.floor(parsedOffset) : 0;
     const pageProducts = limit ? allProducts.slice(offset, offset + limit) : allProducts;
     const defaultPrices = loadDefaultPriceLookup(req.user.tenantId);
-    const enrichedProducts = withStockAvailabilityBatch(req.user.tenantId, pageProducts, defaultPrices, allTenantProducts);
+    const enrichedProducts = withStockAvailabilityBatch(req.user.tenantId, pageProducts, defaultPrices, allTenantProducts).map((product) => redactProductForUser(req, product));
     if (String(req.query.includeMeta || '').toLowerCase() === 'true') {
       return res.json({ items: enrichedProducts, total, offset, limit: limit || total });
     }
@@ -1405,16 +1833,20 @@ app.get('/api/products', (req, res) => {
 
 app.get('/api/products/summary', (req, res) => {
   try {
+    if (!ensureAnyPermission(req, res, ['inventory.view', 'sales.view', 'dashboard.view'])) return;
     const rows = db.select({
       stock: schema.products.stock,
       purchasePrice: schema.products.purchasePrice,
       trackStock: schema.products.trackStock,
       lowStockThreshold: schema.products.lowStockThreshold,
-    }).from(schema.products).where(eq(schema.products.tenantId, req.user.tenantId)).all();
+    }).from(schema.products).where(and(
+      eq(schema.products.tenantId, req.user.tenantId),
+      eq(schema.products.status, 'active'),
+    )).all();
     res.json({
       total: rows.length,
       totalStock: rows.reduce((sum, row) => sum + Number(row.stock || 0), 0),
-      stockValue: rows.reduce((sum, row) => sum + Number(row.stock || 0) * Number(row.purchasePrice || 0), 0),
+      stockValue: hasPermission(req, 'inventory.view_cost') ? rows.reduce((sum, row) => sum + Number(row.stock || 0) * Number(row.purchasePrice || 0), 0) : 0,
       lowStock: rows.filter((row) => Boolean(row.trackStock) && Number(row.stock || 0) <= Number(row.lowStockThreshold || 0)).length,
     });
   } catch (err) {
@@ -1457,10 +1889,11 @@ app.get('/api/products/import-history/:batchId/issues', (req, res) => {
 
 app.get('/api/products/:id', (req, res) => {
   try {
+    if (!ensureAnyPermission(req, res, ['inventory.view', 'sales.view'])) return;
     const product = db.select().from(schema.products)
       .where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
     if (!product) return res.status(404).json({ error: 'Product not found' });
-    res.json(withStockAvailability(req.user.tenantId, product, loadDefaultPriceLookup(req.user.tenantId)));
+    res.json(redactProductForUser(req, withStockAvailability(req.user.tenantId, product, loadDefaultPriceLookup(req.user.tenantId))));
   } catch (err) {
     console.error('GET /api/products/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1469,9 +1902,11 @@ app.get('/api/products/:id', (req, res) => {
 
 app.get('/api/products/:id/units', (req, res) => {
   try {
+    if (!ensureAnyPermission(req, res, ['inventory.view', 'sales.view'])) return;
     const product = db.select().from(schema.products).where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
     if (!product) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
-    res.json(productUnitsFor(req.user.tenantId, product, loadDefaultPriceLookup(req.user.tenantId)));
+    const units = productUnitsFor(req.user.tenantId, product, loadDefaultPriceLookup(req.user.tenantId));
+    res.json(hasPermission(req, 'inventory.view_cost') ? units : units.map((unit: any) => ({ ...unit, purchasePrice: 0 })));
   } catch (err) { res.status(500).json({ error: 'Không thể tải đơn vị quy đổi' }); }
 });
 
@@ -1565,6 +2000,16 @@ type KiotImportRow = {
   factor: number;
   attributes: string;
   relatedSku: string;
+  components: string;
+  active: boolean;
+  invalidComponentTokens: string[];
+};
+
+type KiotImportComponentPlan = {
+  code: string;
+  quantity: number;
+  productId?: string;
+  baseSku?: string;
 };
 
 type KiotImportIssue = {
@@ -1579,6 +2024,7 @@ type KiotImportWarning = {
   rowNumber: number;
   message: string;
   sku: string;
+  code?: string;
 };
 
 const importText = (value: unknown) => String(value ?? '').trim();
@@ -1587,6 +2033,42 @@ const importNumber = (value: unknown, fallback = 0) => {
   if (value === null || value === undefined || value === '') return fallback;
   const parsed = Number(String(value).replace(/,/g, '').trim());
   return Number.isFinite(parsed) ? parsed : fallback;
+};
+const importBoolean = (value: unknown, fallback = true) => {
+  if (value === null || value === undefined || value === '') return fallback;
+  return ['1', 'true', 'yes', 'y', 'có', 'co', 'active', 'đang kinh doanh', 'dang kinh doanh'].includes(importText(value).toLowerCase());
+};
+const parseKiotComponentMapping = (value: unknown): { components: Array<{ code: string; quantity: number }>; invalidTokens: string[] } => {
+  if (Array.isArray(value)) {
+    const components: Array<{ code: string; quantity: number }> = [];
+    const invalidTokens: string[] = [];
+    value.forEach((item) => {
+      const record = (item || {}) as Record<string, unknown>;
+      const code = importText(record.code || record.sku || record.barcode || record.productCode);
+      const quantity = Number(importText(record.quantity).replace(',', '.'));
+      if (!code || !Number.isFinite(quantity) || quantity <= 0) invalidTokens.push(code || JSON.stringify(item));
+      else components.push({ code, quantity });
+    });
+    return { components, invalidTokens };
+  }
+
+  const raw = importText(value);
+  if (!raw) return { components: [], invalidTokens: [] };
+  const components: Array<{ code: string; quantity: number }> = [];
+  const invalidTokens: string[] = [];
+  raw.split('|').map((token) => token.trim()).filter(Boolean).forEach((token) => {
+    const separator = token.lastIndexOf(':');
+    if (separator <= 0) {
+      invalidTokens.push(token);
+      return;
+    }
+    const code = importText(token.slice(0, separator));
+    const quantityText = importText(token.slice(separator + 1)).replace(',', '.');
+    const quantity = Number(quantityText);
+    if (!code || !Number.isFinite(quantity) || quantity <= 0) invalidTokens.push(token);
+    else components.push({ code, quantity });
+  });
+  return { components, invalidTokens };
 };
 const importAttributeData = (value: unknown) => {
   const raw = importText(value);
@@ -1607,6 +2089,7 @@ const buildKiotImportPlan = (tenantId: string, rawRows: unknown[]) => {
   const rows: KiotImportRow[] = rawRows.map((raw, index) => {
     const value = (raw || {}) as Record<string, unknown>;
     const typeText = importText(value.productType || value.type).toLowerCase();
+    const parsedComponents = parseKiotComponentMapping(value.components || value.componentMappings || value.componentMapping || value.hangThanhPhan);
     return {
       rowNumber: Number(value.rowNumber) || index + 2,
       productType: typeText.includes('combo') ? 'combo' : 'standard',
@@ -1619,11 +2102,14 @@ const buildKiotImportPlan = (tenantId: string, rawRows: unknown[]) => {
       stock: importNumber(value.stock),
       lowStockThreshold: importNumber(value.lowStockThreshold),
       maxStockThreshold: importNumber(value.maxStockThreshold),
-      unit: importText(value.unit),
+      unit: importText(value.unit) || (typeText.includes('combo') ? 'Bộ' : 'Cái'),
       baseSku: importText(value.baseSku),
       factor: importNumber(value.factor, 1),
       attributes: importText(value.attributes),
       relatedSku: importText(value.relatedSku),
+      components: importText(value.components || value.componentMappings || value.componentMapping || value.hangThanhPhan),
+      active: importBoolean(value.active, true),
+      invalidComponentTokens: parsedComponents.invalidTokens,
     };
   });
 
@@ -1636,8 +2122,8 @@ const buildKiotImportPlan = (tenantId: string, rawRows: unknown[]) => {
     issueKeys.add(key);
     issues.push({ rowNumber: row.rowNumber, code, message, sku: row.sku, barcode: row.barcode });
   };
-  const addWarning = (row: KiotImportRow, message: string) => {
-    warnings.push({ rowNumber: row.rowNumber, message, sku: row.sku });
+  const addWarning = (row: KiotImportRow, message: string, code = 'WARNING') => {
+    warnings.push({ rowNumber: row.rowNumber, message, sku: row.sku, code });
   };
 
   const countBy = (values: string[]) => {
@@ -1658,12 +2144,16 @@ const buildKiotImportPlan = (tenantId: string, rawRows: unknown[]) => {
     if (row.lowStockThreshold < 0 || row.maxStockThreshold < 0) addIssue(row, 'INVALID_STOCK_LIMIT', 'Tồn tối thiểu/tối đa không hợp lệ.');
     if (row.maxStockThreshold > 0 && row.lowStockThreshold > row.maxStockThreshold) addIssue(row, 'INVALID_STOCK_RANGE', 'Tồn tối thiểu lớn hơn tồn tối đa.');
     if (!row.unit) {
-      row.unit = 'Cái';
-      addWarning(row, 'Thiếu ĐVT, hệ thống dùng mặc định “Cái”.');
+      row.unit = row.productType === 'combo' ? 'Bộ' : 'Cái';
+      addWarning(row, `Thiếu ĐVT, hệ thống dùng mặc định “${row.unit}”.`);
     }
     if (row.factor <= 0 || !Number.isFinite(row.factor)) addIssue(row, 'INVALID_FACTOR', 'Quy đổi phải lớn hơn 0.');
     if (row.baseSku && row.baseSku === row.sku) addIssue(row, 'SELF_PARENT', 'Đơn vị quy đổi không được trỏ về chính nó.');
     if (row.baseSku && !row.sku) addIssue(row, 'MISSING_UNIT_SKU', 'Đơn vị quy đổi phải có Mã hàng/SKU.');
+    row.invalidComponentTokens.forEach((token) => addIssue(row, 'INVALID_COMPONENT_MAPPING', `Dòng thành phần không hợp lệ: ${token}. Dùng định dạng Mã hàng:Số lượng.`));
+    if (row.productType === 'combo' && !row.components && !row.invalidComponentTokens.length) {
+      addWarning(row, 'Combo chưa có dòng thành phần; combo vẫn được tạo để bổ sung sau.', 'COMBO_MISSING_COMPONENTS');
+    }
     if (skuCounts.get(importCode(row.sku))! > 1) addIssue(row, 'DUPLICATE_SKU_FILE', 'Mã hàng/SKU bị trùng trong file.');
     if (row.barcode && barcodeCounts.get(importCode(row.barcode))! > 1) addIssue(row, 'DUPLICATE_BARCODE_FILE', 'Mã vạch bị trùng trong file.');
   });
@@ -1692,6 +2182,24 @@ const buildKiotImportPlan = (tenantId: string, rawRows: unknown[]) => {
   const baseRows = rows.filter((row) => !row.baseSku);
   const unitRows = rows.filter((row) => Boolean(row.baseSku));
   const baseBySku = new Map(baseRows.map((row) => [importCode(row.sku), row]));
+  const baseRowsBySku = new Map<string, KiotImportRow[]>();
+  const baseRowsByBarcode = new Map<string, KiotImportRow[]>();
+  const unitRowsBySku = new Map<string, KiotImportRow[]>();
+  const unitRowsByBarcode = new Map<string, KiotImportRow[]>();
+  const addRowToMap = (map: Map<string, KiotImportRow[]>, key: string, row: KiotImportRow) => {
+    if (!key) return;
+    const current = map.get(key) || [];
+    current.push(row);
+    map.set(key, current);
+  };
+  baseRows.forEach((row) => {
+    addRowToMap(baseRowsBySku, importCode(row.sku), row);
+    addRowToMap(baseRowsByBarcode, importCode(row.barcode), row);
+  });
+  unitRows.forEach((row) => {
+    addRowToMap(unitRowsBySku, importCode(row.sku), row);
+    addRowToMap(unitRowsByBarcode, importCode(row.barcode), row);
+  });
   const basePlans = new Map<string, { row: KiotImportRow; product: any | null; mode: 'create' | 'update'; errors: KiotImportIssue[] }>();
   const unitPlans: Array<{ row: KiotImportRow; product: any | null; unit: any | null; mode: 'create' | 'update'; errors: KiotImportIssue[] }> = [];
 
@@ -1744,8 +2252,111 @@ const buildKiotImportPlan = (tenantId: string, rawRows: unknown[]) => {
     unitPlans.push({ row, product, unit, mode: unit ? 'update' : 'create', errors: rowIssues });
   }
 
+  const componentPlans = new Map<string, KiotImportComponentPlan[]>();
+  const uniqueRow = (map: Map<string, KiotImportRow[]>, key: string) => {
+    const matches = map.get(key) || [];
+    return matches.length === 1 ? matches[0] : null;
+  };
+  const uniqueExisting = (map: Map<string, any[]>, key: string) => {
+    const matches = map.get(key) || [];
+    return matches.length === 1 ? matches[0] : null;
+  };
+
+  for (const comboRow of baseRows.filter((row) => row.productType === 'combo')) {
+    if (issues.some((issue) => issue.rowNumber === comboRow.rowNumber)) continue;
+    const resolvedByTarget = new Map<string, KiotImportComponentPlan>();
+    const sourceComponents = parseKiotComponentMapping(comboRow.components).components;
+    for (const component of sourceComponents) {
+      const code = importCode(component.code);
+      let resolved: KiotImportComponentPlan | null = null;
+
+      const sourceBarcodeMatches = baseRowsByBarcode.get(code) || [];
+      const sourceSkuMatches = baseRowsBySku.get(code) || [];
+      if (sourceBarcodeMatches.length > 1 || (!sourceBarcodeMatches.length && sourceSkuMatches.length > 1)) {
+        addWarning(comboRow, `Mã thành phần ${component.code} bị trùng trong file, chưa thể mapping.`, 'COMBO_COMPONENT_AMBIGUOUS');
+        continue;
+      }
+      const sourceBase = uniqueRow(baseRowsByBarcode, code) || uniqueRow(baseRowsBySku, code);
+      if (sourceBase) {
+        if (sourceBase.rowNumber === comboRow.rowNumber || sourceBase.productType === 'combo') {
+          addWarning(comboRow, `Mã thành phần ${component.code} trỏ tới combo, không thể lồng combo.`, 'COMBO_COMPONENT_NESTED');
+          continue;
+        }
+        if (issues.some((issue) => issue.rowNumber === sourceBase.rowNumber)) {
+          addWarning(comboRow, `Mã thành phần ${component.code} có lỗi ở dòng nguồn nên chưa thể mapping.`, 'COMBO_COMPONENT_INVALID_SOURCE');
+          continue;
+        }
+        resolved = { code: component.code, quantity: component.quantity, baseSku: sourceBase.sku };
+      }
+
+      if (!resolved) {
+        const sourceUnitBarcodeMatches = unitRowsByBarcode.get(code) || [];
+        const sourceUnitSkuMatches = unitRowsBySku.get(code) || [];
+        if (sourceUnitBarcodeMatches.length > 1 || (!sourceUnitBarcodeMatches.length && sourceUnitSkuMatches.length > 1)) {
+          addWarning(comboRow, `Mã thành phần ${component.code} bị trùng ở đơn vị quy đổi, chưa thể mapping.`, 'COMBO_COMPONENT_AMBIGUOUS');
+          continue;
+        }
+        const sourceUnit = uniqueRow(unitRowsByBarcode, code) || uniqueRow(unitRowsBySku, code);
+        if (sourceUnit) {
+          const parent = baseBySku.get(importCode(sourceUnit.baseSku));
+          if (!parent || parent.productType === 'combo') {
+            addWarning(comboRow, `Không tìm thấy sản phẩm cơ sở cho đơn vị thành phần ${component.code}.`, 'COMBO_COMPONENT_PARENT_MISSING');
+          } else if (issues.some((issue) => issue.rowNumber === parent.rowNumber)) {
+            addWarning(comboRow, `Sản phẩm cơ sở của thành phần ${component.code} có lỗi nên chưa thể mapping.`, 'COMBO_COMPONENT_INVALID_SOURCE');
+          } else {
+            resolved = { code: component.code, quantity: component.quantity, baseSku: parent.sku };
+          }
+        }
+      }
+
+      if (!resolved) {
+        const existingProductBarcodeMatches = productsByBarcode.get(code) || [];
+        const existingProductSkuMatches = productsBySku.get(code) || [];
+        if (existingProductBarcodeMatches.length > 1 || (!existingProductBarcodeMatches.length && existingProductSkuMatches.length > 1)) {
+          addWarning(comboRow, `Mã thành phần ${component.code} đang trùng ở sản phẩm HKD Smart.`, 'COMBO_COMPONENT_AMBIGUOUS');
+          continue;
+        }
+        const existingProduct = uniqueExisting(productsByBarcode, code) || uniqueExisting(productsBySku, code);
+        if (existingProduct) {
+          if (existingProduct.id === basePlans.get(importCode(comboRow.sku))?.product?.id || existingProduct.productType === 'combo') {
+            addWarning(comboRow, `Mã thành phần ${component.code} trỏ tới combo, không thể lồng combo.`, 'COMBO_COMPONENT_NESTED');
+          } else {
+            resolved = { code: component.code, quantity: component.quantity, productId: existingProduct.id };
+          }
+        }
+      }
+
+      if (!resolved) {
+        const existingUnitBarcodeMatches = unitsByBarcode.get(code) || [];
+        const existingUnitSkuMatches = unitsBySku.get(code) || [];
+        if (existingUnitBarcodeMatches.length > 1 || (!existingUnitBarcodeMatches.length && existingUnitSkuMatches.length > 1)) {
+          addWarning(comboRow, `Mã thành phần ${component.code} đang trùng ở đơn vị quy đổi HKD Smart.`, 'COMBO_COMPONENT_AMBIGUOUS');
+          continue;
+        }
+        const existingUnit = uniqueExisting(unitsByBarcode, code) || uniqueExisting(unitsBySku, code);
+        if (existingUnit) resolved = { code: component.code, quantity: component.quantity, productId: existingUnit.productId };
+      }
+
+      if (!resolved) {
+        addWarning(comboRow, `Không tìm thấy mã thành phần ${component.code} trong file hoặc HKD Smart.`, 'COMBO_COMPONENT_NOT_FOUND');
+        continue;
+      }
+
+      const targetKey = resolved.productId ? `id:${resolved.productId}` : `sku:${importCode(resolved.baseSku)}`;
+      const previous = resolvedByTarget.get(targetKey);
+      if (previous) previous.quantity += resolved.quantity;
+      else resolvedByTarget.set(targetKey, resolved);
+    }
+    componentPlans.set(importCode(comboRow.sku), [...resolvedByTarget.values()]);
+  }
+
   const validBaseRows = baseRows.filter((row) => !issues.some((issue) => issue.rowNumber === row.rowNumber));
   const validUnitRows = unitRows.filter((row) => !issues.some((issue) => issue.rowNumber === row.rowNumber));
+  const componentWarningRowNumbers = new Set(
+    warnings
+      .filter((warning) => String(warning.code || '').startsWith('COMBO_'))
+      .map((warning) => warning.rowNumber),
+  );
   const summary = {
     totalRows: rows.length,
     productRows: baseRows.length,
@@ -1754,11 +2365,17 @@ const buildKiotImportPlan = (tenantId: string, rawRows: unknown[]) => {
     updatedCount: validBaseRows.filter((row) => basePlans.get(importCode(row.sku))?.mode === 'update').length,
     unitCount: validUnitRows.length,
     comboCount: validBaseRows.filter((row) => row.productType === 'combo').length,
+    componentCount: validBaseRows
+      .filter((row) => row.productType === 'combo')
+      .reduce((sum, row) => sum + (componentPlans.get(importCode(row.sku)) || []).length, 0),
+    comboWithComponents: validBaseRows.filter((row) => row.productType === 'combo' && (componentPlans.get(importCode(row.sku)) || []).length > 0).length,
+    comboMissingComponents: validBaseRows.filter((row) => row.productType === 'combo' && ((componentPlans.get(importCode(row.sku)) || []).length === 0 || componentWarningRowNumbers.has(row.rowNumber))).length,
+    componentWarningCount: warnings.filter((warning) => String(warning.code || '').startsWith('COMBO_COMPONENT') || warning.code === 'COMBO_MISSING_COMPONENTS').length,
     errorCount: issues.length,
     warningCount: warnings.length,
   };
 
-  return { rows, baseRows, unitRows, basePlans, unitPlans, issues, warnings, summary };
+  return { rows, baseRows, unitRows, basePlans, unitPlans, componentPlans, issues, warnings, summary };
 };
 
 const kiotImportFingerprint = (sourceSystem: string, rows: unknown[]) => crypto
@@ -1777,7 +2394,7 @@ app.post('/api/products/import/preview', (req, res) => {
     res.json({ sourceSystem, fingerprint: kiotImportFingerprint(sourceSystem, rows), summary: plan.summary, issues: plan.issues, warnings: plan.warnings });
   } catch (err) {
     console.error('POST /api/products/import/preview error:', err);
-    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể kiểm tra file Kiot Việt.' });
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể kiểm tra file dữ liệu.' });
   }
 });
 
@@ -1824,6 +2441,10 @@ app.post('/api/products/import', (req, res) => {
         updatedCount: plan.summary.updatedCount,
         unitCount: plan.summary.unitCount,
         comboCount: plan.summary.comboCount,
+        componentCount: plan.summary.componentCount,
+        comboWithComponents: plan.summary.comboWithComponents,
+        comboMissingComponents: plan.summary.comboMissingComponents,
+        componentWarningCount: plan.summary.componentWarningCount,
         errorCount: plan.summary.errorCount,
         createdBy: userId,
         createdAt: now,
@@ -1836,7 +2457,7 @@ app.post('/api/products/import', (req, res) => {
       const categoryByName = new Map(existingCategories.map((category) => [category.name.trim().toLowerCase(), category]));
       categoryNames.forEach((name) => {
         if (categoryByName.has(name.trim().toLowerCase())) return;
-        const category = { id: uuid(), tenantId: req.user.tenantId, name, description: 'Import từ Kiot Việt' };
+        const category = { id: uuid(), tenantId: req.user.tenantId, name, description: 'Import dữ liệu' };
         tx.insert(schema.categories).values(category).run();
         categoryByName.set(name.trim().toLowerCase(), category);
       });
@@ -1891,7 +2512,7 @@ app.post('/api/products/import', (req, res) => {
           trackStock: true,
           lowStockThreshold: row.lowStockThreshold,
           maxStockThreshold: row.maxStockThreshold,
-          status: 'active' as const,
+          status: row.active ? 'active' as const : 'inactive' as const,
           barcode: row.barcode || null,
           productType: row.productType,
           attributes: row.attributes || null,
@@ -1913,7 +2534,7 @@ app.post('/api/products/import', (req, res) => {
             quantity: Math.abs(afterStock - beforeStock),
             beforeStock,
             afterStock,
-            note: `Nhập tồn đầu kỳ từ Kiot Việt${fileName ? ` · ${fileName}` : ''}`,
+            note: `Nhập tồn đầu kỳ từ file import${fileName ? ` · ${fileName}` : ''}`,
             referenceId: batchId,
             createdAt: now,
             createdBy: userId,
@@ -1949,6 +2570,30 @@ app.post('/api/products/import', (req, res) => {
         saveDefaultPrice(parent.id, row.unit, row.factor, row.sellingPrice);
       }
 
+      for (const comboRow of plan.baseRows.filter((row) => row.productType === 'combo')) {
+        if (plan.issues.some((issue) => issue.rowNumber === comboRow.rowNumber)) continue;
+        const combo = importedProducts.get(importCode(comboRow.sku));
+        if (!combo) continue;
+        tx.delete(schema.productComponents).where(and(
+          eq(schema.productComponents.comboProductId, combo.id),
+          eq(schema.productComponents.tenantId, req.user.tenantId),
+        )).run();
+        for (const componentPlan of plan.componentPlans.get(importCode(comboRow.sku)) || []) {
+          const component = componentPlan.productId
+            ? tx.select().from(schema.products).where(and(eq(schema.products.id, componentPlan.productId), eq(schema.products.tenantId, req.user.tenantId))).get()
+            : importedProducts.get(importCode(componentPlan.baseSku));
+          if (!component || component.productType === 'combo' || component.id === combo.id) continue;
+          tx.insert(schema.productComponents).values({
+            id: uuid(),
+            tenantId: req.user.tenantId,
+            comboProductId: combo.id,
+            componentProductId: component.id,
+            quantity: componentPlan.quantity,
+            createdAt: now,
+          }).run();
+        }
+      }
+
       for (const issue of plan.issues) {
         tx.insert(schema.productImportIssues).values({
           id: uuid(),
@@ -1968,14 +2613,41 @@ app.post('/api/products/import', (req, res) => {
     res.json({ batchId, summary: result, issues: plan.issues, warnings: plan.warnings });
   } catch (err) {
     console.error('POST /api/products/import error:', err);
-    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể import file Kiot Việt.' });
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Không thể import file dữ liệu.' });
   }
 });
 
 app.post('/api/products', (req, res) => {
   try {
     if (!ensurePermission(req, res, 'inventory.create')) return;
-    const product = { id: uuid(), productType: 'standard' as const, ...req.body, tenantId: req.user.tenantId };
+    const fields = pickProductFields(req.body);
+    if (!fields.name || !fields.sku || !fields.category || !fields.unit) return res.status(400).json({ error: 'Tên, SKU, danh mục và đơn vị tính là bắt buộc.' });
+    const nullableText = (value: unknown) => value === undefined || value === null || String(value).trim() === '' ? null : String(value).trim();
+    const product = {
+      id: uuid(),
+      tenantId: req.user.tenantId,
+      sku: String(fields.sku),
+      name: String(fields.name),
+      category: String(fields.category),
+      unit: String(fields.unit),
+      purchasePrice: Number(fields.purchasePrice ?? 0),
+      sellingPrice: Number(fields.sellingPrice ?? 0),
+      taxRate: Number(fields.taxRate ?? 0),
+      stock: Number(fields.stock ?? 0),
+      trackStock: fields.trackStock !== false,
+      lowStockThreshold: Number(fields.lowStockThreshold ?? 10),
+      maxStockThreshold: Number(fields.maxStockThreshold ?? 0),
+      status: fields.status === 'inactive' ? 'inactive' as const : 'active' as const,
+      productType: fields.productType === 'combo' ? 'combo' as const : 'standard' as const,
+      barcode: nullableText(fields.barcode),
+      imageUrl: nullableText(fields.imageUrl),
+      attributes: nullableText(fields.attributes),
+      attributesJson: nullableText(fields.attributesJson),
+      sourceSystem: nullableText(fields.sourceSystem),
+      sourceCode: nullableText(fields.sourceCode),
+      sourceRelatedCode: nullableText(fields.sourceRelatedCode),
+      sourceImportedAt: nullableText(fields.sourceImportedAt),
+    };
     db.insert(schema.products).values(product).run();
     res.status(201).json(product);
   } catch (err) {
@@ -1990,7 +2662,10 @@ app.patch('/api/products/:id', (req, res) => {
     const product = db.select().from(schema.products)
       .where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
     if (!product) return res.status(404).json({ error: 'Product not found' });
-    const { tenantId: _tenantId, stock: _stock, ...updates } = req.body;
+    const updates = pickProductFields(req.body);
+    delete updates.stock;
+    delete updates.tenantId;
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'Không có trường hợp lệ để cập nhật.' });
     db.update(schema.products).set(updates).where(eq(schema.products.id, req.params.id)).run();
     const updated = db.select().from(schema.products).where(eq(schema.products.id, req.params.id)).get();
     if (!updated) return res.status(404).json({ error: 'Product not found' });
@@ -2007,8 +2682,14 @@ app.delete('/api/products/:id', (req, res) => {
     const product = db.select().from(schema.products)
       .where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId))).get();
     if (!product) return res.status(404).json({ error: 'Product not found' });
-    db.delete(schema.products).where(eq(schema.products.id, req.params.id)).run();
-    res.json({ success: true });
+    // Products referenced by invoices, stock cards, price lists, or combos
+    // must remain available for historical reporting. Mark them inactive so
+    // they disappear from the active catalog without breaking those records.
+    db.update(schema.products)
+      .set({ status: 'inactive' })
+      .where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId)))
+      .run();
+    res.json({ success: true, archived: true });
   } catch (err) {
     console.error('DELETE /api/products/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -2033,24 +2714,25 @@ app.post('/api/products/:id/stock', (req, res) => {
       : product.stock + qty;
     const afterStock = Math.max(0, newStock);
 
-    db.update(schema.products)
-      .set({ stock: afterStock })
-      .where(eq(schema.products.id, req.params.id))
-      .run();
-
-    db.insert(schema.stockMovements).values({
-      id: uuid(),
-      tenantId: req.user.tenantId,
-      productId: req.params.id,
-      type: type === 'decrease' ? 'out' : 'in',
-      quantity: qty,
-      beforeStock,
-      afterStock,
-      note: note || (type === 'decrease' ? 'Xuất kho' : 'Nhập kho'),
-      referenceId: null,
-      createdAt: new Date().toISOString(),
-      createdBy: req.user.id,
-    }).run();
+    db.transaction((tx) => {
+      tx.update(schema.products)
+        .set({ stock: afterStock })
+        .where(and(eq(schema.products.id, req.params.id), eq(schema.products.tenantId, req.user.tenantId)))
+        .run();
+      tx.insert(schema.stockMovements).values({
+        id: uuid(),
+        tenantId: req.user.tenantId,
+        productId: req.params.id,
+        type: type === 'decrease' ? 'out' : 'in',
+        quantity: qty,
+        beforeStock,
+        afterStock,
+        note: note || (type === 'decrease' ? 'Xuất kho' : 'Nhập kho'),
+        referenceId: null,
+        createdAt: new Date().toISOString(),
+        createdBy: req.user.id,
+      }).run();
+    });
 
     const updated = db.select().from(schema.products).where(eq(schema.products.id, req.params.id)).get();
     res.json(updated);
@@ -2134,6 +2816,7 @@ const backfillSalesCashbookAccounts = () => {
 backfillSalesCashbookAccounts();
 app.get('/api/suppliers', (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'partners.view')) return;
     let rows = db.select().from(schema.suppliers)
       .where(eq(schema.suppliers.tenantId, req.user.tenantId)).all();
     const search = normalizeSearchText(req.query.search);
@@ -2164,8 +2847,13 @@ app.patch('/api/suppliers/:id', (req, res) => {
     if (!ensurePermission(req, res, 'partners.update')) return;
     const supplier = db.select().from(schema.suppliers).where(and(eq(schema.suppliers.id, req.params.id), eq(schema.suppliers.tenantId, req.user.tenantId))).get();
     if (!supplier) return res.status(404).json({ error: 'Supplier not found' });
-    const { tenantId: _tenantId, currentPayable: _payable, ...updates } = req.body || {};
-    db.update(schema.suppliers).set(updates).where(eq(schema.suppliers.id, supplier.id)).run();
+    const updates: Record<string, unknown> = {};
+    for (const field of ['code', 'name', 'phone', 'taxCode', 'address', 'note', 'active'] as const) {
+      if (req.body?.[field] !== undefined) updates[field] = field === 'active' ? Boolean(req.body[field]) : String(req.body[field] || '').trim();
+    }
+    if (updates.name !== undefined && !updates.name) return res.status(400).json({ error: 'Tên nhà cung cấp là bắt buộc' });
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'Không có trường hợp lệ để cập nhật' });
+    db.update(schema.suppliers).set(updates).where(and(eq(schema.suppliers.id, supplier.id), eq(schema.suppliers.tenantId, req.user.tenantId))).run();
     res.json(db.select().from(schema.suppliers).where(eq(schema.suppliers.id, supplier.id)).get());
   } catch (err) {
     console.error('PATCH /api/suppliers/:id error:', err);
@@ -2175,6 +2863,7 @@ app.patch('/api/suppliers/:id', (req, res) => {
 
 app.get('/api/purchases', (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'purchases.view')) return;
     const rows = db.select().from(schema.purchases).where(eq(schema.purchases.tenantId, req.user.tenantId)).orderBy(desc(schema.purchases.createdAt)).all();
     const tenantUsers = db.select().from(schema.users).where(eq(schema.users.tenantId, req.user.tenantId)).all();
     const userNameById = new Map(tenantUsers.map((user) => [user.id, user.name]));
@@ -2196,6 +2885,7 @@ app.get('/api/purchases', (req, res) => {
 
 app.get('/api/purchases/:id', (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'purchases.view')) return;
     const purchase = db.select().from(schema.purchases).where(and(eq(schema.purchases.id, req.params.id), eq(schema.purchases.tenantId, req.user.tenantId))).get();
     if (!purchase) return res.status(404).json({ error: 'Purchase not found' });
     const items = db.select().from(schema.purchaseItems).where(eq(schema.purchaseItems.purchaseId, purchase.id)).all();
@@ -2216,13 +2906,30 @@ app.post('/api/purchases', (req, res) => {
     if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'At least one purchase item is required' });
     const normalizedItems = items.map((item: any) => {
       const quantity = Number(item.quantity) || 0;
-      const price = Number(item.price) || 0;
+      const isGift = Boolean(item.isGift);
+      const price = isGift ? 0 : Number(item.price) || 0;
       if (!item.productId || quantity <= 0 || price < 0) throw new Error('Invalid purchase item');
       const product = db.select().from(schema.products).where(and(eq(schema.products.id, item.productId), eq(schema.products.tenantId, req.user.tenantId))).get();
       if (!product) throw new Error(`Product not found: ${item.productId}`);
       if (product.productType === 'combo') throw new Error('Không thể nhập trực tiếp sản phẩm combo');
       const unit = unitForProduct(req.user.tenantId, product, item.unitName || item.unit, item.unitFactor);
-      return { ...item, quantity, price, unitName: unit.name, unitFactor: unit.factor, baseQuantity: quantity * unit.factor, taxRate: Number(item.taxRate) || 0, total: quantity * price };
+      const requestedSellingPrice = item.sellingPrice === undefined || item.sellingPrice === null || item.sellingPrice === ''
+        ? null
+        : Number(item.sellingPrice);
+      if (requestedSellingPrice !== null && (!Number.isFinite(requestedSellingPrice) || requestedSellingPrice < 0)) throw new Error('Giá bán sau nhập không hợp lệ');
+      return {
+        ...item,
+        quantity,
+        price,
+        isGift,
+        sellingPrice: requestedSellingPrice,
+        note: String(item.note || '').trim().slice(0, 2000),
+        unitName: unit.name,
+        unitFactor: unit.factor,
+        baseQuantity: quantity * unit.factor,
+        taxRate: Number(item.taxRate) || 0,
+        total: quantity * price,
+      };
     });
     const totalAmount = normalizedItems.reduce((sum: number, item: any) => sum + item.total, 0);
     const finalAmount = totalAmount + (Number(taxAmount) || 0);
@@ -2238,17 +2945,52 @@ app.post('/api/purchases', (req, res) => {
     const accountId = directPaid > 0 ? (req.body?.accountId || defaultAccountForPayment(req.user.tenantId, paymentMethod)) : null;
 
     db.transaction((tx) => {
+      let defaultPriceList = tx.select().from(schema.priceLists).where(and(
+        eq(schema.priceLists.tenantId, req.user.tenantId),
+        eq(schema.priceLists.isDefault, true),
+      )).get();
+      const saveDefaultSellingPrice = (productId: string, unitName: string, unitFactor: number, price: number) => {
+        if (!defaultPriceList) {
+          const id = uuid();
+          tx.insert(schema.priceLists).values({ id, tenantId: req.user.tenantId, name: 'Bảng giá chung', customerType: 'all', isDefault: true, active: true, createdAt: timestamp }).run();
+          defaultPriceList = tx.select().from(schema.priceLists).where(eq(schema.priceLists.id, id)).get();
+        }
+        if (!defaultPriceList) throw new Error('Không thể khởi tạo bảng giá chung');
+        const existing = tx.select().from(schema.priceListItems).where(and(
+          eq(schema.priceListItems.priceListId, defaultPriceList.id),
+          eq(schema.priceListItems.productId, productId),
+          eq(schema.priceListItems.unitName, unitName),
+        )).get();
+        if (existing) {
+          tx.update(schema.priceListItems).set({ price, unitFactor }).where(eq(schema.priceListItems.id, existing.id)).run();
+        } else {
+          tx.insert(schema.priceListItems).values({ id: uuid(), tenantId: req.user.tenantId, priceListId: defaultPriceList.id, productId, unitName, unitFactor, price, createdAt: timestamp }).run();
+        }
+      };
       tx.insert(schema.purchases).values({ id: purchaseId, documentNo, tenantId: req.user.tenantId, supplierId, createdBy: req.user.id, totalAmount, taxAmount: Number(taxAmount) || 0, finalAmount, paidAmount: paid, payableAmount: payable, paymentMethod, accountId, status, note, createdAt: timestamp }).run();
       for (const item of normalizedItems) {
         const product = tx.select().from(schema.products).where(and(eq(schema.products.id, item.productId), eq(schema.products.tenantId, req.user.tenantId))).get();
         if (!product) throw new Error(`Product not found: ${item.productId}`);
         const beforeStock = product.stock;
         const afterStock = product.trackStock ? beforeStock + item.baseQuantity : beforeStock;
+        const sellingPrice = item.sellingPrice === null
+          ? Number(product.sellingPrice || 0) * Number(item.unitFactor || 1)
+          : Number(item.sellingPrice);
         if (product.trackStock) {
-          tx.update(schema.products).set({ stock: afterStock, purchasePrice: item.price }).where(eq(schema.products.id, product.id)).run();
+          tx.update(schema.products).set({
+            stock: afterStock,
+            ...(item.isGift ? {} : { purchasePrice: item.price }),
+            ...(item.unitName === product.unit || Number(item.unitFactor) === 1 ? { sellingPrice } : {}),
+          }).where(eq(schema.products.id, product.id)).run();
           tx.insert(schema.stockMovements).values({ id: uuid(), tenantId: req.user.tenantId, productId: product.id, type: 'in', quantity: item.baseQuantity, beforeStock, afterStock, note: `Nhập hàng ${purchaseId}`, referenceId: purchaseId, createdAt: timestamp, createdBy: req.user.id }).run();
+        } else if (!item.isGift || item.sellingPrice !== null) {
+          tx.update(schema.products).set({
+            ...(item.isGift ? {} : { purchasePrice: item.price }),
+            ...(item.unitName === product.unit || Number(item.unitFactor) === 1 ? { sellingPrice } : {}),
+          }).where(eq(schema.products.id, product.id)).run();
         }
-        tx.insert(schema.purchaseItems).values({ id: uuid(), purchaseId, productId: product.id, productName: product.name, unit: item.unitName, quantity: item.quantity, price: item.price, taxRate: item.taxRate, total: item.total, unitFactor: item.unitFactor, baseQuantity: item.baseQuantity }).run();
+        if (item.sellingPrice !== null) saveDefaultSellingPrice(product.id, item.unitName, item.unitFactor, sellingPrice);
+        tx.insert(schema.purchaseItems).values({ id: uuid(), purchaseId, productId: product.id, productName: product.name, unit: item.unitName, quantity: item.quantity, price: item.price, taxRate: item.taxRate, total: item.total, unitFactor: item.unitFactor, baseQuantity: item.baseQuantity, isGift: item.isGift, sellingPrice, note: item.note }).run();
       }
       if (creditUsed > 0) tx.insert(schema.supplierCreditLedger).values({ id: uuid(), tenantId: req.user.tenantId, supplierId: supplier.id, purchaseId, purchaseReturnId: null, amount: creditUsed, type: 'decrease', accountId: null, note: 'Cấn trừ số dư trả hàng nhà cung cấp', createdBy: req.user.id, createdAt: timestamp }).run();
       if (payable > 0) {
@@ -2371,6 +3113,7 @@ app.post('/api/suppliers/:id/credit-settlement', (req, res) => {
 
 app.get('/api/payable-ledger', (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'debt.view')) return;
     let rows = db.select().from(schema.payableLedger).where(eq(schema.payableLedger.tenantId, req.user.tenantId)).orderBy(desc(schema.payableLedger.createdAt)).all();
     if (req.query.supplierId) rows = rows.filter((row) => row.supplierId === req.query.supplierId);
     res.json(rows);
@@ -2409,6 +3152,7 @@ app.post('/api/payable-ledger', (req, res) => {
 
 app.get('/api/customers', (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'partners.view')) return;
     const { search } = req.query;
     const tenantUsers = db.select().from(schema.users)
       .where(eq(schema.users.tenantId, req.user.tenantId)).all();
@@ -2439,6 +3183,7 @@ app.get('/api/customers', (req, res) => {
 
 app.get('/api/customers/:id', (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'partners.view')) return;
     const tenantUsers = db.select().from(schema.users)
       .where(eq(schema.users.tenantId, req.user.tenantId)).all();
     const userNameById = new Map(tenantUsers.map((u) => [u.id, u.name]));
@@ -2638,11 +3383,35 @@ app.get('/api/customers/:id/debt-statement', (req, res) => {
   }
 });
 
+const pickCustomerFields = (body: any, requireName = false) => {
+  const result: Record<string, unknown> = {};
+  for (const field of ['code', 'name', 'phone', 'address', 'taxCode', 'companyName', 'invoiceAddress', 'shippingAddress', 'creditLimit', 'paymentDays', 'allowDebt', 'contactName', 'note', 'active', 'type']) {
+    if (body?.[field] !== undefined) result[field] = body[field];
+  }
+  if (requireName && (!result.name || !String(result.name).trim())) throw new Error('Tên khách hàng là bắt buộc.');
+  for (const field of ['creditLimit', 'paymentDays']) {
+    if (result[field] !== undefined) {
+      const value = Number(result[field]);
+      if (!Number.isFinite(value) || value < 0) throw new Error(`Trường ${field} không hợp lệ.`);
+      result[field] = value;
+    }
+  }
+  if (result.allowDebt !== undefined) result.allowDebt = Boolean(result.allowDebt);
+  if (result.active !== undefined) result.active = Boolean(result.active);
+  if (result.type !== undefined && result.type !== 'retail' && result.type !== 'loyal') throw new Error('Loại khách hàng không hợp lệ.');
+  if (result.tags !== undefined) delete result.tags;
+  return result;
+};
+
 app.post('/api/customers', (req, res) => {
   try {
     if (!ensurePermission(req, res, 'partners.create')) return;
-    const customer = {
+    const fields = pickCustomerFields(req.body, true);
+    const customer: any = {
       id: uuid(),
+      name: String(fields.name),
+      phone: String(fields.phone || ''),
+      address: String(fields.address || ''),
       code: String(req.body?.code || nextCustomerCode(req.user.tenantId)),
       totalDebt: 0,
       note: '',
@@ -2650,7 +3419,7 @@ app.post('/api/customers', (req, res) => {
       allowDebt: true,
       creditLimit: 0,
       paymentDays: 0,
-      ...req.body,
+      ...fields,
       tags: JSON.stringify(Array.isArray(req.body?.tags) ? req.body.tags : []),
       tenantId: req.user.tenantId,
       createdBy: req.user.id
@@ -2670,11 +3439,13 @@ app.patch('/api/customers/:id', (req, res) => {
     const customer = db.select().from(schema.customers)
       .where(and(eq(schema.customers.id, req.params.id), eq(schema.customers.tenantId, req.user.tenantId))).get();
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
-    const { tenantId: _tenantId, tags, ...updates } = req.body;
-    const patchData: any = { ...updates };
+    const patchData: any = pickCustomerFields(req.body);
+    delete patchData.code;
+    const tags = req.body?.tags;
     if (tags !== undefined) {
       patchData.tags = JSON.stringify(Array.isArray(tags) ? tags : []);
     }
+    if (!Object.keys(patchData).length) return res.status(400).json({ error: 'Không có trường hợp lệ để cập nhật.' });
     db.update(schema.customers).set(patchData).where(eq(schema.customers.id, req.params.id)).run();
     const updated = db.select().from(schema.customers).where(eq(schema.customers.id, req.params.id)).get();
     if (!updated) return res.status(404).json({ error: 'Customer not found' });
@@ -2767,7 +3538,9 @@ app.patch('/api/customer-care-logs/:id', (req, res) => {
 app.post('/api/customers/:id/debt', (req, res) => {
   try {
     if (!ensurePermission(req, res, 'debt.collect')) return;
-    const { amount, type } = req.body; // type: 'increase' | 'decrease'
+    const amount = Number(req.body?.amount);
+    const type = req.body?.type; // type: 'increase' | 'decrease'
+    if (!Number.isFinite(amount) || amount <= 0 || !['increase', 'decrease'].includes(type)) return res.status(400).json({ error: 'Số tiền hoặc loại điều chỉnh không hợp lệ.' });
     const customer = db.select().from(schema.customers)
       .where(and(eq(schema.customers.id, req.params.id), eq(schema.customers.tenantId, req.user.tenantId))).get();
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
@@ -2776,10 +3549,23 @@ app.post('/api/customers/:id/debt', (req, res) => {
       ? customer.totalDebt + amount
       : Math.max(0, customer.totalDebt - amount);
 
-    db.update(schema.customers)
-      .set({ totalDebt: newDebt })
-      .where(eq(schema.customers.id, req.params.id))
-      .run();
+    db.transaction((tx) => {
+      tx.update(schema.customers)
+        .set({ totalDebt: newDebt })
+        .where(and(eq(schema.customers.id, req.params.id), eq(schema.customers.tenantId, req.user.tenantId)))
+        .run();
+      tx.insert(schema.debtLedger).values({
+        id: uuid(),
+        tenantId: req.user.tenantId,
+        customerId: customer.id,
+        invoiceId: null,
+        amount,
+        type,
+        note: String(req.body?.note || 'Điều chỉnh công nợ').trim().slice(0, 500),
+        createdAt: new Date().toISOString(),
+        createdBy: req.user.id,
+      }).run();
+    });
 
     const updated = db.select().from(schema.customers).where(eq(schema.customers.id, req.params.id)).get();
     res.json(updated);
@@ -2839,6 +3625,7 @@ const priceForProduct = (tenantId: string, product: any, unitName?: string, unit
 
 app.get('/api/invoices', (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'sales.view')) return;
     autoCloseLegacyInvoices(req);
     const { customerId, status } = req.query;
     const tenantUsers = db.select().from(schema.users)
@@ -2869,6 +3656,7 @@ app.get('/api/invoices', (req, res) => {
 
 app.get('/api/invoices/:id', (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'sales.view')) return;
     autoCloseLegacyInvoices(req);
     const tenantUsers = db.select().from(schema.users)
       .where(eq(schema.users.tenantId, req.user.tenantId)).all();
@@ -2891,50 +3679,85 @@ app.post('/api/invoices', (req, res) => {
   try {
     if (!ensurePermission(req, res, 'sales.create')) return;
     const { items, ...invoiceData } = req.body;
-    const invoiceId = invoiceData.id || uuid();
-    const documentNo = String(invoiceData.documentNo || nextDocumentNo(req.user.tenantId, 'sale', 'HD'));
+    const invoiceId = uuid();
+    const documentNo = nextDocumentNo(req.user.tenantId, 'sale', 'HD');
     // A sale is posted at checkout. Keep the review/picking workflow for
     // legacy records only; new POS invoices must immediately affect stock,
     // cashbook, debt and reports.
     const workflowStatus = 'closed' as const;
     const customer = invoiceData.customerId ? db.select().from(schema.customers).where(and(eq(schema.customers.id, invoiceData.customerId), eq(schema.customers.tenantId, req.user.tenantId))).get() : null;
-    const finalAmount = Number(invoiceData.finalAmount) || 0;
+    if (invoiceData.customerId && !customer) return res.status(400).json({ error: 'Khách hàng không tồn tại' });
+    const paymentMethodValue = String(invoiceData.paymentMethod || 'cash');
+    if (!['cash', 'transfer', 'wallet', 'debt'].includes(paymentMethodValue)) return res.status(400).json({ error: 'Phương thức thanh toán không hợp lệ.' });
+    const paymentMethod = paymentMethodValue as 'cash' | 'transfer' | 'wallet' | 'debt';
+    const normalizedItems = Array.isArray(items) ? items.map((raw: any) => {
+      const product = db.select().from(schema.products).where(and(eq(schema.products.id, raw.productId), eq(schema.products.tenantId, req.user.tenantId), eq(schema.products.status, 'active'))).get();
+      if (!product) throw new Error(`Không tìm thấy sản phẩm: ${raw.productId}`);
+      const quantity = Number(raw.quantity) || 0;
+      if (quantity <= 0 || quantity > 1_000_000) throw new Error(`Số lượng không hợp lệ cho ${product.name}`);
+      const unit = unitForProduct(req.user.tenantId, product, raw.unitName || raw.unit, raw.unitFactor);
+      const resolved = priceForProduct(req.user.tenantId, product, unit.name, unit.factor, raw.priceListId, customer?.type);
+      const requestedPrice = raw.price !== undefined && raw.price !== null && raw.price !== '' ? Number(raw.price) : resolved.price;
+      const priceOverride = Boolean(raw.priceOverride);
+      if (!Number.isFinite(requestedPrice) || requestedPrice < 0) throw new Error(`Giá bán không hợp lệ cho ${product.name}`);
+      if (priceOverride && !hasPermission(req, 'sales.override_price')) throw new Error('Bạn không có quyền sửa giá bán');
+      const price = priceOverride ? requestedPrice : resolved.price;
+      const discountPercent = Math.min(100, Math.max(0, Number(raw.discountPercent) || 0));
+      const lineSubtotal = quantity * price;
+      const lineDiscount = lineSubtotal * discountPercent / 100;
+      const total = Math.max(0, lineSubtotal - lineDiscount);
+      return {
+        ...raw,
+        product,
+        quantity,
+        unitName: unit.name,
+        unitFactor: unit.factor,
+        baseQuantity: quantity * unit.factor,
+        price,
+        discountPercent,
+        taxRate: Number(product.taxRate || raw.taxRate || 0),
+        total,
+        priceListId: resolved.priceList?.id || null,
+        priceListName: resolved.priceList?.name || null,
+      };
+    }) : [];
+    if (!normalizedItems.length) return res.status(400).json({ error: 'Đơn hàng phải có ít nhất một mặt hàng.' });
+    const totalAmount = normalizedItems.reduce((sum: number, item: any) => sum + Number(item.total || 0), 0);
+    const requestedDiscount = Math.max(0, Number(invoiceData.discount) || 0);
+    const discount = Math.min(totalAmount, requestedDiscount);
+    const taxAmount = normalizedItems.reduce((sum: number, item: any) => sum + Number(item.total || 0) * Math.max(0, Number(item.taxRate || 0)) / 100, 0);
+    const finalAmount = Math.max(0, totalAmount - discount + taxAmount);
     const paidAmount = Math.max(0, Number(invoiceData.paidAmount) || 0);
     const previousDebtAmount = customer
       ? Math.max(0, Number(customer.totalDebt) || 0)
-      : Math.max(0, Number(invoiceData.previousDebtAmount) || 0);
+      : 0;
     const amountAppliedToInvoice = Math.min(finalAmount, paidAmount);
     const debtAmount = Math.max(0, finalAmount - amountAppliedToInvoice);
     const debtReduction = Math.min(previousDebtAmount, Math.max(0, paidAmount - finalAmount));
     const changeAmount = Math.max(0, paidAmount - finalAmount - previousDebtAmount);
-    const paymentStatus = invoiceData.paymentStatus || (debtAmount <= 0 ? 'paid' : paidAmount > 0 ? 'partial' : 'unpaid');
-    const normalizedItems = Array.isArray(items) ? items.map((raw: any) => {
-      const product = db.select().from(schema.products).where(and(eq(schema.products.id, raw.productId), eq(schema.products.tenantId, req.user.tenantId))).get();
-      if (!product) throw new Error(`Không tìm thấy sản phẩm: ${raw.productId}`);
-      const quantity = Number(raw.quantity) || 0;
-      if (quantity <= 0) throw new Error(`Số lượng không hợp lệ cho ${product.name}`);
-      const unit = unitForProduct(req.user.tenantId, product, raw.unitName || raw.unit, raw.unitFactor);
-      if (raw.priceOverride && !hasPermission(req, 'sales.override_price')) throw new Error('Bạn không có quyền sửa giá bán');
-      const resolved = priceForProduct(req.user.tenantId, product, unit.name, unit.factor, raw.priceListId, customer?.type);
-      const price = raw.price !== undefined && raw.price !== null && raw.price !== '' ? Number(raw.price) : resolved.price;
-      if (!Number.isFinite(price) || price < 0) throw new Error(`Giá bán không hợp lệ cho ${product.name}`);
-      return { ...raw, product, quantity, unitName: unit.name, unitFactor: unit.factor, baseQuantity: quantity * unit.factor, price, total: quantity * price, priceListId: raw.priceListId || resolved.priceList?.id || null, priceListName: raw.priceListName || resolved.priceList?.name || null };
-    }) : [];
+    const paymentStatus = debtAmount <= 0 ? 'paid' as const : paidAmount > 0 ? 'partial' as const : 'unpaid' as const;
+    const note = String(invoiceData.note || '').trim().slice(0, 2000);
     const invoice = {
-      ...invoiceData,
       id: invoiceId,
       documentNo,
       tenantId: req.user.tenantId,
+      customerId: customer?.id || null,
       createdBy: req.user.id,
-      createdAt: invoiceData.createdAt || new Date().toISOString(),
+      totalAmount,
+      discount,
+      taxAmount,
+      finalAmount,
+      paidAmount,
+      paymentMethod,
+      note,
+      createdAt: new Date().toISOString(),
       workflowStatus,
       paymentStatus,
       previousDebtAmount,
-      paidAmount,
       debtAmount,
       changeAmount,
-      status: invoiceData.status || (paymentStatus === 'paid' ? 'completed' : paymentStatus === 'partial' ? 'partial' : 'unpaid'),
-      accountId: Number(invoiceData.paidAmount) > 0 ? resolvePaymentAccount(req.user.tenantId, invoiceData.paymentMethod, invoiceData.accountId) : null,
+      status: paymentStatus === 'paid' ? 'completed' as const : paymentStatus === 'partial' ? 'partial' as const : 'unpaid' as const,
+      accountId: paidAmount > 0 ? resolvePaymentAccount(req.user.tenantId, paymentMethod, invoiceData.accountId) : null,
       version: 1,
     };
 
@@ -2947,7 +3770,8 @@ app.post('/api/invoices', (req, res) => {
       }
     }
 
-    db.insert(schema.invoices).values(invoice).run();
+    sqlite.transaction(() => {
+      db.insert(schema.invoices).values(invoice).run();
 
     // Insert invoice items
     const stockRequirements = new Map<string, number>();
@@ -2960,22 +3784,30 @@ app.post('/api/invoices', (req, res) => {
         for (const requirement of requirements) {
           const product = db.select().from(schema.products).where(and(eq(schema.products.id, requirement.productId), eq(schema.products.tenantId, req.user.tenantId))).get();
           if (product?.trackStock && Number(product.stock) - reservedBaseStock(req.user.tenantId, product.id) < requirement.quantity) {
-            db.delete(schema.invoices).where(eq(schema.invoices.id, invoiceId)).run();
-            return res.status(409).json({ error: `Không đủ tồn khả dụng cho ${product.name}` });
+            throw new BusinessError(409, `Không đủ tồn khả dụng cho ${product.name}`);
           }
         }
       }
       const itemsWithIds = normalizedItems.map((item: any) => {
-        const { product: _product, ...itemData } = item;
         return {
-        ...itemData,
-        id: item.id || uuid(),
-        invoiceId,
-        orderedQuantity: Number(item.orderedQuantity ?? item.quantity) || 0,
-        pickedQuantity: Number(item.pickedQuantity) || 0,
-        confirmedQuantity: Number(item.confirmedQuantity) || 0,
-        lineStatus: item.lineStatus || 'ordered',
-        note: item.note || '',
+          id: uuid(),
+          invoiceId,
+          productId: item.product.id,
+          productName: item.product.name,
+          quantity: item.quantity,
+          price: item.price,
+          taxRate: item.taxRate,
+          total: item.total,
+          orderedQuantity: item.quantity,
+          pickedQuantity: 0,
+          confirmedQuantity: 0,
+          lineStatus: 'ordered',
+          note: String(item.note || '').trim().slice(0, 1000),
+          unitName: item.unitName,
+          unitFactor: item.unitFactor,
+          baseQuantity: item.baseQuantity,
+          priceListId: item.priceListId,
+          priceListName: item.priceListName,
         };
       });
       db.insert(schema.invoiceItems).values(itemsWithIds).run();
@@ -3080,9 +3912,11 @@ app.post('/api/invoices', (req, res) => {
       }).run();
     }
 
+    })();
     res.status(201).json(invoice);
   } catch (err) {
     console.error('POST /api/invoices error:', err);
+    if (err instanceof BusinessError) return res.status(err.statusCode).json({ error: err.message });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -3099,6 +3933,7 @@ const writeAudit = (req: Request, action: string, entityId: string, meta: Record
 };
 
 function postDraftInvoice(req: Request, invoiceId: string, confirmedItems: any[]) {
+  return sqlite.transaction(() => {
   const invoice = invoiceById(req.user.tenantId, invoiceId);
   if (!invoice) throw new Error('Invoice not found');
   const now = new Date().toISOString();
@@ -3144,6 +3979,7 @@ function postDraftInvoice(req: Request, invoiceId: string, confirmedItems: any[]
     db.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'income', amount: adjustedPaidAmount, category: 'Bán hàng', note: `Thu từ hóa đơn ${invoiceId}`, referenceId: invoiceId, accountId: resolvedAccountId, createdAt: now, createdBy: req.user.id }).run();
   }
   return db.update(schema.invoices).set({ totalAmount: confirmedTotal, finalAmount: adjustedFinalAmount, paidAmount: adjustedPaidAmount, debtAmount: adjustedDebtAmount, accountId: resolvedAccountId, status: adjustedLegacyStatus, workflowStatus: 'closed', paymentStatus: adjustedPaymentStatus, closedBy: req.user.id, closedAt: now, version: invoice.version + 1 }).where(eq(schema.invoices.id, invoiceId)).returning().get();
+  })();
 }
 
 function autoCloseLegacyInvoices(req: Request) {
@@ -3173,9 +4009,19 @@ app.patch('/api/invoices/:id', (req, res) => {
     const invoice = invoiceById(req.user.tenantId, req.params.id);
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
     if (invoice.workflowStatus === 'closed' || invoice.workflowStatus === 'cancelled') return res.status(409).json({ error: 'Bill đã chốt hoặc đã hủy, không thể sửa trực tiếp' });
-    const { id: _id, tenantId: _tenantId, createdBy: _createdBy, workflowStatus: _workflowStatus, ...updates } = req.body || {};
     const nextVersion = Number(req.body?.version || invoice.version);
     if (nextVersion !== invoice.version) return res.status(409).json({ error: 'Bill đã được cập nhật bởi người khác' });
+    const updates: Record<string, unknown> = {};
+    if (req.body?.note !== undefined) updates.note = String(req.body.note || '').trim().slice(0, 2000);
+    if (req.body?.customerId !== undefined) {
+      const customerId = req.body.customerId ? String(req.body.customerId) : null;
+      if (customerId) {
+        const customer = db.select({ id: schema.customers.id }).from(schema.customers).where(and(eq(schema.customers.id, customerId), eq(schema.customers.tenantId, req.user.tenantId))).get();
+        if (!customer) return res.status(400).json({ error: 'Khách hàng không tồn tại' });
+      }
+      updates.customerId = customerId;
+    }
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'Không có trường chỉnh sửa hợp lệ.' });
     db.update(schema.invoices).set({ ...updates, version: invoice.version + 1 }).where(and(eq(schema.invoices.id, invoice.id), eq(schema.invoices.version, invoice.version))).run();
     writeAudit(req, 'invoice.update', invoice.id, { fields: Object.keys(updates) });
     res.json(invoiceById(req.user.tenantId, invoice.id));
@@ -3202,12 +4048,14 @@ app.post('/api/invoices/:id/pick', (req, res) => {
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
     if (!['checked', 'picking', 'ready_to_close'].includes(invoice.workflowStatus)) return res.status(409).json({ error: 'Bill chưa được kiểm' });
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
-    for (const item of items) {
-      const pickedQuantity = Math.max(0, Number(item.pickedQuantity) || 0);
-      db.update(schema.invoiceItems).set({ pickedQuantity, confirmedQuantity: pickedQuantity, lineStatus: pickedQuantity > 0 ? 'picked' : 'short' }).where(and(eq(schema.invoiceItems.id, item.id), eq(schema.invoiceItems.invoiceId, invoice.id))).run();
-    }
     const now = new Date().toISOString();
-    const updated = db.update(schema.invoices).set({ workflowStatus: 'ready_to_close', pickedBy: req.user.id, pickedAt: now, version: invoice.version + 1 }).where(eq(schema.invoices.id, invoice.id)).returning().get();
+    const updated = sqlite.transaction(() => {
+      for (const item of items) {
+        const pickedQuantity = Math.max(0, Number(item.pickedQuantity) || 0);
+        db.update(schema.invoiceItems).set({ pickedQuantity, confirmedQuantity: pickedQuantity, lineStatus: pickedQuantity > 0 ? 'picked' : 'short' }).where(and(eq(schema.invoiceItems.id, item.id), eq(schema.invoiceItems.invoiceId, invoice.id))).run();
+      }
+      return db.update(schema.invoices).set({ workflowStatus: 'ready_to_close', pickedBy: req.user.id, pickedAt: now, version: invoice.version + 1 }).where(and(eq(schema.invoices.id, invoice.id), eq(schema.invoices.version, invoice.version))).returning().get();
+    })();
     writeAudit(req, 'invoice.pick', invoice.id, { items });
     res.json(updated);
   } catch (err) { console.error('POST invoice pick error:', err); res.status(500).json({ error: 'Internal server error' }); }
@@ -3233,8 +4081,10 @@ app.post('/api/invoices/:id/cancel', (req, res) => {
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
     if (invoice.workflowStatus === 'cancelled') return res.status(409).json({ error: 'Bill đã hủy' });
     const now = new Date().toISOString();
-    db.update(schema.stockReservations).set({ status: 'released', releasedAt: now }).where(and(eq(schema.stockReservations.invoiceId, invoice.id), eq(schema.stockReservations.status, 'reserved'))).run();
-    const updated = db.update(schema.invoices).set({ workflowStatus: 'cancelled', cancelledBy: req.user.id, cancelledAt: now, version: invoice.version + 1 }).where(eq(schema.invoices.id, invoice.id)).returning().get();
+    const updated = sqlite.transaction(() => {
+      db.update(schema.stockReservations).set({ status: 'released', releasedAt: now }).where(and(eq(schema.stockReservations.invoiceId, invoice.id), eq(schema.stockReservations.status, 'reserved'))).run();
+      return db.update(schema.invoices).set({ workflowStatus: 'cancelled', cancelledBy: req.user.id, cancelledAt: now, version: invoice.version + 1 }).where(and(eq(schema.invoices.id, invoice.id), eq(schema.invoices.version, invoice.version))).returning().get();
+    })();
     writeAudit(req, 'invoice.cancel', invoice.id, { reason: req.body?.reason || '' });
     res.json(updated);
   } catch (err) { console.error('POST invoice cancel error:', err); res.status(500).json({ error: 'Internal server error' }); }
@@ -3564,8 +4414,10 @@ app.post('/api/payments', (req, res) => {
     ensureDefaultCashAccounts(req.user.tenantId);
     const paymentMethod = String(req.body?.paymentMethod || 'cash');
     const payment = { id: uuid(), tenantId: req.user.tenantId, customerId: req.body?.customerId || null, accountId: req.body?.accountId || defaultAccountForPayment(req.user.tenantId, paymentMethod), amount, paymentMethod, note: String(req.body?.note || ''), paymentDate: req.body?.paymentDate || new Date().toISOString(), status: 'posted', createdBy: req.user.id, createdAt: new Date().toISOString() };
-    db.insert(schema.payments).values(payment).run();
-    db.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'income', amount, category: 'Thu công nợ', note: payment.note || 'Thu công nợ', referenceId: payment.id, accountId: payment.accountId, createdAt: payment.createdAt, createdBy: req.user.id }).run();
+    db.transaction((tx) => {
+      tx.insert(schema.payments).values(payment).run();
+      tx.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'income', amount, category: 'Thu công nợ', note: payment.note || 'Thu công nợ', referenceId: payment.id, accountId: payment.accountId, createdAt: payment.createdAt, createdBy: req.user.id }).run();
+    });
     writeAudit(req, 'payment.create', payment.id, { amount, customerId: payment.customerId, accountId: payment.accountId });
     res.status(201).json({ ...payment, allocations: [] });
   } catch (err) { console.error('POST /api/payments error:', err); res.status(500).json({ error: 'Internal server error' }); }
@@ -3580,24 +4432,27 @@ app.post('/api/payments/:id/allocations', (req, res) => {
     const existing = db.select({ amount: sql<number>`coalesce(sum(${schema.paymentAllocations.amount}), 0)` }).from(schema.paymentAllocations).where(eq(schema.paymentAllocations.paymentId, payment.id)).get()?.amount || 0;
     const requestedTotal = allocations.reduce((sum: number, item: any) => sum + (Number(item.amount) || 0), 0);
     if (requestedTotal <= 0 || Number(existing) + requestedTotal > payment.amount) return res.status(400).json({ error: 'Tổng phân bổ vượt số tiền phiếu thu' });
-    const created = [];
-    for (const item of allocations) {
-      const amount = Number(item.amount) || 0;
-      const outstanding = invoiceOutstanding(req.user.tenantId, item.invoiceId);
-      if (amount <= 0 || amount > outstanding) return res.status(400).json({ error: `Số tiền phân bổ vượt công nợ bill ${item.invoiceId}` });
-      const invoice = invoiceById(req.user.tenantId, item.invoiceId);
-      if (!invoice || (payment.customerId && invoice.customerId !== payment.customerId)) return res.status(400).json({ error: 'Bill không thuộc khách hàng của phiếu thu' });
-      const allocation = { id: uuid(), tenantId: req.user.tenantId, paymentId: payment.id, invoiceId: item.invoiceId, amount, createdAt: new Date().toISOString() };
-      db.insert(schema.paymentAllocations).values(allocation).run();
-      db.insert(schema.debtLedger).values({ id: uuid(), tenantId: req.user.tenantId, customerId: invoice.customerId || payment.customerId, invoiceId: invoice.id, amount, type: 'decrease', note: payment.note || 'Phân bổ thu công nợ', createdAt: allocation.createdAt, createdBy: req.user.id }).run();
-      const newPaid = invoice.paidAmount + amount;
-      db.update(schema.invoices).set({ paidAmount: newPaid, paymentStatus: newPaid >= invoice.finalAmount ? 'paid' : 'partial', status: newPaid >= invoice.finalAmount ? 'completed' : 'partial', version: invoice.version + 1 }).where(eq(schema.invoices.id, invoice.id)).run();
-      if (invoice.customerId) {
-        const customer = db.select().from(schema.customers).where(and(eq(schema.customers.id, invoice.customerId), eq(schema.customers.tenantId, req.user.tenantId))).get();
-        if (customer) db.update(schema.customers).set({ totalDebt: Math.max(0, customer.totalDebt - amount) }).where(eq(schema.customers.id, customer.id)).run();
+    const created = db.transaction((tx) => {
+      const rows = [];
+      for (const item of allocations) {
+        const amount = Number(item.amount) || 0;
+        const outstanding = invoiceOutstanding(req.user.tenantId, item.invoiceId);
+        if (amount <= 0 || amount > outstanding) throw new BusinessError(400, `Số tiền phân bổ vượt công nợ bill ${item.invoiceId}`);
+        const invoice = invoiceById(req.user.tenantId, item.invoiceId);
+        if (!invoice || (payment.customerId && invoice.customerId !== payment.customerId)) throw new BusinessError(400, 'Bill không thuộc khách hàng của phiếu thu');
+        const allocation = { id: uuid(), tenantId: req.user.tenantId, paymentId: payment.id, invoiceId: item.invoiceId, amount, createdAt: new Date().toISOString() };
+        tx.insert(schema.paymentAllocations).values(allocation).run();
+        tx.insert(schema.debtLedger).values({ id: uuid(), tenantId: req.user.tenantId, customerId: invoice.customerId || payment.customerId, invoiceId: invoice.id, amount, type: 'decrease', note: payment.note || 'Phân bổ thu công nợ', createdAt: allocation.createdAt, createdBy: req.user.id }).run();
+        const newPaid = invoice.paidAmount + amount;
+        tx.update(schema.invoices).set({ paidAmount: newPaid, paymentStatus: newPaid >= invoice.finalAmount ? 'paid' : 'partial', status: newPaid >= invoice.finalAmount ? 'completed' : 'partial', version: invoice.version + 1 }).where(and(eq(schema.invoices.id, invoice.id), eq(schema.invoices.tenantId, req.user.tenantId), eq(schema.invoices.version, invoice.version))).run();
+        if (invoice.customerId) {
+          const customer = tx.select().from(schema.customers).where(and(eq(schema.customers.id, invoice.customerId), eq(schema.customers.tenantId, req.user.tenantId))).get();
+          if (customer) tx.update(schema.customers).set({ totalDebt: Math.max(0, customer.totalDebt - amount) }).where(and(eq(schema.customers.id, customer.id), eq(schema.customers.tenantId, req.user.tenantId))).run();
+        }
+        rows.push(allocation);
       }
-      created.push(allocation);
-    }
+      return rows;
+    });
     writeAudit(req, 'payment.allocate', payment.id, { allocations: created });
     res.status(201).json({ paymentId: payment.id, allocations: created });
   } catch (err) { console.error('POST /api/payments/:id/allocations error:', err); res.status(500).json({ error: 'Internal server error' }); }
@@ -3668,6 +4523,7 @@ app.get('/api/reports/staff', (req, res) => {
 // ═══════════════════════════════════════════════════════════
 app.get('/api/cashbook', (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'cashbook.view')) return;
     res.setHeader('Cache-Control', 'no-store');
     const { from, to, type } = req.query;
     const rows = db.select().from(schema.cashbookEntries)
@@ -3766,6 +4622,7 @@ app.post('/api/cashbook', (req, res) => {
 // ═══════════════════════════════════════════════════════════
 app.get('/api/stock-movements', (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'inventory.view')) return;
     res.setHeader('Cache-Control', 'no-store');
     const { productId } = req.query;
     const requestedLimit = Number(req.query.limit);
@@ -3966,7 +4823,6 @@ app.post('/api/stock-check', (req, res) => {
 
     const beforeStock = product.stock;
     const afterStock = actual;
-    db.update(schema.products).set({ stock: afterStock }).where(eq(schema.products.id, productId)).run();
     const movement = {
       id: uuid(),
       tenantId: req.user.tenantId,
@@ -3980,7 +4836,10 @@ app.post('/api/stock-check', (req, res) => {
       createdAt: new Date().toISOString(),
       createdBy: req.user.id,
     };
-    db.insert(schema.stockMovements).values(movement).run();
+    db.transaction((tx) => {
+      tx.update(schema.products).set({ stock: afterStock }).where(and(eq(schema.products.id, productId), eq(schema.products.tenantId, req.user.tenantId))).run();
+      tx.insert(schema.stockMovements).values(movement).run();
+    });
     res.json(movement);
   } catch (err) {
     console.error('POST /api/stock-check error:', err);
@@ -4058,31 +4917,31 @@ app.post('/api/debt-ledger', (req, res) => {
       createdBy: req.user.id,
     };
     if (!['increase', 'decrease'].includes(entry.type) || entry.amount <= 0) return res.status(400).json({ error: 'Giao dịch công nợ không hợp lệ' });
-    db.insert(schema.debtLedger).values(entry).run();
-
     // Update customer debt
     const newDebt = entry.type === 'increase'
       ? customer.totalDebt + entry.amount
       : Math.max(0, customer.totalDebt - entry.amount);
-    db.update(schema.customers)
-      .set({ totalDebt: newDebt })
-      .where(eq(schema.customers.id, entry.customerId))
-      .run();
-
-    if (entry.type === 'decrease') {
-      db.insert(schema.cashbookEntries).values({
-        id: uuid(),
-        tenantId: req.user.tenantId,
-        type: 'income',
-        amount: Number(entry.amount) || 0,
-        category: 'Thu nợ',
-        note: entry.note || `Thu nợ khách ${customer.name}`,
-        referenceId: entry.invoiceId || null,
-        accountId,
-        createdAt: entry.createdAt,
-        createdBy: req.user.id,
-      }).run();
-    }
+    db.transaction((tx) => {
+      tx.insert(schema.debtLedger).values(entry).run();
+      tx.update(schema.customers)
+        .set({ totalDebt: newDebt })
+        .where(and(eq(schema.customers.id, entry.customerId), eq(schema.customers.tenantId, req.user.tenantId)))
+        .run();
+      if (entry.type === 'decrease') {
+        tx.insert(schema.cashbookEntries).values({
+          id: uuid(),
+          tenantId: req.user.tenantId,
+          type: 'income',
+          amount: Number(entry.amount) || 0,
+          category: 'Thu nợ',
+          note: entry.note || `Thu nợ khách ${customer.name}`,
+          referenceId: entry.invoiceId || null,
+          accountId,
+          createdAt: entry.createdAt,
+          createdBy: req.user.id,
+        }).run();
+      }
+    });
 
     res.status(201).json(entry);
   } catch (err) {
@@ -4155,12 +5014,14 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 const startServer = async () => {
-  await bootstrapAdminAccount();
-
-  app.listen(PORT, () => {
-    console.log(`\n🚀 HKDCare API đang chạy tại http://localhost:${PORT}`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n🚀 HKD Smart API đang chạy tại http://localhost:${PORT}`);
     console.log(`   Health: http://localhost:${PORT}/api/health`);
     console.log(`   Docs:   All endpoints prefixed with /api/\n`);
+    if (OFFLINE_MODE && !hasAnyUser()) {
+      console.log(`🔐 Mã khởi tạo owner một lần${SETUP_TOKEN_GENERATED ? '' : ' (đã cấu hình)'}: ${SETUP_TOKEN}`);
+      console.log('   Chỉ chia sẻ mã này cho người thiết lập cửa hàng; mã sẽ vô hiệu sau tài khoản owner đầu tiên.');
+    }
   });
 };
 

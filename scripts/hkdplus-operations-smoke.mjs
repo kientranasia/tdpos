@@ -3,8 +3,9 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
 const baseUrl = (process.env.HKDPLUS_BASE_URL || 'http://localhost:3101').replace(/\/$/, '');
-const email = process.env.HKDPLUS_SMOKE_EMAIL || 'owner@hkdplus.local';
-const password = process.env.HKDPLUS_SMOKE_PASSWORD || '123456';
+const email = process.env.HKDPLUS_SMOKE_EMAIL;
+const password = process.env.HKDPLUS_SMOKE_PASSWORD;
+if (!email || !password) throw new Error('Set HKDPLUS_SMOKE_EMAIL and HKDPLUS_SMOKE_PASSWORD before running the operations smoke test.');
 const dbPath = process.env.HKDPLUS_DB_PATH || 'data/tdpos.db';
 const request = async (path, options = {}) => {
   const response = await fetch(`${baseUrl}${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } });

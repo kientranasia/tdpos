@@ -8,17 +8,16 @@ Yêu cầu Node.js:
 
 ```bash
 npm install
-npm run seed
+SEED_DEMO_PASSWORD='mật-khẩu-demo-tối-thiểu-10-ký-tự' npm run seed
 npm run server
 npm run dev
 ```
 
 Mặc định:
 
-- Web: `http://localhost:3001`
+- Web: `http://localhost:3000`
 - API: `http://localhost:3101`
-- Tài khoản demo: `owner@hkdplus.local` / `123456`
-- Tài khoản quản trị kỹ thuật: `admin@hkdplus.local` / `admin123`
+- Tài khoản demo chỉ được tạo khi chủ động chạy lệnh seed với `SEED_DEMO_PASSWORD`; mật khẩu không có giá trị mặc định.
 
 Các biến môi trường quan trọng: `JWT_SECRET`, `API_PORT`, `HKDPLUS_INSTANCE_SECRET`, `HKDPLUS_LICENSE_PUBLIC_KEY`, `HKDPLUS_LICENSE_SERVER_URL` (tùy chọn, dùng khi có license server online).
 
@@ -28,14 +27,24 @@ Các biến môi trường quan trọng: `JWT_SECRET`, `API_PORT`, `HKDPLUS_INST
 docker compose up -d --build
 ```
 
-Web mặc định mở ở cổng `80`, vì vậy máy trạm có thể vào thẳng `http://hkd.care` không cần thêm `:8077`. Nếu cổng 80 đang được dùng, chạy `WEB_PUBLIC_PORT=8077 docker compose up -d --build` và truy cập `http://hkd.care:8077`. API không public ra ngoài, chỉ được nginx trong mạng Docker chuyển tiếp. Dữ liệu SQLite nằm trong volume `tdpos_data`.
+Web mặc định mở qua HTTPS nội bộ tại `https://hkdplus.lan` (cổng `443`); cổng `80` chỉ dùng để chuyển hướng sang HTTPS. Nếu cổng 80/443 đang được dùng, đặt `WEB_HTTP_PORT` và `WEB_HTTPS_PORT` rồi chạy `docker compose up -d --build`. API không public ra ngoài, chỉ được reverse proxy trong mạng Docker chuyển tiếp. Dữ liệu SQLite nằm trong volume `tdpos_data`.
 
-Tài khoản demo Docker mặc định: `owner@hkdplus.local` / `123456`. Tài khoản quản trị kỹ thuật: `admin@hkdplus.local` / `123456` (nên đổi qua biến môi trường trước khi cài thật).
+Docker không chạy seed và không tạo tài khoản mặc định. Lần đầu, owner đăng ký trên máy chủ hoặc dùng setup token một lần; sau đó owner tạo các tài khoản nhân viên trong Cài đặt → Nhân viên & quyền.
+
+Nếu khởi động với cơ sở dữ liệu trống, mã khởi tạo owner một lần được in trong log API (`docker compose logs api`). Chỉ gửi mã này cho người quản trị cửa hàng; mã sẽ vô hiệu ngay sau khi owner đầu tiên được tạo. Không sao chép file `.env` phát triển vào gói cài đặt khách hàng; secret production phải để trống để instance tự sinh hoặc thay bằng secret ngẫu nhiên riêng cho khách hàng.
+
+Để chạy gói offline có reverse proxy và HTTPS nội bộ:
+
+```bash
+docker compose -f docker-compose.offline.yml up -d --build
+```
+
+Thiết bị cùng Wi‑Fi có thể truy cập bằng hostname nội bộ (ví dụ `https://hkdplus.lan`) nếu router có Local DNS; màn hình Cài đặt hiển thị QR/URL LAN để chia sẻ. Với HTTPS nội bộ, cần cài chứng chỉ CA nội bộ của gateway trên điện thoại/máy trạm một lần.
 
 Để các thiết bị cùng Wi‑Fi tự phân giải tên mà không sửa `hosts` từng máy, cần cấu hình một lần trên router/access point:
 
 1. Gán IP cố định cho máy chủ, ví dụ `192.168.1.5` (DHCP reservation).
-2. Trong mục Local DNS/DNS Hostname/Static DNS, thêm `hkd.care` trỏ tới `192.168.1.5`.
+2. Trong mục Local DNS/DNS Hostname/Static DNS, thêm `hkdplus.lan` trỏ tới `192.168.1.5`.
 3. Đảm bảo DHCP của router cấp chính router làm DNS cho các thiết bị; ngắt/kết nối lại Wi‑Fi để nhận cấu hình mới.
 
 Một số router không cho dùng vùng `.local` vì đây là vùng mDNS. Khi đó nên tạo thêm tên `hkdplus.home.arpa` hoặc `hkdplus.lan` trỏ cùng IP; đây là cách ổn định hơn trên Windows/Android/iOS.
@@ -43,10 +52,10 @@ Một số router không cho dùng vùng `.local` vì đây là vùng mDNS. Khi 
 Phương án tạm thời nếu router không có Local DNS là thêm vào file hosts:
 
 ```text
-<IP_MAY_CHU>    hkd.care
+<IP_MAY_CHU>    hkdplus.lan
 ```
 
-Sau đó mở `http://hkd.care`. Màn hình Cài đặt → Thông tin hệ thống hiển thị IP, URL LAN, trạng thái SQLite, license và các bản sao lưu gần nhất.
+Sau đó mở `https://hkdplus.lan`. Màn hình Cài đặt → Thông tin hệ thống hiển thị IP, URL LAN, trạng thái SQLite, license và các bản sao lưu gần nhất.
 
 ## Dữ liệu và an toàn vận hành
 

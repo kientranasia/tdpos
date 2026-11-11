@@ -1,6 +1,7 @@
 const baseUrl = (process.env.HKDPLUS_BASE_URL || 'http://localhost:3101').replace(/\/$/, '');
-const email = process.env.HKDPLUS_SMOKE_EMAIL || 'owner@hkdplus.local';
-const password = process.env.HKDPLUS_SMOKE_PASSWORD || '123456';
+const email = process.env.HKDPLUS_SMOKE_EMAIL;
+const password = process.env.HKDPLUS_SMOKE_PASSWORD;
+if (!email || !password) throw new Error('Set HKDPLUS_SMOKE_EMAIL and HKDPLUS_SMOKE_PASSWORD before running the smoke test.');
 
 const request = async (path, options = {}) => {
   const response = await fetch(`${baseUrl}${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } });
@@ -41,7 +42,7 @@ const [status, permissions, taxProfile, sequences, subscription, packages] = awa
   request('/api/packages', { headers: auth }),
 ]);
 
-assert(status.response.ok && status.body?.product === 'HKDCare', 'HKDCare system status failed');
+assert(status.response.ok && status.body?.product === 'HKD Smart', 'HKD Smart system status failed');
 assert(status.body?.database === 'SQLite', 'SQLite status missing');
 assert(permissions.response.ok && permissions.body.some((item) => item.code === 'sales.create'), 'RBAC permissions missing');
 assert(taxProfile.response.ok && sequences.response.ok, 'Tax/document readiness endpoints failed');

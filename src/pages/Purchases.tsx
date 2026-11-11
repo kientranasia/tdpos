@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { ChangeEvent, Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Barcode,
@@ -33,8 +33,11 @@ type Line = {
   productId: string;
   quantity: NumericDraft;
   price: NumericDraft;
+  sellingPrice: NumericDraft;
   unitName: string;
   unitFactor: number;
+  isGift: boolean;
+  note: string;
 };
 
 type ReturnLine = {
@@ -58,6 +61,21 @@ type NewProductDraft = {
   lowStockThreshold: NumericDraft;
   imageUrl: string;
   sellingPrice: NumericDraft;
+};
+
+type PriceSetupUnit = {
+  name: string;
+  factor: number;
+  key: string;
+  sellingPrice: number;
+};
+
+type PriceSetupState = {
+  lineIndex: number;
+  product: Product;
+  units: PriceSetupUnit[];
+  lists: any[];
+  values: Record<string, Record<string, NumericDraft>>;
 };
 
 const toNumber = (value: NumericDraft) => Number(value) || 0;
@@ -120,6 +138,9 @@ export default function Purchases() {
   const [showInlinePriceListForm, setShowInlinePriceListForm] = useState(false);
   const [newPriceList, setNewPriceList] = useState({ name: '', customerType: 'all' });
   const [pricingMessage, setPricingMessage] = useState('');
+  const [priceSetup, setPriceSetup] = useState<PriceSetupState | null>(null);
+  const [priceSetupLoading, setPriceSetupLoading] = useState(false);
+  const [priceSetupSaving, setPriceSetupSaving] = useState(false);
   const productPickerRef = useRef<HTMLDivElement>(null);
   const supplierPickerRef = useRef<HTMLDivElement>(null);
 
@@ -155,7 +176,7 @@ export default function Purchases() {
   }, [showProductPicker, showSupplierPicker]);
 
   const total = useMemo(
-    () => lines.reduce((sum, line) => sum + toNumber(line.quantity) * toNumber(line.price), 0),
+    () => lines.reduce((sum, line) => sum + toNumber(line.quantity) * (line.isGift ? 0 : toNumber(line.price)), 0),
     [lines],
   );
   const selectedSupplier = suppliers.find((supplier) => supplier.id === supplierId);
@@ -238,11 +259,11 @@ export default function Purchases() {
       setMessage('Combo chỉ dùng để bán, không nhập trực tiếp.');
       return;
     }
-    const unit = product.units?.[0] || { name: product.unit, factor: 1 };
+    const unit = product.units?.[0] || { name: product.unit, factor: 1, sellingPrice: product.sellingPrice };
     setLines((previous) => {
-      const existing = previous.find((line) => line.productId === product.id);
+      const existing = previous.find((line) => line.productId === product.id && !line.isGift);
       if (existing) {
-        return previous.map((line) => line.productId === product.id
+        return previous.map((line) => line === existing
           ? { ...line, quantity: toNumber(line.quantity) + 1 }
           : line);
       }
@@ -250,10 +271,93 @@ export default function Purchases() {
         productId: product.id,
         quantity: 1,
         price: product.purchasePrice,
+        sellingPrice: Number(unit.sellingPrice ?? product.sellingPrice ?? 0),
         unitName: unit.name,
         unitFactor: Number(unit.factor) || 1,
+        isGift: false,
+        note: '',
       }];
     });
+  };
+
+  const addGiftLine = (index: number) => {
+    setLines((previous) => {
+      const source = previous[index];
+      if (!source) return previous;
+      const giftLine: Line = { ...source, quantity: 1, price: 0, isGift: true, note: '' };
+      return [...previous.slice(0, index + 1), giftLine, ...previous.slice(index + 1)];
+    });
+  };
+
+  const priceSetupUnits = (product: Product): PriceSetupUnit[] => {
+    const sourceUnits = product.units?.length
+      ? product.units
+      : [{ name: product.unit, factor: 1, sellingPrice: product.sellingPrice }];
+    return sourceUnits.map((unit: any) => {
+      const factor = Number(unit.factor) || 1;
+      return { name: String(unit.name || product.unit), factor, key: `${String(unit.name || product.unit)}::${factor}`, sellingPrice: Number(unit.sellingPrice || 0) };
+    });
+  };
+
+  const openPriceSetup = async (lineIndex: number) => {
+    const line = lines[lineIndex];
+    const product = line ? products.find((item) => item.id === line.productId) : null;
+    if (!line || !product) return;
+    const units = priceSetupUnits(product);
+    setPriceSetup({ lineIndex, product, units, lists: [], values: {} });
+    setPriceSetupLoading(true);
+    try {
+      const lists = await priceListsApi.list(true, [product.id]);
+      const values = Object.fromEntries(lists.map((list: any) => [
+        list.id,
+        Object.fromEntries(units.map((unit) => {
+          const item = (list.items || []).find((row: any) => row.productId === product.id && String(row.unitName).trim().toLowerCase() === unit.name.trim().toLowerCase());
+          const isCurrentLineUnit = unit.name.trim().toLowerCase() === line.unitName.trim().toLowerCase() && Math.abs(unit.factor - Number(line.unitFactor || 1)) < 0.000001;
+          const fallback = list.isDefault
+            ? (isCurrentLineUnit ? line.sellingPrice : unit.sellingPrice)
+            : '';
+          return [unit.key, item ? Number(item.price) : fallback];
+        })),
+      ]));
+      setPriceSetup({ lineIndex, product, units, lists, values });
+    } catch (err) {
+      setPriceSetup(null);
+      setMessage(err instanceof Error ? err.message : 'Không thể tải các bảng giá.');
+    } finally {
+      setPriceSetupLoading(false);
+    }
+  };
+
+  const savePriceSetup = async () => {
+    if (!priceSetup) return;
+    setPriceSetupSaving(true);
+    try {
+      const prices = priceSetup.lists.flatMap((list: any) => priceSetup.units.map((unit) => {
+        const value = priceSetup.values[list.id]?.[unit.key] ?? '';
+        const hasValue = String(value).trim() !== '';
+        return {
+          priceListId: list.id,
+          unitName: unit.name,
+          unitFactor: unit.factor,
+          price: hasValue ? Number(value) : null,
+        };
+      }));
+      await priceListsApi.saveProductPrices(priceSetup.product.id, prices);
+      const defaultList = priceSetup.lists.find((list: any) => list.isDefault);
+      const currentLine = lines[priceSetup.lineIndex];
+      const currentUnit = priceSetup.units.find((unit) => unit.name.trim().toLowerCase() === currentLine?.unitName?.trim().toLowerCase() && Math.abs(unit.factor - Number(currentLine?.unitFactor || 1)) < 0.000001);
+      const defaultValue = defaultList && currentUnit ? priceSetup.values[defaultList.id]?.[currentUnit.key] : '';
+      if (currentLine && currentUnit && String(defaultValue ?? '').trim() !== '') {
+        setLines((previous) => previous.map((row, rowIndex) => rowIndex === priceSetup.lineIndex ? { ...row, sellingPrice: Number(defaultValue) } : row));
+      }
+      await refreshProducts();
+      setPriceSetup(null);
+      setMessage(`Đã lưu thiết lập giá cho ${priceSetup.product.name}.`);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Không thể lưu thiết lập giá.');
+    } finally {
+      setPriceSetupSaving(false);
+    }
   };
 
   const lookupBarcode = async (codeOverride?: string) => {
@@ -280,8 +384,10 @@ export default function Purchases() {
     const normalizedLines = lines.map((line) => ({
       ...line,
       quantity: toNumber(line.quantity),
-      price: toNumber(line.price),
+      price: line.isGift ? 0 : toNumber(line.price),
+      sellingPrice: toNumber(line.sellingPrice),
       unitFactor: Number(line.unitFactor) || 1,
+      note: line.note.trim(),
     }));
     if (!supplierId || !normalizedLines.length) {
       setMessage('Chọn nhà cung cấp và ít nhất một sản phẩm.');
@@ -594,21 +700,25 @@ export default function Purchases() {
             </div>
           ) : (
             <div className="overflow-x-auto rounded-lg border border-slate-100">
-              <table className="w-full min-w-[720px] text-sm">
-                <thead><tr className="border-b border-slate-100 bg-slate-50/70 text-left text-xs text-slate-500"><th className="p-2.5">Sản phẩm</th><th className="p-2.5">Đơn vị nhập</th><th className="p-2.5">SL</th><th className="p-2.5">Đơn giá nhập</th><th className="p-2.5 text-right">Thành tiền</th><th className="w-10" /></tr></thead>
+              <table className="w-full min-w-[1080px] text-sm">
+                <thead><tr className="border-b border-slate-100 bg-slate-50/70 text-left text-xs text-slate-500"><th className="p-2.5">Sản phẩm</th><th className="p-2.5">Đơn vị nhập</th><th className="p-2.5">SL</th><th className="p-2.5">Đơn giá nhập</th><th className="p-2.5">Giá bán sau nhập</th><th className="p-2.5 text-right">Thành tiền</th><th className="w-24" /></tr></thead>
                 <tbody>
                   {lines.map((line, index) => {
                     const product = products.find((item) => item.id === line.productId);
-                    const units = product?.units?.length ? product.units : [{ name: product?.unit || '', factor: 1 }];
+                    const units = product?.units?.length ? product.units : [{ name: product?.unit || '', factor: 1, sellingPrice: product?.sellingPrice || 0 }];
                     return (
-                      <tr key={`${line.productId}-${index}`} className="border-b border-slate-100 last:border-0">
-                        <td className="p-2"><select className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm" value={line.productId} onChange={(event) => { const next = products.find((item) => item.id === event.target.value); if (!next) return; const unit = next.units?.[0] || { name: next.unit, factor: 1 }; setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, productId: next.id, price: next.purchasePrice, unitName: unit.name, unitFactor: Number(unit.factor) || 1 } : row)); }}>{standardProducts.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}</select></td>
-                        <td className="p-2"><select className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm" value={line.unitName} onChange={(event) => { const unit = units.find((item: any) => item.name === event.target.value); setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, unitName: event.target.value, unitFactor: Number(unit?.factor || 1) } : row)); }}>{units.map((unit: any) => <option key={unit.name} value={unit.name}>{unit.name} · ×{unit.factor}</option>)}</select></td>
-                        <td className="p-2"><input className="h-9 w-20 rounded-md border border-slate-200 px-2 text-sm" type="number" min="0.01" value={line.quantity} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, quantity: event.target.value } : row))} /></td>
-                        <td className="p-2"><input className="h-9 w-32 rounded-md border border-slate-200 px-2 text-sm" type="number" min="0" value={line.price} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, price: event.target.value } : row))} /></td>
-                        <td className="p-2 text-right font-medium text-slate-700">{formatCurrency(toNumber(line.quantity) * toNumber(line.price))}</td>
-                        <td className="p-2"><button className="rounded-md p-2 text-rose-500 transition hover:bg-rose-50 hover:text-rose-600" aria-label="Xóa dòng hàng" onClick={() => setLines((previous) => previous.filter((_, rowIndex) => rowIndex !== index))}><Trash2 className="h-4 w-4" /></button></td>
-                      </tr>
+                      <Fragment key={`${line.productId}-${index}-group`}>
+                        <tr key={`${line.productId}-${index}`} className="border-b border-slate-100 align-top">
+                          <td className="p-2"><div className="flex min-w-[260px] items-center gap-2"><select className="h-9 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-sm" value={line.productId} onChange={(event) => { const next = products.find((item) => item.id === event.target.value); if (!next) return; const unit = next.units?.[0] || { name: next.unit, factor: 1, sellingPrice: next.sellingPrice }; setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, productId: next.id, price: row.isGift ? 0 : next.purchasePrice, sellingPrice: Number(unit.sellingPrice ?? next.sellingPrice ?? 0), unitName: unit.name, unitFactor: Number(unit.factor) || 1 } : row)); }}>{standardProducts.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}</select></div></td>
+                          <td className="p-2"><select className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm" value={line.unitName} onChange={(event) => { const unit = units.find((item: any) => item.name === event.target.value); setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, unitName: event.target.value, unitFactor: Number(unit?.factor || 1), sellingPrice: Number(unit?.sellingPrice ?? Number(product?.sellingPrice || 0) * Number(unit?.factor || 1)) } : row)); }}>{units.map((unit: any) => <option key={unit.name} value={unit.name}>{unit.name} · ×{unit.factor}</option>)}</select></td>
+                          <td className="p-2"><input aria-label={`Số lượng dòng ${index + 1}`} className="h-9 w-20 rounded-md border border-slate-200 px-2 text-sm" type="number" min="0.01" value={line.quantity} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, quantity: event.target.value } : row))} /></td>
+                          <td className="p-2"><div className="flex items-center gap-2"><input aria-label={`Giá nhập dòng ${index + 1}`} className={`h-9 w-32 rounded-md border border-slate-200 px-2 text-sm ${line.isGift ? 'cursor-not-allowed bg-slate-50 text-slate-400' : 'bg-white'}`} type="number" min="0" value={line.isGift ? 0 : line.price} disabled={line.isGift} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, price: event.target.value } : row))} /><button type="button" className={`rounded-full px-2 py-1 text-[11px] font-medium ${line.isGift ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`} onClick={() => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, isGift: !row.isGift, price: !row.isGift ? 0 : (product?.purchasePrice || 0) } : row))}>{line.isGift ? 'Tặng' : 'Tính tiền'}</button></div></td>
+                          <td className="p-2"><input aria-label={`Giá bán sau nhập dòng ${index + 1}`} className="h-9 w-32 rounded-md border border-sky-200 bg-sky-50/40 px-2 text-sm text-sky-800" type="number" min="0" value={line.sellingPrice} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, sellingPrice: event.target.value } : row))} /></td>
+                          <td className="p-2 text-right font-medium tabular-nums text-slate-700">{formatCurrency(toNumber(line.quantity) * (line.isGift ? 0 : toNumber(line.price)))}</td>
+                          <td className="p-2"><div className="flex items-center justify-end gap-1"><button type="button" className="rounded-md p-2 text-emerald-600 transition hover:bg-emerald-50" aria-label="Thêm dòng tặng kèm" title="Thêm dòng tặng kèm" onClick={() => addGiftLine(index)}><Plus className="h-4 w-4" /></button><button type="button" className="rounded-md p-2 text-sky-600 transition hover:bg-sky-50" aria-label="Thiết lập giá cho mặt hàng" title="Thiết lập giá cho mặt hàng" onClick={() => void openPriceSetup(index)}><Tag className="h-4 w-4" /></button><button type="button" className="rounded-md p-2 text-rose-500 transition hover:bg-rose-50 hover:text-rose-600" aria-label="Xóa dòng hàng" onClick={() => setLines((previous) => previous.filter((_, rowIndex) => rowIndex !== index))}><Trash2 className="h-4 w-4" /></button></div></td>
+                        </tr>
+                        <tr key={`${line.productId}-${index}-note`} className="border-b border-slate-100 bg-slate-50/35 last:border-0"><td colSpan={7} className="px-2 pb-2"><div className="flex items-center gap-2 pl-1"><span className="shrink-0 text-[11px] font-medium text-slate-400">Ghi chú dòng</span><input aria-label={`Ghi chú dòng ${index + 1}`} className="h-8 min-w-0 flex-1 rounded-md border border-dashed border-slate-200 bg-white px-2.5 text-xs text-slate-700 placeholder:text-slate-400" value={line.note} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, note: event.target.value } : row))} placeholder={line.isGift ? 'Ví dụ: Tặng kèm theo chương trình tháng này' : 'Ghi chú riêng cho dòng hàng (không bắt buộc)'} /></div></td></tr>
+                      </Fragment>
                     );
                   })}
                 </tbody>
@@ -667,7 +777,7 @@ export default function Purchases() {
                         <div className="text-left md:text-right"><p className="text-sm font-semibold tabular-nums text-slate-900">{formatCurrency(purchase.finalAmount)}</p><p className="mt-0.5 text-[11px] text-slate-500">{purchase.itemCount ?? '—'} sản phẩm · SL {purchase.totalQuantity ?? '—'}</p></div>
                         <div className="flex items-center justify-between gap-2 md:justify-end"><Button variant="outline" className="h-8 px-2.5 text-xs" onClick={() => void openReturn(purchase)}><RotateCcw className="mr-1.5 h-3.5 w-3.5" />Trả hàng</Button><button type="button" aria-label={isExpanded ? 'Thu gọn chi tiết phiếu' : 'Xem chi tiết phiếu'} onClick={() => void togglePurchaseDetails(purchase)} className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 text-slate-500 transition hover:bg-slate-100"><ChevronDown className={`h-4 w-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} /></button></div>
                       </div>
-                      {isExpanded && <div className="border-t border-slate-100 bg-slate-50/50 px-3 py-3 md:px-4"><div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px]"><div><p className="mb-2 text-xs font-semibold text-slate-700">Chi tiết sản phẩm</p>{loadingPurchaseId === purchase.id ? <p className="text-xs text-slate-500">Đang tải chi tiết...</p> : detail?.items?.length ? <div className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="grid grid-cols-[minmax(0,1fr)_80px_110px] gap-2 border-b border-slate-100 bg-slate-50 px-2.5 py-2 text-[11px] font-medium text-slate-500"><span>Sản phẩm</span><span className="text-right">Số lượng</span><span className="text-right">Thành tiền</span></div>{detail.items.map((item: any) => <div key={item.id} className="grid grid-cols-[minmax(0,1fr)_80px_110px] gap-2 border-b border-slate-100 px-2.5 py-2 text-xs last:border-0"><button type="button" className="truncate text-left text-slate-700 hover:text-sky-700 hover:underline" onClick={() => navigate(`/app/inventory?productId=${encodeURIComponent(item.productId)}`)}>{item.productName}<span className="ml-1 text-[11px] text-slate-400">· {item.unit}</span></button><span className="text-right tabular-nums text-slate-600">{item.quantity}</span><span className="text-right font-medium tabular-nums text-slate-700">{formatCurrency(item.total)}</span></div>)}</div> : <p className="text-xs text-slate-500">Chưa có chi tiết sản phẩm.</p>}</div><div className="rounded-md border border-slate-200 bg-white p-3 text-xs"><p className="font-semibold text-slate-700">Tổng quan thanh toán</p><div className="mt-2 space-y-1.5"><div className="flex justify-between gap-2"><span className="text-slate-500">Đã trả</span><b className="tabular-nums text-emerald-700">{formatCurrency(purchase.paidAmount)}</b></div><div className="flex justify-between gap-2"><span className="text-slate-500">Còn nợ</span><b className="tabular-nums text-amber-700">{formatCurrency(purchase.payableAmount)}</b></div><div className="flex justify-between gap-2"><span className="text-slate-500">Trả hàng</span><b className="tabular-nums text-slate-700">{formatCurrency(returnedAmount)}</b></div><div className="flex justify-between gap-2 border-t border-slate-100 pt-1.5"><span className="text-slate-500">Hình thức</span><b className="text-slate-700">{purchase.paymentMethod === 'payable' ? 'Công nợ' : purchase.paymentMethod === 'transfer' ? 'Chuyển khoản' : 'Tiền mặt'}</b></div></div></div></div></div>}
+                      {isExpanded && <div className="border-t border-slate-100 bg-slate-50/50 px-3 py-3 md:px-4"><div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px]"><div><p className="mb-2 text-xs font-semibold text-slate-700">Chi tiết sản phẩm</p>{loadingPurchaseId === purchase.id ? <p className="text-xs text-slate-500">Đang tải chi tiết...</p> : detail?.items?.length ? <div className="overflow-hidden rounded-md border border-slate-200 bg-white"><div className="grid grid-cols-[minmax(0,1fr)_80px_110px] gap-2 border-b border-slate-100 bg-slate-50 px-2.5 py-2 text-[11px] font-medium text-slate-500"><span>Sản phẩm</span><span className="text-right">Số lượng</span><span className="text-right">Thành tiền</span></div>{detail.items.map((item: any) => <div key={item.id} className="grid grid-cols-[minmax(0,1fr)_80px_110px] gap-2 border-b border-slate-100 px-2.5 py-2 text-xs last:border-0"><div className="min-w-0"><button type="button" className="block max-w-full truncate text-left text-slate-700 hover:text-sky-700 hover:underline" onClick={() => navigate(`/app/inventory?productId=${encodeURIComponent(item.productId)}`)}>{item.productName}<span className="ml-1 text-[11px] text-slate-400">· {item.unit}</span></button><div className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-slate-400"><span className={item.isGift ? 'font-medium text-emerald-700' : ''}>{item.isGift ? 'Tặng kèm · không tính tiền' : `Giá nhập ${formatCurrency(item.price)}`}</span>{item.sellingPrice !== undefined && <span>· Bán {formatCurrency(item.sellingPrice)}</span>}</div>{item.note && <p className="mt-0.5 truncate text-[11px] text-slate-500" title={item.note}>Ghi chú: {item.note}</p>}</div><span className="text-right tabular-nums text-slate-600">{item.quantity}</span><span className="text-right font-medium tabular-nums text-slate-700">{formatCurrency(item.total)}</span></div>)}</div> : <p className="text-xs text-slate-500">Chưa có chi tiết sản phẩm.</p>}</div><div className="rounded-md border border-slate-200 bg-white p-3 text-xs"><p className="font-semibold text-slate-700">Tổng quan thanh toán</p><div className="mt-2 space-y-1.5"><div className="flex justify-between gap-2"><span className="text-slate-500">Đã trả</span><b className="tabular-nums text-emerald-700">{formatCurrency(purchase.paidAmount)}</b></div><div className="flex justify-between gap-2"><span className="text-slate-500">Còn nợ</span><b className="tabular-nums text-amber-700">{formatCurrency(purchase.payableAmount)}</b></div><div className="flex justify-between gap-2"><span className="text-slate-500">Trả hàng</span><b className="tabular-nums text-slate-700">{formatCurrency(returnedAmount)}</b></div><div className="flex justify-between gap-2 border-t border-slate-100 pt-1.5"><span className="text-slate-500">Hình thức</span><b className="text-slate-700">{purchase.paymentMethod === 'payable' ? 'Công nợ' : purchase.paymentMethod === 'transfer' ? 'Chuyển khoản' : 'Tiền mặt'}</b></div>{purchase.note && <div className="border-t border-slate-100 pt-1.5"><span className="text-slate-500">Ghi chú phiếu</span><p className="mt-1 whitespace-pre-wrap text-slate-700">{purchase.note}</p></div>}</div></div></div></div>}
                     </div>
                   );
                 })}
@@ -677,6 +787,40 @@ export default function Purchases() {
           </>
         )}
       </main>
+
+      {priceSetup && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/60 p-3 sm:p-4">
+          <div className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-6xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl sm:max-h-[92vh]">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sky-50 text-sky-700"><Tag className="h-4 w-4" /></span><div className="min-w-0"><h2 className="truncate text-sm font-semibold text-slate-900 sm:text-base">Thiết lập giá cho {priceSetup.product.name}</h2><p className="mt-0.5 text-xs text-slate-500">Nhập giá bán theo từng bảng giá và đơn vị của mặt hàng.</p></div></div>
+              </div>
+              <button type="button" aria-label="Đóng thiết lập giá" onClick={() => setPriceSetup(null)} className="shrink-0 rounded-md p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"><X className="h-5 w-5" /></button>
+            </div>
+
+            {priceSetupLoading ? (
+              <div className="flex min-h-48 items-center justify-center px-4 py-8 text-sm text-slate-500">Đang tải các bảng giá...</div>
+            ) : !priceSetup.lists.length ? (
+              <div className="px-4 py-10 text-center text-sm text-slate-500">Chưa có bảng giá để thiết lập.</div>
+            ) : (
+              <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-sky-100 bg-sky-50/60 px-3 py-2.5 text-xs text-sky-800"><span>Mặt hàng: <b>{priceSetup.product.sku}</b> · Đơn vị cơ sở: <b>{priceSetup.product.unit}</b></span><span className="text-sky-700">Bỏ trống nếu bảng giá chưa áp dụng cho đơn vị này.</span></div>
+                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                  <table className="w-full min-w-[720px] text-sm">
+                    <thead className="bg-slate-100 text-left text-[11px] font-semibold text-slate-600"><tr><th className="w-48 px-3 py-2.5">Tên bảng giá</th>{priceSetup.units.map((unit) => <th key={unit.key} className="min-w-[190px] px-3 py-2.5 text-right">Giá bán ({unit.name})<span className="mt-0.5 block text-[10px] font-normal text-slate-400">{unit.factor === 1 ? 'Đơn vị cơ sở' : `×${unit.factor} cơ sở`}</span></th>)}</tr></thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {priceSetup.lists.map((list: any) => <tr key={list.id} className="align-middle hover:bg-slate-50/70"><td className="px-3 py-3 font-medium text-slate-700">{list.name}{list.isDefault && <span className="ml-1.5 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">Mặc định</span>}</td>{priceSetup.units.map((unit) => <td key={`${list.id}-${unit.key}`} className="px-3 py-2"><div className="relative"><input aria-label={`${list.name} · ${unit.name}`} type="number" min="0" inputMode="decimal" value={priceSetup.values[list.id]?.[unit.key] ?? ''} onChange={(event) => setPriceSetup((previous) => previous ? { ...previous, values: { ...previous.values, [list.id]: { ...previous.values[list.id], [unit.key]: event.target.value } } } : previous)} placeholder="Chưa thiết lập" className={`h-9 w-full rounded-md border px-2.5 text-right text-sm tabular-nums outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100 ${list.isDefault ? 'border-sky-200 bg-sky-50/40 text-sky-900' : 'border-slate-200 bg-white text-slate-800'}`} /><span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-slate-400">đ</span></div></td>)}</tr>)}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="mt-2 text-[11px] text-slate-500">Giá ở Bảng giá chung sẽ cập nhật lại giá bán của dòng nhập hiện tại. Các bảng giá khác được lưu riêng và dùng ngay khi bán hàng.</p>
+              </div>
+            )}
+
+            <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 bg-slate-50/70 px-4 py-3 sm:px-5"><Button type="button" variant="outline" onClick={() => setPriceSetup(null)}>Bỏ qua</Button><Button type="button" disabled={priceSetupLoading || priceSetupSaving || !priceSetup.lists.length} onClick={() => void savePriceSetup()}><Save className="mr-2 h-4 w-4" />{priceSetupSaving ? 'Đang lưu...' : 'Xong'}</Button></div>
+          </div>
+        </div>
+      )}
 
       <BarcodeScannerModal open={showBarcodeScanner} title="Quét mã nhập hàng" description="Đưa mã vạch vào khung. Khi nhận diện được, sản phẩm sẽ được thêm trực tiếp vào phiếu nhập." onClose={() => setShowBarcodeScanner(false)} onDetected={(code) => { void lookupBarcode(code); }} />
       <BarcodeScannerModal

@@ -38,6 +38,8 @@ type KiotImportRow = {
   factor: number;
   attributes: string;
   relatedSku: string;
+  components: string;
+  active: boolean;
 };
 
 type KiotImportPreview = {
@@ -51,11 +53,15 @@ type KiotImportPreview = {
     updatedCount: number;
     unitCount: number;
     comboCount: number;
+    componentCount: number;
+    comboWithComponents: number;
+    comboMissingComponents: number;
+    componentWarningCount: number;
     errorCount: number;
     warningCount: number;
   };
   issues: Array<{ rowNumber: number; code: string; message: string; sku: string; barcode: string }>;
-  warnings: Array<{ rowNumber: number; message: string; sku: string }>;
+  warnings: Array<{ rowNumber: number; message: string; sku: string; code?: string }>;
 };
 
 const technicalStockIdPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
@@ -135,6 +141,8 @@ export default function Inventory() {
   const [stockCardTransactionFilter, setStockCardTransactionFilter] = useState('all');
   const [movementTypeFilter, setMovementTypeFilter] = useState<'all' | 'in' | 'out' | 'adjust'>('all');
   const [stockStatusFilter, setStockStatusFilter] = useState<'all' | 'in_stock' | 'low_stock' | 'out_of_stock'>('all');
+  const [productStatusFilter, setProductStatusFilter] = useState<'active' | 'inactive' | 'all'>('active');
+  const [productTypeFilter, setProductTypeFilter] = useState<'all' | 'standard' | 'combo'>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'updated_desc' | 'name_asc' | 'stock_asc' | 'stock_desc' | 'price_desc'>('updated_desc');
   const [inventoryRows, setInventoryRows] = useState<Product[]>([]);
@@ -158,7 +166,7 @@ export default function Inventory() {
   const [priceLists, setPriceLists] = useState<any[]>([]);
   const [productVariantDrafts, setProductVariantDrafts] = useState<Array<{ id: string; sku: string; name: string; factor: NumericDraft; barcode: string; purchasePrice: NumericDraft }>>([]);
   const [productVariantPriceDrafts, setProductVariantPriceDrafts] = useState<Record<string, NumericDraft>>({});
-  const [productComponentDrafts, setProductComponentDrafts] = useState<Array<{ componentProductId: string; quantity: NumericDraft }>>([]);
+  const [productComponentDrafts, setProductComponentDrafts] = useState<Array<{ componentProductId: string; quantity: NumericDraft; component?: Product }>>([]);
   const [productPriceDrafts, setProductPriceDrafts] = useState<Record<string, NumericDraft>>({});
   const [newPriceList, setNewPriceList] = useState({ name: '', customerType: 'all', markupMode: 'percent' as 'percent' | 'amount', markupValue: 0 as NumericDraft });
   const [pricingExpanded, setPricingExpanded] = useState(true);
@@ -172,6 +180,19 @@ export default function Inventory() {
     const dynamicUnits = products.map((p) => p.unit).filter(Boolean);
     return Array.from(new Set([...defaults, ...customUnits, ...catalogUnits.map((unit) => unit.name), ...dynamicUnits, ...products.flatMap((product) => (product.units || []).map((unit: any) => unit.name))]));
   }, [catalogUnits, customUnits, products]);
+
+  const componentProductOptions = useMemo(() => {
+    const options = new Map<string, Product>();
+    products
+      .filter((product) => product.productType !== 'combo' && product.id !== editingProduct?.id)
+      .forEach((product) => options.set(product.id, product));
+    productComponentDrafts.forEach((row) => {
+      if (row.component && row.component.productType !== 'combo' && row.component.id !== editingProduct?.id) {
+        options.set(row.component.id, row.component);
+      }
+    });
+    return Array.from(options.values());
+  }, [editingProduct?.id, productComponentDrafts, products]);
 
   useEffect(() => {
     if (!activeTenant) return;
@@ -448,7 +469,11 @@ export default function Inventory() {
         const saved = list.items?.find((item: any) => item.productId === product.id && item.unitName === variant.name);
         return [`${list.id}::${variant.id}`, saved?.price === undefined ? '' : Number(saved.price)];
       }))));
-      setProductComponentDrafts(components.map((component: any) => ({ componentProductId: component.componentProductId, quantity: Number(component.quantity) })));
+      setProductComponentDrafts(components.map((component: any) => ({
+        componentProductId: component.componentProductId,
+        quantity: Number(component.quantity),
+        component: component.component || undefined,
+      })));
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Không thể tải cấu hình sản phẩm.');
       setProductVariantDrafts([]);
@@ -528,7 +553,11 @@ export default function Inventory() {
     const success = await deleteProduct(product.id);
     if (!success) {
       setFormError('Không thể xóa mặt hàng. Vui lòng thử lại.');
+      return;
     }
+    setInventoryRows((previous) => previous.filter((row) => row.id !== product.id));
+    setInventoryTotal((previous) => Math.max(0, previous - 1));
+    setInventoryReloadKey((value) => value + 1);
   };
 
   const createCategoryForManager = async (name: string) => {
@@ -712,6 +741,8 @@ export default function Inventory() {
       factor: parseNumber(get('quydoi'), 1),
       attributes: importText(get('thuoctinh')),
       relatedSku: importText(get('mahhienquan')),
+      components: importText(get('hangthanhphan')),
+      active: parseBoolean(get('dangkinhdoanh'), true),
     };
   });
 
@@ -884,7 +915,7 @@ export default function Inventory() {
     const sheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, sheet, 'Lỗi import');
-    XLSX.writeFile(workbook, `loi-import-kiot-viet-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    XLSX.writeFile(workbook, `loi-import-du-lieu-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   const applyKiotImport = async () => {
@@ -902,9 +933,9 @@ export default function Inventory() {
       await loadKiotImportHistory();
       setShowKiotImportModal(false);
       setKiotImportPreview(null);
-      window.alert(`Import Kiot Việt hoàn tất.\nTạo mới: ${result.summary?.createdCount || 0}\nCập nhật: ${result.summary?.updatedCount || 0}\nĐơn vị quy đổi: ${result.summary?.unitCount || 0}\nLỗi bị chặn: ${result.summary?.errorCount || 0}`);
+      window.alert(`Import dữ liệu hoàn tất.\nTạo mới: ${result.summary?.createdCount || 0}\nCập nhật: ${result.summary?.updatedCount || 0}\nĐơn vị quy đổi: ${result.summary?.unitCount || 0}\nLỗi bị chặn: ${result.summary?.errorCount || 0}`);
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Không thể import lô sản phẩm Kiot Việt.');
+      setFormError(err instanceof Error ? err.message : 'Không thể import lô dữ liệu sản phẩm.');
     } finally {
       setImporting(false);
     }
@@ -984,7 +1015,7 @@ export default function Inventory() {
 
   useEffect(() => {
     setInventoryPage(0);
-  }, [searchTerm, categoryFilter]);
+  }, [searchTerm, categoryFilter, productStatusFilter, productTypeFilter]);
 
   useEffect(() => {
     if (!activeTenant?.id) {
@@ -999,6 +1030,8 @@ export default function Inventory() {
         const result = await productsApi.listPage(activeTenant.id, {
           category: categoryFilter === 'all' ? undefined : categoryFilter,
           search: searchTerm.trim() || undefined,
+          productType: productTypeFilter === 'all' ? undefined : productTypeFilter,
+          status: productStatusFilter,
           limit: inventoryPageSize,
           offset: inventoryPage * inventoryPageSize,
         });
@@ -1020,19 +1053,20 @@ export default function Inventory() {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [activeTenant?.id, categoryFilter, inventoryPage, inventoryReloadKey, searchTerm]);
+  }, [activeTenant?.id, categoryFilter, inventoryPage, inventoryReloadKey, productStatusFilter, productTypeFilter, searchTerm]);
 
   const filteredProducts = useMemo(() => {
     return inventoryRows.filter((p) => {
+      const matchesProductStatus = productStatusFilter === 'all' || p.status === productStatusFilter;
       const availableStock = Number(p.availableStock ?? p.stock);
       const matchesStockStatus =
         stockStatusFilter === 'all' ||
         (stockStatusFilter === 'in_stock' && availableStock > p.lowStockThreshold) ||
         (stockStatusFilter === 'low_stock' && availableStock > 0 && availableStock <= p.lowStockThreshold) ||
         (stockStatusFilter === 'out_of_stock' && availableStock <= 0);
-      return matchesStockStatus;
+      return matchesProductStatus && matchesStockStatus;
     });
-  }, [inventoryRows, stockStatusFilter]);
+  }, [inventoryRows, productStatusFilter, stockStatusFilter]);
 
   const visibleProducts = useMemo(() => {
     const rows = [...filteredProducts];
@@ -1224,7 +1258,7 @@ export default function Inventory() {
           <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
             <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-4 py-3 sm:px-5">
               <div>
-                <h3 className="text-sm font-semibold text-slate-900 sm:text-base">Import Kiot Việt theo lô</h3>
+                <h3 className="text-sm font-semibold text-slate-900 sm:text-base">Import dữ liệu theo lô</h3>
                 <p className="mt-0.5 max-w-[70vw] truncate text-[11px] text-slate-500">{kiotImportPreview.fileName} · đối chiếu barcode trước, SKU sau</p>
               </div>
               <button type="button" onClick={() => setShowKiotImportModal(false)} className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-50 hover:text-slate-700" aria-label="Đóng xem trước import">
@@ -1241,6 +1275,8 @@ export default function Inventory() {
                   ['Tạo mới', kiotImportPreview.summary.createdCount, 'text-emerald-700'],
                   ['Cập nhật', kiotImportPreview.summary.updatedCount, 'text-sky-700'],
                   ['Combo', kiotImportPreview.summary.comboCount, 'text-violet-700'],
+                  ['Thành phần', kiotImportPreview.summary.componentCount, 'text-amber-700'],
+                  ['Combo thiếu TP', kiotImportPreview.summary.comboMissingComponents, kiotImportPreview.summary.comboMissingComponents ? 'text-rose-700' : 'text-emerald-700'],
                   ['Dòng bị chặn', kiotImportPreview.summary.errorCount, kiotImportPreview.summary.errorCount ? 'text-rose-700' : 'text-emerald-700'],
                 ].map(([label, value, tone]) => (
                   <div key={String(label)} className="rounded-lg border border-slate-200 bg-slate-50/70 px-2.5 py-2">
@@ -1251,12 +1287,18 @@ export default function Inventory() {
               </div>
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
                 <span>Giá và tồn sẽ ghi vào sản phẩm/đơn vị tương ứng.</span>
+                <span>Thành phần combo sẽ mapping theo barcode trước, SKU sau.</span>
                 <span>Tồn thay đổi sẽ tạo thẻ kho điều chỉnh đầu kỳ.</span>
                 <span>Không xóa sản phẩm ngoài file.</span>
               </div>
               {kiotImportPreview.warnings.length > 0 && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
                   Có {kiotImportPreview.warnings.length} cảnh báo. Ví dụ: {kiotImportPreview.warnings.slice(0, 2).map((warning) => `dòng ${warning.rowNumber}: ${warning.message}`).join(' · ')}
+                </div>
+              )}
+              {kiotImportPreview.summary.componentWarningCount > 0 && (
+                <div className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-[11px] text-orange-800">
+                  Có {kiotImportPreview.summary.componentWarningCount} cảnh báo mapping thành phần. {kiotImportPreview.warnings.filter((warning) => String(warning.code || '').startsWith('COMBO_COMPONENT')).slice(0, 3).map((warning) => `${warning.sku}: ${warning.message}`).join(' · ')}
                 </div>
               )}
               {formError && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{formError}</div>}
@@ -1315,7 +1357,7 @@ export default function Inventory() {
                     {kiotImportHistory.slice(0, 3).map((batch: any) => (
                       <div key={batch.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-[11px] text-slate-600">
                         <span className="min-w-0 truncate">{batch.fileName || 'Không có tên file'} · {batch.createdAt ? new Date(batch.createdAt).toLocaleString('vi-VN') : '—'}</span>
-                        <span className="shrink-0 font-medium text-slate-700">{batch.createdCount || 0} tạo · {batch.updatedCount || 0} cập nhật · {batch.errorCount || 0} lỗi</span>
+                        <span className="shrink-0 font-medium text-slate-700">{batch.createdCount || 0} tạo · {batch.updatedCount || 0} cập nhật · {batch.componentCount || 0} thành phần · {batch.errorCount || 0} lỗi</span>
                       </div>
                     ))}
                   </div>
@@ -1803,9 +1845,9 @@ export default function Inventory() {
                    <div className="space-y-1.5">
                      {productComponentDrafts.map((component, index) => <div key={`${component.componentProductId}-${index}`} className="grid gap-2 md:grid-cols-[1fr_110px_auto]">
                        <div className="flex min-w-0 gap-1">
-                         <select value={component.componentProductId} onChange={(e) => setProductComponentDrafts(productComponentDrafts.map((row, i) => i === index ? { ...row, componentProductId: e.target.value } : row))} className="h-9 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-xs">
+                         <select value={component.componentProductId} onChange={(e) => setProductComponentDrafts(productComponentDrafts.map((row, i) => i === index ? { ...row, componentProductId: e.target.value, component: componentProductOptions.find((product) => product.id === e.target.value) } : row))} className="h-9 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-xs">
                            <option value="">Chọn sản phẩm</option>
-                           {products.filter((p) => p.productType !== 'combo' && p.id !== editingProduct?.id).map((product) => <option key={product.id} value={product.id}>{product.name} · {product.unit}</option>)}
+                           {componentProductOptions.map((product) => <option key={product.id} value={product.id}>{product.name} · {product.sku} · {product.unit}</option>)}
                          </select>
                          <button type="button" aria-label="Quét mã sản phẩm thành phần" title="Quét mã sản phẩm thành phần" onClick={() => { setComponentBarcodeIndex(index); setVariantBarcodeIndex(null); setShowBarcodeScannerModal(true); }} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-sky-700 hover:bg-sky-50 hover:text-sky-700">
                            <Barcode className="h-4 w-4" />
@@ -2100,6 +2142,16 @@ export default function Inventory() {
               ))}
             </select>
             <select
+              value={productTypeFilter}
+              onChange={(e) => setProductTypeFilter(e.target.value as 'all' | 'standard' | 'combo')}
+              className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
+              aria-label="Lọc loại hàng hóa"
+            >
+              <option value="all">Tất cả loại hàng</option>
+              <option value="standard">Hàng hóa thường</option>
+              <option value="combo">Combo</option>
+            </select>
+            <select
               value={stockStatusFilter}
               onChange={(e) => setStockStatusFilter(e.target.value as any)}
               className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
@@ -2108,6 +2160,15 @@ export default function Inventory() {
               <option value="in_stock">Còn hàng</option>
               <option value="low_stock">Sắp hết</option>
               <option value="out_of_stock">Hết hàng</option>
+            </select>
+            <select
+              value={productStatusFilter}
+              onChange={(e) => setProductStatusFilter(e.target.value as 'active' | 'inactive' | 'all')}
+              className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
+            >
+              <option value="active">Đang kinh doanh</option>
+              <option value="inactive">Đã ngừng kinh doanh</option>
+              <option value="all">Tất cả trạng thái</option>
             </select>
             <select
               value={sortBy}
@@ -2125,7 +2186,9 @@ export default function Inventory() {
               className="h-9 justify-start gap-2 px-2.5 text-xs"
               onClick={() => {
                 setCategoryFilter('all');
+                setProductTypeFilter('all');
                 setStockStatusFilter('all');
+                setProductStatusFilter('active');
                 setSortBy('updated_desc');
               }}
             >

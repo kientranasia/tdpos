@@ -6,6 +6,7 @@ import { Input } from '../components/ui/Input';
 import { CheckCircle, Store, Settings, Users, ShieldCheck, ArrowRight, ArrowLeft, Upload, Clock, CreditCard, Package, BarChart3, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import BrandMark from '../components/BrandMark';
+import { tenantsApi } from '../lib/api';
 
 const STEPS = [
   { id: 'verify', title: 'Xác minh', icon: ShieldCheck },
@@ -17,7 +18,7 @@ const STEPS = [
 ];
 
 export default function TenantSetup() {
-  const { activeTenant, updateTenant } = useApp();
+  const { activeTenant, setActiveTenant, updateTenant } = useApp();
   const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState(0);
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
@@ -41,14 +42,13 @@ export default function TenantSetup() {
     closeTime: '18:00',
   });
 
-  const handleNext = () => {
+  const handleNext = async () => {
     if (currentStep < STEPS.length - 1) {
       setCurrentStep(prev => prev + 1);
     } else {
       // Finalize setup
-      updateTenant({
+      await updateTenant({
         ...formData,
-        status: 'active',
         settings: {
           lowStockThresholdDefault: formData.lowStockThreshold,
           enabledPaymentMethods: ['cash', 'transfer', 'debt'],
@@ -72,7 +72,11 @@ export default function TenantSetup() {
           },
         }
       });
-      navigate('/app/dashboard');
+      if (activeTenant) {
+        const completedTenant = await tenantsApi.completeSetup(activeTenant.id);
+        setActiveTenant(completedTenant);
+        navigate('/app/dashboard');
+      }
     }
   };
 

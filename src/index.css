@@ -352,6 +352,44 @@
     line-height: 15px !important;
   }
 
+  /* Mobile POS keeps the working surface compact while allowing totals and
+     product prices to retain their hierarchy. Form controls stay on the
+     platform-safe 16px rule below to avoid iOS zoom on focus. */
+  @media (max-width: 1023px) {
+    .erp-compact.pos-page .pos-mobile-content {
+      padding-bottom: 18rem !important;
+    }
+
+    .erp-compact.pos-page .pos-mobile-ui :where(button, select, span, p, h2, h3, label) {
+      font-size: 13px !important;
+      line-height: 18px !important;
+    }
+
+    .erp-compact.pos-page .pos-mobile-filter-control {
+      box-sizing: border-box;
+      height: 36px !important;
+      min-height: 36px !important;
+      border-radius: 8px !important;
+      font-size: 13px !important;
+      line-height: 18px !important;
+    }
+
+    .erp-compact.pos-page .pos-mobile-ui .pos-mobile-caption {
+      font-size: 11px !important;
+      line-height: 15px !important;
+    }
+
+    .erp-compact.pos-page .pos-mobile-ui .pos-mobile-title {
+      font-size: 16px !important;
+      line-height: 22px !important;
+    }
+
+    .erp-compact.pos-page .pos-mobile-ui .pos-mobile-total {
+      font-size: 20px !important;
+      line-height: 26px !important;
+    }
+  }
+
   /* iOS Safari zooms the page when a focused form control is smaller than
      16px. Keep controls at the platform's no-zoom threshold on mobile. */
   @media (max-width: 767px) {

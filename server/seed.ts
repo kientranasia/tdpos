@@ -1,5 +1,6 @@
 import { sqlite } from './db';
 import bcrypt from 'bcryptjs';
+import { ENABLE_PLATFORM_ADMIN, MIN_PASSWORD_LENGTH, OFFLINE_MODE } from './runtimeConfig';
 
 console.log('🔧 Initializing database...');
 
@@ -44,7 +45,8 @@ sqlite.exec(`
     phone TEXT,
     role TEXT NOT NULL,
     tenant_id TEXT NOT NULL REFERENCES tenants(id),
-    status TEXT NOT NULL DEFAULT 'active'
+    status TEXT NOT NULL DEFAULT 'active',
+    session_version INTEGER NOT NULL DEFAULT 1
   );
 
   CREATE TABLE IF NOT EXISTS categories (
@@ -213,6 +215,7 @@ sqlite.exec(`
     password TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'admin',
     status TEXT NOT NULL DEFAULT 'active',
+    session_version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
   );
 
@@ -255,41 +258,56 @@ sqlite.exec(`
 `);
 
 const existingStarterPackage = sqlite.prepare('SELECT id FROM packages WHERE code = ?').get('starter_1');
+const defaultMaxUsers = OFFLINE_MODE ? 25 : 1;
 if (!existingStarterPackage) {
   const now = new Date().toISOString();
   sqlite.prepare(`
     INSERT INTO packages (id, code, name, max_users, price_monthly, is_default, status, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run('pkg-starter-1', 'starter_1', 'Starter 1', 1, 150000, 1, 'active', now);
+  `).run('pkg-starter-1', 'starter_1', 'Starter 1', defaultMaxUsers, 150000, 1, 'active', now);
+} else if (OFFLINE_MODE) {
+  sqlite.prepare("UPDATE packages SET max_users = ? WHERE code = 'starter_1' AND max_users < ?").run(defaultMaxUsers, defaultMaxUsers);
 }
 
-// ─── Create Bootstrap Admin Account ────────────────────────
-const bootstrapAdminEmail = process.env.ADMIN_BOOTSTRAP_EMAIL?.trim() || 'admin@hkdplus.local';
-const bootstrapAdminPassword = process.env.ADMIN_BOOTSTRAP_PASSWORD || 'admin123';
-const bootstrapAdminName = process.env.ADMIN_BOOTSTRAP_NAME?.trim() || 'System Admin';
-const bootstrapAdminRole = process.env.ADMIN_BOOTSTRAP_ROLE?.trim() || 'super_admin';
-
-const existingAdmin = sqlite.prepare('SELECT id FROM admin_users WHERE email = ?').get(bootstrapAdminEmail);
-if (!existingAdmin) {
-  const now = new Date().toISOString();
-  const adminPassword = bcrypt.hashSync(bootstrapAdminPassword, 10);
-  sqlite.prepare(`
-    INSERT INTO admin_users (id, name, email, password, role, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run('admin-001', bootstrapAdminName, bootstrapAdminEmail, adminPassword, bootstrapAdminRole, 'active', now);
-  
-  console.log('👤 Bootstrap admin account created:');
-  console.log(`   Email:    ${bootstrapAdminEmail}`);
-  console.log(`   Password: ${bootstrapAdminPassword}`);
-} else {
-  console.log(`👤 Admin account (${bootstrapAdminEmail}) already exists, skipping.`);
+// ─── Optional platform admin account ──────────────────────
+// Offline customer builds have no technical-admin login. If this script is
+// explicitly used for the hosted control plane, credentials must be supplied
+// by the operator; never create or print a known password.
+if (ENABLE_PLATFORM_ADMIN) {
+  const bootstrapAdminEmail = process.env.ADMIN_BOOTSTRAP_EMAIL?.trim();
+  const bootstrapAdminPassword = process.env.ADMIN_BOOTSTRAP_PASSWORD || '';
+  const bootstrapAdminName = process.env.ADMIN_BOOTSTRAP_NAME?.trim() || 'System Admin';
+  const bootstrapAdminRole = process.env.ADMIN_BOOTSTRAP_ROLE?.trim() || 'super_admin';
+  if (!bootstrapAdminEmail || bootstrapAdminPassword.length < MIN_PASSWORD_LENGTH) {
+    throw new Error(`ADMIN_BOOTSTRAP_EMAIL và ADMIN_BOOTSTRAP_PASSWORD (ít nhất ${MIN_PASSWORD_LENGTH} ký tự) là bắt buộc khi ENABLE_PLATFORM_ADMIN=true.`);
+  }
+  const existingAdmin = sqlite.prepare('SELECT id FROM admin_users WHERE email = ?').get(bootstrapAdminEmail);
+  if (!existingAdmin) {
+    const now = new Date().toISOString();
+    const adminPassword = bcrypt.hashSync(bootstrapAdminPassword, 12);
+    sqlite.prepare(`
+      INSERT INTO admin_users (id, name, email, password, role, status, session_version, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('admin-001', bootstrapAdminName, bootstrapAdminEmail, adminPassword, bootstrapAdminRole, 'active', 1, now);
+    console.log(`👤 Platform admin account created for ${bootstrapAdminEmail}.`);
+  }
 }
 
-// ─── Create Demo Tenant Account ────────────────────────────
+// ─── Optional development demo tenant ──────────────────────
+// Customer installations must never be populated with demo data. Use
+// `npm run seed` locally or `SEED_DEMO=true` explicitly in a development DB.
+const seedDemo = process.argv.includes('--demo') || process.env.SEED_DEMO === 'true';
+if (!seedDemo) {
+  console.log('✅ Database schema initialized. Demo data was not requested.');
+  process.exit(0);
+}
+
 const existingTenant = sqlite.prepare('SELECT id FROM tenants WHERE id = ?').get('tenant-demo');
 if (!existingTenant) {
   const now = new Date().toISOString();
-  const ownerPassword = bcrypt.hashSync('123456', 10);
+  const demoPassword = process.env.SEED_DEMO_PASSWORD || '';
+  if (demoPassword.length < MIN_PASSWORD_LENGTH) throw new Error(`SEED_DEMO_PASSWORD phải có ít nhất ${MIN_PASSWORD_LENGTH} ký tự.`);
+  const ownerPassword = bcrypt.hashSync(demoPassword, 12);
   const tenantSettings = JSON.stringify({
     lowStockThresholdDefault: 10,
     enabledPaymentMethods: ['cash', 'transfer', 'debt'],
@@ -326,7 +344,7 @@ if (!existingTenant) {
     150000,
     'starter_1',
     'HKDPlus Local',
-    1,
+    defaultMaxUsers,
     150000,
     tenantSettings,
     now,
@@ -377,9 +395,7 @@ if (!existingTenant) {
     `).run(customer[0], customer[1], 'tenant-demo', customer[2], customer[3], customer[4], customer[5], customer[6]);
   }
 
-  console.log('🏪 Demo tenant account created:');
-  console.log('   Email:    owner@hkdplus.local');
-  console.log('   Password: 123456');
+  console.log('🏪 Demo tenant account created: owner@hkdplus.local');
 } else {
   console.log('🏪 Demo tenant already exists, skipping.');
 }

@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Product, Customer, PaymentMethod, InvoiceItem, Invoice } from '../types';
 import { formatCurrency, normalizeSearchText } from '../lib/utils';
-import { Search, X, CheckCircle, ShoppingCart, Wallet, TrendingUp, Package, Printer, ChevronRight, AlertCircle, MapPin, Phone, User, UserPlus, ScanLine, Camera, SlidersHorizontal } from 'lucide-react';
+import { Search, X, CheckCircle, ShoppingCart, Wallet, TrendingUp, Package, Printer, ChevronRight, AlertCircle, MapPin, Phone, User, UserPlus, ScanLine, Camera, SlidersHorizontal, MessageSquare, Tag, Plus, ClipboardList } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { toPng } from 'html-to-image';
@@ -17,7 +17,7 @@ import { POSInvoiceModal } from '../components/pos/POSInvoiceModal';
 import { BarcodeScannerModal } from '../components/barcode/BarcodeScannerModal';
 
 type CartLine = InvoiceItem & { maxStock: number; discountPercent?: number };
-type SaleUnit = { name: string; factor: number; barcode?: string | null };
+type SaleUnit = { name: string; factor: number; sku?: string | null; barcode?: string | null };
 type OrderDraft = {
   id: string;
   name: string;
@@ -56,6 +56,7 @@ export default function POS() {
   const [showCustomerResults, setShowCustomerResults] = useState(false);
   const [showCustomerPicker, setShowCustomerPicker] = useState(false);
   const [showOrderContext, setShowOrderContext] = useState(false);
+  const [showMobileOrderNote, setShowMobileOrderNote] = useState(false);
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [newCustomer, setNewCustomer] = useState({ name: '', phone: '', address: '' });
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
@@ -88,6 +89,7 @@ export default function POS() {
   const [showMobileFilters, setShowMobileFilters] = useState(false);
   const [mobileProductPickerOpen, setMobileProductPickerOpen] = useState(false);
   const [showOrderItemsSheet, setShowOrderItemsSheet] = useState(false);
+  const [showDraftsSheet, setShowDraftsSheet] = useState(false);
   const isCashier = currentUser?.role === 'cashier';
 
   const [remoteProductResults, setRemoteProductResults] = useState<Product[]>([]);
@@ -162,7 +164,7 @@ export default function POS() {
     if (matching) setSelectedPriceListId(matching.id);
   }, [selectedCustomer?.type, priceLists]);
 
-  const productUnits = (product: Product): SaleUnit[] => product.units?.length ? product.units : [{ name: product.unit, factor: 1, barcode: product.barcode }];
+  const productUnits = (product: Product): SaleUnit[] => product.units?.length ? product.units : [{ name: product.unit, factor: 1, sku: product.sku, barcode: product.barcode }];
   const resolvePrice = (product: Product, unitName = product.unit, unitFactor = 1, seen = new Set<string>()): number => {
     if (product.productType === 'combo') {
       if (seen.has(product.id)) return 0;
@@ -247,7 +249,7 @@ export default function POS() {
         normalizeSearchText(p.name).includes(keyword) ||
         normalizeSearchText(p.sku).includes(keyword) ||
         normalizeSearchText(p.barcode).includes(keyword) ||
-        productUnits(p).some((unit) => normalizeSearchText(unit.barcode).includes(keyword));
+        productUnits(p).some((unit) => normalizeSearchText(unit.barcode).includes(keyword) || normalizeSearchText(unit.sku).includes(keyword));
       const matchCategory = selectedCategory === 'All' || p.category === selectedCategory;
       return matchSearch && matchCategory;
     });
@@ -300,7 +302,7 @@ export default function POS() {
     const product = products.find((p) => normalizeSearchText(p.barcode) === code || normalizeSearchText(p.sku) === code);
     if (product) return { product, unit: productUnits(product)[0] };
     for (const candidate of products) {
-      const unit = productUnits(candidate).find((row) => normalizeSearchText(row.barcode) === code);
+      const unit = productUnits(candidate).find((row) => normalizeSearchText(row.barcode) === code || normalizeSearchText(row.sku) === code);
       if (unit) return { product: candidate, unit };
     }
     return null;
@@ -312,7 +314,7 @@ export default function POS() {
       try {
         const remoteProduct = await productsApi.lookup(code) as Product;
         const normalizedCode = normalizeSearchText(code);
-        const remoteUnit = productUnits(remoteProduct).find((unit) => normalizeSearchText(unit.barcode) === normalizedCode);
+        const remoteUnit = productUnits(remoteProduct).find((unit) => normalizeSearchText(unit.barcode) === normalizedCode || normalizeSearchText(unit.sku) === normalizedCode);
         matched = { product: remoteProduct, unit: remoteUnit || productUnits(remoteProduct)[0] };
       } catch {
         matched = null;
@@ -512,6 +514,7 @@ export default function POS() {
     setOrderDiscountValue(0);
     setMobileProductPickerOpen(false);
     setShowOrderItemsSheet(false);
+    setShowMobileOrderNote(false);
     setFormError('');
   };
 
@@ -525,6 +528,8 @@ export default function POS() {
     setActualPaymentAmount(0);
     setStep('cart');
     setActiveOrderTab(draft.id);
+    setShowDraftsSheet(false);
+    setMobileProductPickerOpen(false);
   };
 
   const removeDraft = (draftId: string) => {
@@ -546,6 +551,8 @@ export default function POS() {
     setActiveOrderTab('live');
     setMobileProductPickerOpen(false);
     setShowOrderItemsSheet(false);
+    setShowMobileOrderNote(false);
+    setShowDraftsSheet(false);
   };
 
   const openPaymentStep = () => {
@@ -607,6 +614,7 @@ export default function POS() {
     setOrderDiscountValue(0);
     setActualPaymentAmount(0);
     setOrderNote('');
+    setShowMobileOrderNote(false);
     if (activeOrderTab !== 'live') {
       setDrafts((prev) => prev.filter((d) => d.id !== activeOrderTab));
       setActiveOrderTab('live');
@@ -629,6 +637,7 @@ export default function POS() {
     setOrderNote('');
     setMobileProductPickerOpen(false);
     setShowOrderItemsSheet(false);
+    setShowMobileOrderNote(false);
   };
 
   const handleCreateCustomer = () => {
@@ -694,6 +703,64 @@ export default function POS() {
                 onChangeUnit={updateLineUnit}
               />
             ))}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderMobileDraftsSheet = () => {
+    if (!showDraftsSheet) return null;
+    const draftTotal = (draft: OrderDraft) => {
+      const subtotal = draft.cart.reduce((sum, item) => sum + item.total, 0);
+      const discount = draft.orderDiscountType === 'percent'
+        ? subtotal * (draft.orderDiscountValue / 100)
+        : draft.orderDiscountValue;
+      return Math.max(0, subtotal - discount);
+    };
+    const itemCount = (draft: OrderDraft) => draft.cart.reduce((sum, item) => sum + item.quantity, 0);
+
+    return (
+      <div className="pos-mobile-ui fixed inset-0 z-[121] flex items-end justify-center bg-slate-950/35 p-3" onClick={() => setShowDraftsSheet(false)}>
+        <div role="dialog" aria-modal="true" aria-label="Chuyển đơn hàng" className="w-full max-w-lg rounded-t-2xl border border-slate-200 bg-white p-4 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-900">Chuyển đơn hàng</h3>
+              <p className="text-[11px] text-slate-500">Chọn đơn hiện tại hoặc đơn nháp để tiếp tục bán</p>
+            </div>
+            <button type="button" onClick={() => setShowDraftsSheet(false)} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100" aria-label="Đóng danh sách đơn hàng">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="max-h-[55vh] space-y-2 overflow-y-auto">
+            <button
+              type="button"
+              onClick={() => { startNewOrder(); setShowDraftsSheet(false); }}
+              className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left ${activeOrderTab === 'live' ? 'border-sky-300 bg-sky-50' : 'border-slate-200 bg-white'}`}
+            >
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sky-100 text-sky-700"><Plus className="h-4 w-4" /></span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs font-semibold text-slate-900">Đơn hiện tại</span>
+                <span className="block text-[11px] text-slate-500">{cart.reduce((sum, item) => sum + item.quantity, 0)} sản phẩm · {formatCurrency(finalAmount)}</span>
+              </span>
+              <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
+            </button>
+            {drafts.map((draft) => (
+              <button
+                key={draft.id}
+                type="button"
+                onClick={() => loadDraft(draft)}
+                className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left ${activeOrderTab === draft.id ? 'border-sky-300 bg-sky-50' : 'border-slate-200 bg-white'}`}
+              >
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-600"><ClipboardList className="h-4 w-4" /></span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-semibold text-slate-900">{draft.name}</span>
+                  <span className="block text-[11px] text-slate-500">{itemCount(draft)} sản phẩm · {formatCurrency(draftTotal(draft))}</span>
+                </span>
+                <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
+              </button>
+            ))}
+            {drafts.length === 0 && <p className="rounded-xl border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-500">Chưa có đơn nháp. Lưu một đơn để chuyển qua lại nhiều đơn.</p>}
           </div>
         </div>
       </div>
@@ -1032,7 +1099,7 @@ export default function POS() {
   }
 
   return (
-    <div className="erp-compact flex min-h-0 flex-col h-full lg:flex-row lg:items-stretch bg-slate-50 overflow-y-auto lg:overflow-hidden font-sans relative">
+    <div className="erp-compact pos-page flex min-h-0 flex-col h-full lg:flex-row lg:items-stretch bg-slate-50 overflow-y-auto lg:overflow-hidden font-sans relative">
       <BarcodeScannerModal
         open={showScannerModal}
         title="Quét mã để thêm vào giỏ"
@@ -1077,7 +1144,7 @@ export default function POS() {
       )}
 
       {/* Product List Section */}
-      <div className="w-full lg:flex-1 lg:self-stretch flex flex-col min-h-0 border-b lg:border-b-0 lg:border-r border-slate-200/50 bg-white relative shrink-0">
+      <div className="w-full flex-1 lg:flex-1 lg:self-stretch flex flex-col min-h-0 border-b lg:border-b-0 lg:border-r border-slate-200/50 bg-white relative">
         <div className="p-3 sm:p-4 lg:p-2 space-y-3 lg:space-y-1.5 bg-white sticky top-0 z-40 border-b border-slate-200 shadow-sm shrink-0">
           <div className="hidden lg:flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
@@ -1127,6 +1194,40 @@ export default function POS() {
               <Camera className="h-4 w-4 sm:h-5 sm:w-5 lg:h-3.5 lg:w-3.5" />
               <ScanLine className="h-4 w-4 sm:h-5 sm:w-5 lg:h-3.5 lg:w-3.5 ml-1 lg:ml-0.5" />
             </Button>
+            {!mobileProductPickerOpen && (
+              <div className="flex shrink-0 items-center gap-1 lg:hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowOrderContext(true)}
+                  className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-white ${showOrderContext ? 'border-sky-300 text-sky-700' : 'border-slate-200 text-slate-500'}`}
+                  aria-label="Chọn khách hàng"
+                  title="Chọn khách hàng"
+                >
+                  <User className="h-4 w-4" />
+                  {selectedCustomer && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowOrderContext(true)}
+                  className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-white ${showOrderContext ? 'border-sky-300 text-sky-700' : 'border-slate-200 text-slate-500'}`}
+                  aria-label="Chọn bảng giá"
+                  title="Chọn bảng giá"
+                >
+                  <Tag className="h-4 w-4" />
+                  {selectedPriceListId && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-sky-500" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileProductPickerOpen(true)}
+                  className="flex h-10 shrink-0 items-center justify-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2.5 text-sky-800"
+                  aria-label="Thêm hàng"
+                  title="Thêm hàng"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span className="hidden sm:inline">Thêm</span>
+                </button>
+              </div>
+            )}
           </div>
           {scanHint && <p className="text-xs text-sky-700">{scanHint}</p>}
 
@@ -1147,21 +1248,21 @@ export default function POS() {
           </div>
         </div>
         
-        <div className="flex-1 min-h-0 lg:overflow-y-auto p-3 pb-28 sm:p-4 sm:pb-28 lg:p-2 lg:pb-2">
+        <div className="pos-mobile-ui pos-mobile-content flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 pb-[18rem] sm:p-4 sm:pb-[18rem] lg:p-2 lg:pb-2">
           <div className={`${mobileProductPickerOpen ? 'mb-2' : 'hidden'} lg:hidden`}>
             <button
               onClick={() => setShowMobileFilters((v) => !v)}
-              className="h-9 px-3 rounded-lg border border-slate-200 bg-white text-xs text-slate-700 inline-flex items-center gap-1.5"
+              className="pos-mobile-filter-control inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700"
             >
               <SlidersHorizontal className="h-3.5 w-3.5" />
               Bộ lọc
             </button>
             {showMobileFilters && (
-              <div className="mt-2 grid grid-cols-2 gap-2">
+              <div className="pos-mobile-filter-controls mt-2 grid grid-cols-2 gap-2">
                 <select
                   value={mobileSortKey}
                   onChange={(e) => setMobileSortKey(e.target.value as any)}
-                  className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700"
+                  className="pos-mobile-filter-control h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700"
                 >
                   <option value="default">Sắp xếp mặc định</option>
                   <option value="name_asc">Tên A → Z</option>
@@ -1173,7 +1274,7 @@ export default function POS() {
                 <select
                   value={mobileStockFilter}
                   onChange={(e) => setMobileStockFilter(e.target.value as any)}
-                  className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700"
+                  className="pos-mobile-filter-control h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700"
                 >
                   <option value="all">Tất cả tồn kho</option>
                   <option value="in_stock">Còn hàng</option>
@@ -1183,7 +1284,7 @@ export default function POS() {
                 <select
                   value={selectedCategory}
                   onChange={(e) => setSelectedCategory(e.target.value)}
-                  className="col-span-2 h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700"
+                  className="pos-mobile-filter-control col-span-2 h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-700"
                 >
                   {categories.map((category) => <option key={category} value={category}>{category === 'All' ? 'Tất cả danh mục' : category}</option>)}
                 </select>
@@ -1193,26 +1294,35 @@ export default function POS() {
 
           {!mobileProductPickerOpen && (
             <div className="lg:hidden">
-              <div className="mb-3 space-y-2">
-                <button type="button" onClick={() => setShowCustomerPicker(true)} className="flex min-h-11 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-left">
-                  <span className="flex min-w-0 items-center gap-2 text-sm text-slate-800"><User className="h-4 w-4 shrink-0 text-slate-400" /><span className="truncate">{selectedCustomer?.name || 'Chọn khách hàng / khách lẻ'}</span></span>
-                  <span className="ml-2 flex shrink-0 items-center gap-1 text-xs text-slate-500">Nợ: {formatCurrency(selectedCustomer?.totalDebt || 0)} <ChevronRight className="h-4 w-4" /></span>
-                </button>
-                <div className="flex min-h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3">
-                  <span className="shrink-0 text-sm text-slate-600">Bảng giá</span>
-                  <select value={selectedPriceListId} onChange={(e) => setSelectedPriceListId(e.target.value)} className="min-w-0 flex-1 bg-transparent text-right text-sm text-slate-800 outline-none">
-                    {priceLists.map((list: any) => <option key={list.id} value={list.id}>{list.name}</option>)}
-                  </select>
+              {showOrderContext && (
+                <div className="fixed inset-0 z-[118] flex items-end justify-center bg-slate-950/35 p-3 lg:hidden" onClick={() => setShowOrderContext(false)}>
+                  <div role="dialog" aria-modal="true" aria-label="Thông tin đơn hàng" className="w-full max-w-lg rounded-t-2xl border border-slate-200 bg-white p-4 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-900">Thông tin đơn hàng</h3>
+                        <p className="text-[11px] text-slate-500">Chọn khách hàng và bảng giá áp dụng</p>
+                      </div>
+                      <button type="button" onClick={() => setShowOrderContext(false)} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100" aria-label="Đóng"><X className="h-4 w-4" /></button>
+                    </div>
+                    <button type="button" onClick={() => { setShowOrderContext(false); setShowCustomerPicker(true); }} className="flex min-h-11 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-left">
+                      <span className="flex min-w-0 items-center gap-2 text-sm text-slate-800"><User className="h-4 w-4 shrink-0 text-slate-400" /><span className="truncate">{selectedCustomer?.name || 'Khách lẻ / khách ngoài'}</span></span>
+                      <span className="ml-2 flex shrink-0 items-center gap-1 text-xs text-slate-500">Nợ: {formatCurrency(selectedCustomer?.totalDebt || 0)} <ChevronRight className="h-4 w-4" /></span>
+                    </button>
+                    <label className="mt-2 flex min-h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3">
+                      <Tag className="h-4 w-4 shrink-0 text-slate-400" />
+                      <span className="shrink-0 text-sm text-slate-600">Bảng giá</span>
+                      <select value={selectedPriceListId} onChange={(event) => setSelectedPriceListId(event.target.value)} className="min-w-0 flex-1 bg-transparent text-right text-sm text-slate-800 outline-none">
+                        {priceLists.map((list: any) => <option key={list.id} value={list.id}>{list.name}</option>)}
+                      </select>
+                    </label>
+                  </div>
                 </div>
-              </div>
+              )}
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div>
-                  <h2 className="text-sm font-semibold text-slate-900">Giỏ hàng</h2>
-                  <p className="text-[11px] text-slate-500">Chỉ hiển thị các mặt hàng đã chọn</p>
+                  <h2 className="pos-mobile-title text-sm font-semibold text-slate-900">Giỏ hàng</h2>
+                  <p className="pos-mobile-caption text-[11px] text-slate-500">Chỉ hiển thị các mặt hàng đã chọn</p>
                 </div>
-                <button type="button" onClick={() => setMobileProductPickerOpen(true)} className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800">
-                  + Thêm hàng
-                </button>
               </div>
               {cart.length > 0 ? (
                 <div className="space-y-2">
@@ -1514,43 +1624,67 @@ export default function POS() {
         </div>
       </div>
 
-      <div className="fixed inset-x-0 bottom-[calc(60px+env(safe-area-inset-bottom))] z-30 p-3 lg:hidden">
-        <div className="rounded-t-xl border border-slate-200 bg-white px-3 pt-2 pb-3 shadow-lg">
-          <div className="mb-2 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-slate-700">Tổng tiền hàng</span>
-              <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-sky-300 px-2 text-sm font-medium text-sky-700">
-                {cart.length}
-              </span>
+      {!mobileProductPickerOpen && (
+        <div className="pos-mobile-ui fixed inset-x-0 bottom-[calc(60px+env(safe-area-inset-bottom))] z-30 p-3 lg:hidden">
+          <div className="rounded-t-xl border border-slate-200 bg-white px-3 pt-2 pb-3 shadow-lg">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-slate-700">Tổng tiền hàng</span>
+                <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-sky-300 px-2 text-sm font-medium text-sky-700">
+                  {cart.length}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowDraftsSheet(true)}
+                  className={`relative flex h-9 w-9 items-center justify-center rounded-lg border ${showDraftsSheet || drafts.length > 0 ? 'border-sky-300 bg-sky-50 text-sky-700' : 'border-slate-200 bg-white text-slate-500'}`}
+                  aria-label={`Chuyển đơn hàng, ${drafts.length} đơn nháp`}
+                  title="Chuyển đơn hàng"
+                >
+                  <ClipboardList className="h-4 w-4" />
+                  {drafts.length > 0 && <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-sky-600 px-1 text-[9px] font-semibold text-white">{drafts.length}</span>}
+                </button>
+                <span className="pos-mobile-total text-2xl font-semibold text-slate-900 tabular-nums">{formatCurrency(finalAmount)}</span>
+              </div>
             </div>
-            <span className="text-2xl font-semibold text-slate-900 tabular-nums">{formatCurrency(finalAmount)}</span>
-          </div>
-          <Input
-            value={orderNote}
-            onChange={(event) => setOrderNote(event.target.value)}
-            placeholder="Ghi chú chung cho đơn hàng"
-            className="mb-2 h-9 text-xs"
-          />
-          <button
-            type="button"
-            className="mb-2 flex h-9 w-full items-center justify-center rounded-lg border border-sky-200 bg-sky-50 text-xs font-medium text-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={cart.length === 0}
-            onClick={() => setShowOrderItemsSheet(true)}
-          >
-            Mở rộng giỏ hàng ({cart.length})
-          </button>
-          <div className="grid grid-cols-2 gap-2">
-            <Button variant="outline" className="h-11" disabled={cart.length === 0} onClick={saveDraft}>
-              Lưu tạm
-            </Button>
-            <Button className="h-11" disabled={cart.length === 0} onClick={openPaymentStep}>
-              Thanh toán
-            </Button>
+            <div className="mb-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowMobileOrderNote((visible) => !visible)}
+                className={`relative flex h-9 w-9 items-center justify-center rounded-lg border ${showMobileOrderNote || orderNote.trim() ? 'border-sky-300 bg-sky-50 text-sky-700' : 'border-slate-200 bg-white text-slate-500'}`}
+                aria-label="Ghi chú chung cho đơn hàng"
+                aria-expanded={showMobileOrderNote}
+                title="Ghi chú chung cho đơn hàng"
+              >
+                <MessageSquare className="h-4 w-4" />
+                {orderNote.trim() && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-sky-600" />}
+              </button>
+            </div>
+            {showMobileOrderNote && (
+              <textarea
+                autoFocus
+                value={orderNote}
+                onChange={(event) => setOrderNote(event.target.value)}
+                placeholder="Ghi chú chung cho đơn hàng"
+                rows={2}
+                className="mb-2 w-full resize-none rounded-lg border border-sky-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none placeholder:text-slate-400 focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+              />
+            )}
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="outline" className="h-11" disabled={cart.length === 0} onClick={saveDraft}>
+                Lưu tạm
+              </Button>
+              <Button className="h-11" disabled={cart.length === 0} onClick={openPaymentStep}>
+                Thanh toán
+              </Button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {renderMobileOrderItemsSheet()}
+      {renderMobileDraftsSheet()}
 
       {showCustomerPicker && (
         <div className="fixed inset-0 z-[125] flex items-center justify-center bg-slate-900/40 p-3" onClick={() => { setShowCustomerPicker(false); setShowAddCustomer(false); }}>

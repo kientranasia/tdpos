@@ -42,9 +42,15 @@ export default function Settings() {
     invoiceShowOrderNote: activeTenant?.settings?.invoice?.showOrderNote ?? true,
     invoiceFooterNote: activeTenant?.settings?.invoice?.footerNote || 'Cảm ơn quý khách và hẹn gặp lại.',
     invoicePrintSize: activeTenant?.settings?.invoice?.printSize || 'receipt_80mm',
+    brandingAppName: activeTenant?.settings?.branding?.appName || activeTenant?.name || 'HKD Smart',
+    brandingBrowserTitle: activeTenant?.settings?.branding?.browserTitle || activeTenant?.name || 'HKD Smart',
+    brandingShortName: activeTenant?.settings?.branding?.shortName || activeTenant?.name || 'HKD Smart',
+    brandingThemeColor: activeTenant?.settings?.branding?.themeColor || '#243765',
+    brandingLogoUrl: activeTenant?.settings?.branding?.logoUrl || activeTenant?.logoUrl || '',
   });
 
   const [tenantUsers, setTenantUsers] = useState<User[]>([]);
+  const canCreateMoreUsers = !activeTenant?.maxUsers || tenantUsers.length < activeTenant.maxUsers;
   const [usersLoading, setUsersLoading] = useState(false);
   const [userError, setUserError] = useState('');
   const [userForm, setUserForm] = useState({
@@ -75,7 +81,6 @@ export default function Settings() {
   const [roleForm, setRoleForm] = useState({ code: '', name: '', description: '' });
 
   const isOwner = currentUser?.role === 'owner';
-  const canCreateMoreUsers = true;
 
   useEffect(() => {
     setFormData({
@@ -101,6 +106,11 @@ export default function Settings() {
       invoiceShowOrderNote: activeTenant?.settings?.invoice?.showOrderNote ?? true,
       invoiceFooterNote: activeTenant?.settings?.invoice?.footerNote || 'Cảm ơn quý khách và hẹn gặp lại.',
       invoicePrintSize: activeTenant?.settings?.invoice?.printSize || 'receipt_80mm',
+      brandingAppName: activeTenant?.settings?.branding?.appName || activeTenant?.name || 'HKD Smart',
+      brandingBrowserTitle: activeTenant?.settings?.branding?.browserTitle || activeTenant?.name || 'HKD Smart',
+      brandingShortName: activeTenant?.settings?.branding?.shortName || activeTenant?.name || 'HKD Smart',
+      brandingThemeColor: activeTenant?.settings?.branding?.themeColor || '#243765',
+      brandingLogoUrl: activeTenant?.settings?.branding?.logoUrl || activeTenant?.logoUrl || '',
     });
   }, [activeTenant]);
 
@@ -276,7 +286,15 @@ export default function Settings() {
             footerNote: formData.invoiceFooterNote?.trim() || '',
             printSize: formData.invoicePrintSize as 'a5' | 'receipt_80mm',
           },
+          branding: {
+            appName: formData.brandingAppName.trim(),
+            browserTitle: formData.brandingBrowserTitle.trim(),
+            shortName: formData.brandingShortName.trim(),
+            themeColor: /^#[0-9a-f]{6}$/i.test(formData.brandingThemeColor) ? formData.brandingThemeColor : '#243765',
+            logoUrl: formData.brandingLogoUrl || undefined,
+          },
         },
+        logoUrl: formData.brandingLogoUrl || null,
       });
       setSaveMessage('Đã lưu cấu hình.');
     } catch (err) {
@@ -284,6 +302,17 @@ export default function Settings() {
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const handleBrandingLogo = (file?: File) => {
+    if (!file) return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 1_500_000) {
+      setError('Logo phải là PNG, JPG hoặc WebP và không vượt quá 1,5 MB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setFormData((prev) => ({ ...prev, brandingLogoUrl: String(reader.result || '') }));
+    reader.readAsDataURL(file);
   };
 
   const handleCreateUser = async () => {
@@ -384,6 +413,26 @@ export default function Settings() {
             <Input value={formData.invoicePrefix} onChange={(e) => setFormData((prev) => ({ ...prev, invoicePrefix: e.target.value }))} placeholder="Tiền tố hóa đơn" />
           </div>
           <Input value={formData.address} onChange={(e) => setFormData((prev) => ({ ...prev, address: e.target.value }))} placeholder="Địa chỉ cửa hàng" />
+          <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div>
+              <p className="text-sm font-medium text-slate-900">Nhận diện thương hiệu</p>
+              <p className="text-xs text-slate-500">Tên, tiêu đề trình duyệt và logo riêng của cửa hàng trên thiết bị nội bộ.</p>
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <Input value={formData.brandingAppName} onChange={(e) => setFormData((prev) => ({ ...prev, brandingAppName: e.target.value }))} placeholder="Tên ứng dụng" />
+              <Input value={formData.brandingBrowserTitle} onChange={(e) => setFormData((prev) => ({ ...prev, brandingBrowserTitle: e.target.value }))} placeholder="Tiêu đề trình duyệt" />
+              <Input value={formData.brandingShortName} onChange={(e) => setFormData((prev) => ({ ...prev, brandingShortName: e.target.value }))} placeholder="Tên ngắn trên điện thoại" />
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 text-sm text-slate-700">Màu chủ đạo <input type="color" value={/^#[0-9a-f]{6}$/i.test(formData.brandingThemeColor) ? formData.brandingThemeColor : '#243765'} onChange={(e) => setFormData((prev) => ({ ...prev, brandingThemeColor: e.target.value }))} className="h-9 w-12 rounded border border-slate-200 bg-white p-1" /></label>
+              <label className="inline-flex cursor-pointer items-center rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+                Chọn logo
+                <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => handleBrandingLogo(e.target.files?.[0])} />
+              </label>
+              {formData.brandingLogoUrl && <img src={formData.brandingLogoUrl} alt="Logo cửa hàng" className="h-10 max-w-40 rounded border border-slate-200 bg-white object-contain p-1" />}
+              {formData.brandingLogoUrl && <Button size="sm" variant="outline" onClick={() => setFormData((prev) => ({ ...prev, brandingLogoUrl: '' }))}>Xóa logo</Button>}
+            </div>
+          </div>
         </div>
           )}
 
@@ -418,7 +467,7 @@ export default function Settings() {
             <div className="rounded-lg border border-slate-200 p-3 text-sm">
               <p className="font-medium text-slate-900">Máy chủ mạng nội bộ</p>
               <p className="mt-1 text-xs text-slate-500">{systemStatus?.hostname || 'Đang tải...'} · {systemStatus?.addresses?.join(', ') || 'Chưa nhận diện IP'}</p>
-              <p className="mt-1 text-xs text-sky-700">http://hkd.care</p>
+              <p className="mt-1 break-all text-xs text-sky-700">{systemStatus?.localUrl || 'URL LAN chỉ hiển thị cho owner'}</p>
             </div>
             <div className="rounded-lg border border-slate-200 p-3 text-sm">
               <p className="font-medium text-slate-900">License</p>

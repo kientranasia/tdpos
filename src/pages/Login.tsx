@@ -13,6 +13,7 @@ export default function Login({ isRegister = false }: { isRegister?: boolean }) 
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [storeName, setStoreName] = useState('');
+  const [setupToken, setSetupToken] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -23,7 +24,7 @@ export default function Login({ isRegister = false }: { isRegister?: boolean }) 
 
     try {
       const session = isRegister
-        ? await authApi.register(fullName, email, password, storeName)
+        ? await authApi.register(fullName, email, password, storeName, setupToken.trim() || undefined)
         : await authApi.login(email, password);
 
       authApi.saveSession(session.token);
@@ -103,9 +104,15 @@ export default function Login({ isRegister = false }: { isRegister?: boolean }) 
                 className="h-14 px-5 rounded-lg border-none bg-slate-50 shadow-inner font-semibold"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder={isRegister ? 'Tạo mật khẩu (tối thiểu 6 ký tự)' : 'Nhập mật khẩu tài khoản'} 
+                placeholder={isRegister ? 'Tạo mật khẩu (tối thiểu 10 ký tự)' : 'Nhập mật khẩu tài khoản'}
               />
             </div>
+            {isRegister && (
+              <div className="space-y-2">
+                <label className="text-xs font-bold uppercase tracking-widest text-slate-400">Mã cài đặt (nếu có)</label>
+                <Input type="password" value={setupToken} onChange={(e) => setSetupToken(e.target.value)} placeholder="Chỉ cần khi đăng ký từ thiết bị trong LAN" />
+              </div>
+            )}
             
             {!isRegister && (
               <div className="flex items-center justify-between px-1">

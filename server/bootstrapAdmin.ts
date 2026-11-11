@@ -3,13 +3,14 @@ import { v4 as uuid } from 'uuid';
 import { db } from './db';
 import * as schema from './schema';
 import { sql } from 'drizzle-orm';
+import { ENABLE_PLATFORM_ADMIN, MIN_PASSWORD_LENGTH } from './runtimeConfig';
 
 const isProduction = process.env.NODE_ENV === 'production';
 type AdminRole = 'super_admin' | 'admin' | 'support';
 
 const getBootstrapAdminConfig = () => {
-  const email = process.env.ADMIN_BOOTSTRAP_EMAIL?.trim() || (!isProduction ? 'admin@hkdplus.local' : '');
-  const password = process.env.ADMIN_BOOTSTRAP_PASSWORD || (!isProduction ? 'admin123' : '');
+  const email = process.env.ADMIN_BOOTSTRAP_EMAIL?.trim() || '';
+  const password = process.env.ADMIN_BOOTSTRAP_PASSWORD || '';
   const name = process.env.ADMIN_BOOTSTRAP_NAME?.trim() || 'System Admin';
   const rawRole = process.env.ADMIN_BOOTSTRAP_ROLE?.trim() || 'super_admin';
   const role: AdminRole =
@@ -20,13 +21,14 @@ const getBootstrapAdminConfig = () => {
 };
 
 export const bootstrapAdminAccount = async () => {
+  if (!ENABLE_PLATFORM_ADMIN) return;
   const countResult = db.select({ count: sql<number>`count(*)` }).from(schema.adminUsers).get();
   const adminCount = countResult?.count || 0;
 
   if (adminCount > 0) return;
 
   const config = getBootstrapAdminConfig();
-  if (!config.email || !config.password) {
+  if (!config.email || !config.password || config.password.length < MIN_PASSWORD_LENGTH) {
     const msg =
       'No admin account found and missing ADMIN_BOOTSTRAP_EMAIL / ADMIN_BOOTSTRAP_PASSWORD in environment.';
     if (isProduction) {
@@ -37,7 +39,7 @@ export const bootstrapAdminAccount = async () => {
   }
 
   const now = new Date().toISOString();
-  const passwordHash = await bcrypt.hash(config.password, 10);
+  const passwordHash = await bcrypt.hash(config.password, 12);
 
   db.insert(schema.adminUsers).values({
     id: uuid(),

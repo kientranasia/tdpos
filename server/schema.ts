@@ -42,6 +42,7 @@ export const users = sqliteTable('users', {
   role: text('role', { enum: ['owner', 'manager', 'cashier', 'warehouse', 'accountant'] }).notNull(),
   tenantId: text('tenant_id').notNull().references(() => tenants.id),
   status: text('status', { enum: ['active', 'inactive'] }).notNull().default('active'),
+  sessionVersion: integer('session_version').notNull().default(1),
 });
 
 // ─── Permissions ───────────────────────────────────────────
@@ -103,8 +104,13 @@ export const licenseInstances = sqliteTable('license_instances', {
 
 export const backupLogs = sqliteTable('backup_logs', {
   id: text('id').primaryKey(),
+  tenantId: text('tenant_id').references(() => tenants.id),
+  instanceId: text('instance_id'),
   filePath: text('file_path').notNull(),
   sizeBytes: integer('size_bytes').notNull().default(0),
+  checksumSha256: text('checksum_sha256'),
+  schemaVersion: integer('schema_version'),
+  verified: integer('verified', { mode: 'boolean' }).notNull().default(false),
   createdBy: text('created_by'),
   createdAt: text('created_at').notNull(),
 });
@@ -241,6 +247,10 @@ export const productImportBatches = sqliteTable('product_import_batches', {
   updatedCount: integer('updated_count').notNull().default(0),
   unitCount: integer('unit_count').notNull().default(0),
   comboCount: integer('combo_count').notNull().default(0),
+  componentCount: integer('component_count').notNull().default(0),
+  comboWithComponents: integer('combo_with_components').notNull().default(0),
+  comboMissingComponents: integer('combo_missing_components').notNull().default(0),
+  componentWarningCount: integer('component_warning_count').notNull().default(0),
   errorCount: integer('error_count').notNull().default(0),
   createdBy: text('created_by').notNull(),
   createdAt: text('created_at').notNull(),
@@ -328,6 +338,9 @@ export const purchaseItems = sqliteTable('purchase_items', {
   total: real('total').notNull(),
   unitFactor: real('unit_factor').notNull().default(1),
   baseQuantity: real('base_quantity').notNull().default(0),
+  isGift: integer('is_gift', { mode: 'boolean' }).notNull().default(false),
+  sellingPrice: real('selling_price').notNull().default(0),
+  note: text('note').notNull().default(''),
 });
 
 export const purchaseReturns = sqliteTable('purchase_returns', {
@@ -557,6 +570,7 @@ export const adminUsers = sqliteTable('admin_users', {
   password: text('password').notNull(),
   role: text('role', { enum: ['super_admin', 'admin', 'support'] }).notNull().default('admin'),
   status: text('status', { enum: ['active', 'inactive'] }).notNull().default('active'),
+  sessionVersion: integer('session_version').notNull().default(1),
   createdAt: text('created_at').notNull(),
 });
 
