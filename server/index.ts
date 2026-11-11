@@ -44,6 +44,14 @@ const normalizeSearchText = (value: unknown) => String(value ?? '')
 
 const fallbackDocumentNo = (prefix: string, id: string) => `${prefix}-${String(id).replace(/-/g, '').slice(0, 8).toUpperCase()}`;
 
+const configuredPublicOrigin = (() => {
+  try {
+    return new URL(process.env.HKDPLUS_PUBLIC_URL || '').origin;
+  } catch {
+    return '';
+  }
+})();
+
 const documentReference = (document: any, prefix: string) => document
   ? document.documentNo || fallbackDocumentNo(prefix, document.id)
   : null;
@@ -86,7 +94,7 @@ declare global {
 app.use(cors({
   origin: (origin, callback) => {
     const developmentOrigins = process.env.NODE_ENV !== 'production' ? ['http://localhost:3000', 'http://127.0.0.1:3000'] : [];
-    if (!origin || allowedCorsOrigins.includes(origin) || developmentOrigins.includes(origin)) return callback(null, true);
+    if (!origin || allowedCorsOrigins.includes(origin) || developmentOrigins.includes(origin) || origin === configuredPublicOrigin) return callback(null, true);
     return callback(new Error('Origin không được phép'));
   },
   credentials: false,

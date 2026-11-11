@@ -17,7 +17,7 @@ services:
       HKDPLUS_INSTANCE_ID: ${HKDPLUS_INSTANCE_ID:-}
       HKDPLUS_SETUP_TOKEN: ${HKDPLUS_SETUP_TOKEN:-}
       HKDPLUS_PUBLIC_URL: ${HKDPLUS_PUBLIC_URL:-https://hkdplus.lan}
-      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://hkdplus.lan}
     volumes:
       - tdpos_data:/app/data
     healthcheck:
