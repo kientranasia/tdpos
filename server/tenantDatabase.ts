@@ -119,6 +119,7 @@ export class TenantDatabaseRegistry {
   private readonly controlDb: DrizzleDatabase;
   private readonly dataDir: string;
   private readonly tenantDir: string;
+  private readonly transactionTails = new WeakMap<object, Promise<void>>();
 
   constructor(options: RegistryOptions) {
     this.controlSqlite = options.controlSqlite;
@@ -416,6 +417,29 @@ export class TenantDatabaseRegistry {
     return new Proxy(fallback, {
       get: (_target, property) => {
         const active = this.activeDb() as any;
+        if (property === 'transaction') {
+          return async (callback: (tx: any) => Promise<unknown> | unknown) => {
+            const sqlite = this.activeSqlite();
+            const previous = this.transactionTails.get(sqlite) || Promise.resolve();
+            let release!: () => void;
+            const current = new Promise<void>((resolve) => { release = resolve; });
+            const queued = previous.then(() => current);
+            this.transactionTails.set(sqlite, queued);
+            await previous;
+            try {
+              sqlite.exec('BEGIN');
+              const result = await callback(active);
+              sqlite.exec('COMMIT');
+              return result;
+            } catch (error) {
+              try { sqlite.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+              throw error;
+            } finally {
+              release();
+              if (this.transactionTails.get(sqlite) === queued) this.transactionTails.delete(sqlite);
+            }
+          };
+        }
         const value = active[property as keyof typeof active];
         return typeof value === 'function' ? value.bind(active) : value;
       },

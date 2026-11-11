@@ -9,6 +9,12 @@ const parseBoolean = (value: string | undefined, fallback: boolean) => {
 
 export const OFFLINE_MODE = parseBoolean(process.env.OFFLINE_MODE, true);
 export const ENABLE_PLATFORM_ADMIN = !OFFLINE_MODE && parseBoolean(process.env.ENABLE_PLATFORM_ADMIN, false);
+export const DATABASE_PROVIDER = String(process.env.DATABASE_PROVIDER || 'sqlite').trim().toLowerCase() === 'postgres'
+  ? 'postgres'
+  : 'sqlite';
+if (DATABASE_PROVIDER === 'postgres' && OFFLINE_MODE) {
+  throw new Error('PostgreSQL chỉ được phép dùng cho bản SaaS, không dùng trong offline mode.');
+}
 // Online SaaS can opt into one SQLite file per tenant while the shared
 // database remains the safe default until the migration has been verified.
 export const DATABASE_MODE = !OFFLINE_MODE && process.env.DATABASE_MODE?.trim().toLowerCase() === 'per_tenant'

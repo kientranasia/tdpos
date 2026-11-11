@@ -85,7 +85,7 @@ try {
         owner: { name: `Owner ${suffix}`, email: `owner-${suffix.toLowerCase()}@example.com`, password: 'OwnerSmoke123!' },
       }),
     });
-    assert(result.response.status === 201, `Tenant ${suffix} creation failed: ${JSON.stringify(result.body)}`);
+    assert(result.response.status === 201, `Tenant ${suffix} creation failed: ${JSON.stringify(result.body)}\nServer output:\n${serverOutput}`);
     assert(result.body?.databaseStatus === 'ready', `Tenant ${suffix} was not provisioned: ${JSON.stringify(result.body)}`);
     return { id: result.body.id, email: `owner-${suffix.toLowerCase()}@example.com` };
   };

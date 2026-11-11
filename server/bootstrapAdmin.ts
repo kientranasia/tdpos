@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuid } from 'uuid';
 import { db } from './db';
 import * as schema from './schema';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { ENABLE_PLATFORM_ADMIN, MIN_PASSWORD_LENGTH } from './runtimeConfig';
 
 const isProduction = process.env.NODE_ENV === 'production';
@@ -22,11 +22,6 @@ const getBootstrapAdminConfig = () => {
 
 export const bootstrapAdminAccount = async () => {
   if (!ENABLE_PLATFORM_ADMIN) return;
-  const countResult = db.select({ count: sql<number>`count(*)` }).from(schema.adminUsers).get();
-  const adminCount = countResult?.count || 0;
-
-  if (adminCount > 0) return;
-
   const config = getBootstrapAdminConfig();
   if (!config.email || !config.password || config.password.length < MIN_PASSWORD_LENGTH) {
     const msg =
@@ -38,18 +33,32 @@ export const bootstrapAdminAccount = async () => {
     return;
   }
 
+  // Seed and server startup can both run during the first container boot.
+  // Check the configured identity before the count gate so a seeded account
+  // is never inserted a second time on restart.
+  const existingByEmail = await db
+    .select({ id: schema.adminUsers.id })
+    .from(schema.adminUsers)
+    .where(eq(schema.adminUsers.email, config.email.toLowerCase()))
+    .limit(1);
+  if (existingByEmail.length > 0) return;
+
+  const countResult = await db.select({ count: sql<number>`count(*)` }).from(schema.adminUsers).get();
+  const adminCount = Number(countResult?.count || 0);
+  if (adminCount > 0) return;
+
   const now = new Date().toISOString();
   const passwordHash = await bcrypt.hash(config.password, 12);
 
-  db.insert(schema.adminUsers).values({
+  await db.insert(schema.adminUsers).values({
     id: uuid(),
     name: config.name,
-    email: config.email,
+    email: config.email.toLowerCase(),
     password: passwordHash,
     role: config.role,
     status: 'active',
     createdAt: now,
-  }).run();
+  }).onConflictDoNothing();
 
   console.log(`👤 Bootstrap admin created: ${config.email}`);
 };

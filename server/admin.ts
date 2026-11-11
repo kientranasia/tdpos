@@ -47,8 +47,8 @@ const redactSensitiveMeta = (value: Record<string, unknown>) => Object.fromEntri
   Object.entries(value || {}).map(([key, entry]) => [key, /password|token|secret|credential/i.test(key) ? '[REDACTED]' : entry]),
 );
 
-const writeAuditLog = (adminId: string, action: string, entityType: string, entityId: string, tenantId?: string, meta?: Record<string, unknown>) => {
-  db.insert(schema.auditLogs).values({
+const writeAuditLog = async (adminId: string, action: string, entityType: string, entityId: string, tenantId?: string, meta?: Record<string, unknown>) => {
+  await db.insert(schema.auditLogs).values({
     id: uuid(),
     actorType: 'admin',
     actorId: adminId,
@@ -61,17 +61,17 @@ const writeAuditLog = (adminId: string, action: string, entityType: string, enti
   }).run();
 };
 
-const tenantRows = () => db.select().from(schema.tenants).all();
+const tenantRows = async () => await db.select().from(schema.tenants).all();
 const tenantDatabase = (tenantId: string) => tenantRegistry.ensureTenantDatabase(tenantId).db;
 
-const tenantOperationalStats = (tenantId: string) => {
+const tenantOperationalStats = async (tenantId: string) => {
   const tenantDb = tenantDatabase(tenantId);
-  const productCount = tenantDb.select({ count: sql<number>`count(*)` }).from(schema.products).where(eq(schema.products.tenantId, tenantId)).get();
-  const customerCount = tenantDb.select({ count: sql<number>`count(*)` }).from(schema.customers).where(eq(schema.customers.tenantId, tenantId)).get();
-  const invoiceCount = tenantDb.select({ count: sql<number>`count(*)` }).from(schema.invoices).where(eq(schema.invoices.tenantId, tenantId)).get();
-  const revenue = tenantDb.select({ total: sql<number>`COALESCE(SUM(paid_amount), 0)` }).from(schema.invoices).where(eq(schema.invoices.tenantId, tenantId)).get();
-  const debt = tenantDb.select({ total: sql<number>`COALESCE(SUM(total_debt), 0)` }).from(schema.customers).where(eq(schema.customers.tenantId, tenantId)).get();
-  const users = tenantDb.select({ count: sql<number>`count(*)` }).from(schema.users).where(eq(schema.users.tenantId, tenantId)).get();
+  const productCount = await tenantDb.select({ count: sql<number>`count(*)` }).from(schema.products).where(eq(schema.products.tenantId, tenantId)).get();
+  const customerCount = await tenantDb.select({ count: sql<number>`count(*)` }).from(schema.customers).where(eq(schema.customers.tenantId, tenantId)).get();
+  const invoiceCount = await tenantDb.select({ count: sql<number>`count(*)` }).from(schema.invoices).where(eq(schema.invoices.tenantId, tenantId)).get();
+  const revenue = await tenantDb.select({ total: sql<number>`COALESCE(SUM(paid_amount), 0)` }).from(schema.invoices).where(eq(schema.invoices.tenantId, tenantId)).get();
+  const debt = await tenantDb.select({ total: sql<number>`COALESCE(SUM(total_debt), 0)` }).from(schema.customers).where(eq(schema.customers.tenantId, tenantId)).get();
+  const users = await tenantDb.select({ count: sql<number>`count(*)` }).from(schema.users).where(eq(schema.users.tenantId, tenantId)).get();
   return {
     productCount: Number(productCount?.count || 0),
     customerCount: Number(customerCount?.count || 0),
@@ -83,7 +83,7 @@ const tenantOperationalStats = (tenantId: string) => {
 };
 
 // Admin Auth Middleware
-const authenticateAdmin = (req: Request, res: Response, next: NextFunction) => {
+const authenticateAdmin = async (req: Request, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -95,7 +95,7 @@ const authenticateAdmin = (req: Request, res: Response, next: NextFunction) => {
     if (decoded.type !== 'admin' || !decoded.id || !decoded.sessionVersion) {
       return res.status(403).json({ error: 'Forbidden' });
     }
-    const admin = db.select().from(schema.adminUsers).where(eq(schema.adminUsers.id, decoded.id)).get();
+    const admin = await db.select().from(schema.adminUsers).where(eq(schema.adminUsers.id, decoded.id)).get();
     if (!admin || admin.status !== 'active' || Number(decoded.sessionVersion) !== Number(admin.sessionVersion || 1)) {
       return res.status(401).json({ error: 'Phiên quản trị không còn hiệu lực' });
     }
@@ -120,7 +120,7 @@ router.post('/login', async (req, res) => {
     const attemptKey = loginAttemptKey(req, email);
     if (isLoginBlocked(attemptKey)) return res.status(429).json({ error: 'Tài khoản hoặc địa chỉ mạng tạm thời bị giới hạn đăng nhập. Vui lòng thử lại sau.' });
 
-    const admin = db.select().from(schema.adminUsers)
+    const admin = await db.select().from(schema.adminUsers)
       .where(eq(schema.adminUsers.email, email))
       .get();
 
@@ -159,9 +159,9 @@ router.post('/login', async (req, res) => {
 });
 
 // Get current admin info
-router.get('/me', authenticateAdmin, (req, res) => {
+router.get('/me', authenticateAdmin, async (req, res) => {
   try {
-    const admin = db.select().from(schema.adminUsers)
+    const admin = await db.select().from(schema.adminUsers)
       .where(eq(schema.adminUsers.id, req.user.id))
       .get();
 
@@ -189,25 +189,25 @@ const ensureAdminRole = (req: Request, res: Response, roles: Array<'super_admin'
 // ADMIN OVERVIEW / STATS
 // ═══════════════════════════════════════════════════════════
 
-router.get('/stats', (req, res) => {
+router.get('/stats', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin', 'support'])) return;
-    const allTenants = tenantRows();
-    const operationalStats = allTenants.map((tenant) => {
+    const allTenants = await tenantRows();
+    const operationalStats = await Promise.all(allTenants.map(async (tenant) => {
       try {
-        return { ...tenantOperationalStats(tenant.id), databaseError: false };
+        return { ...(await tenantOperationalStats(tenant.id)), databaseError: false };
       } catch (error) {
         console.error(`Tenant stats unavailable for ${tenant.id}:`, error);
         return { productCount: 0, customerCount: 0, invoiceCount: 0, revenue: 0, debt: 0, userCount: 0, databaseError: true };
       }
-    });
+    }));
     const totalTenants = allTenants.length;
     const activeTenants = allTenants.filter((tenant) => tenant.status === 'active').length;
     const totalUsers = operationalStats.reduce((sum, value) => sum + value.userCount, 0);
     const totalProducts = operationalStats.reduce((sum, value) => sum + value.productCount, 0);
     const totalCustomers = operationalStats.reduce((sum, value) => sum + value.customerCount, 0);
     const totalInvoices = operationalStats.reduce((sum, value) => sum + value.invoiceCount, 0);
-    const pendingSubscriptions = db.select({ count: sql<number>`count(*)` }).from(schema.subscriptions)
+    const pendingSubscriptions = await db.select({ count: sql<number>`count(*)` }).from(schema.subscriptions)
       .where(eq(schema.subscriptions.status, 'pending_review')).get();
     const totalRevenue = operationalStats.reduce((sum, value) => sum + value.revenue, 0);
     const totalDebt = operationalStats.reduce((sum, value) => sum + value.debt, 0);
@@ -231,10 +231,10 @@ router.get('/stats', (req, res) => {
   }
 });
 
-router.get('/packages', (req, res) => {
+router.get('/packages', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin', 'support'])) return;
-    const allPackages = db.select().from(schema.packages).orderBy(desc(schema.packages.createdAt)).all();
+    const allPackages = await db.select().from(schema.packages).orderBy(desc(schema.packages.createdAt)).all();
     res.json(allPackages);
   } catch (err) {
     console.error('GET /api/admin/packages error:', err);
@@ -242,18 +242,18 @@ router.get('/packages', (req, res) => {
   }
 });
 
-router.post('/packages', (req, res) => {
+router.post('/packages', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin'])) return;
     const { code, name, maxUsers, priceMonthly, isDefault } = req.body;
     if (!code || !name || !maxUsers || !priceMonthly) {
       return res.status(400).json({ error: 'code, name, maxUsers, priceMonthly are required' });
     }
-    const exists = db.select().from(schema.packages).where(eq(schema.packages.code, code)).get();
+    const exists = await db.select().from(schema.packages).where(eq(schema.packages.code, code)).get();
     if (exists) return res.status(400).json({ error: 'Package code already exists' });
 
     if (isDefault) {
-      db.update(schema.packages).set({ isDefault: false }).run();
+      await db.update(schema.packages).set({ isDefault: false }).run();
     }
 
     const created = {
@@ -266,7 +266,7 @@ router.post('/packages', (req, res) => {
       status: 'active' as const,
       createdAt: new Date().toISOString(),
     };
-    db.insert(schema.packages).values(created).run();
+    await db.insert(schema.packages).values(created).run();
     writeAuditLog(req.user.id, 'package_created', 'package', created.id, undefined, { code: created.code });
     res.status(201).json(created);
   } catch (err) {
@@ -275,10 +275,10 @@ router.post('/packages', (req, res) => {
   }
 });
 
-router.patch('/packages/:id', (req, res) => {
+router.patch('/packages/:id', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin'])) return;
-    const existing = db.select().from(schema.packages).where(eq(schema.packages.id, req.params.id)).get();
+    const existing = await db.select().from(schema.packages).where(eq(schema.packages.id, req.params.id)).get();
     if (!existing) return res.status(404).json({ error: 'Package not found' });
 
     const updates: any = {};
@@ -288,11 +288,11 @@ router.patch('/packages/:id', (req, res) => {
     if (updates.maxUsers !== undefined) updates.maxUsers = Number(updates.maxUsers);
     if (updates.priceMonthly !== undefined) updates.priceMonthly = Number(updates.priceMonthly);
     if (updates.isDefault === true) {
-      db.update(schema.packages).set({ isDefault: false }).run();
+      await db.update(schema.packages).set({ isDefault: false }).run();
     }
 
-    db.update(schema.packages).set(updates).where(eq(schema.packages.id, req.params.id)).run();
-    const updated = db.select().from(schema.packages).where(eq(schema.packages.id, req.params.id)).get();
+    await db.update(schema.packages).set(updates).where(eq(schema.packages.id, req.params.id)).run();
+    const updated = await db.select().from(schema.packages).where(eq(schema.packages.id, req.params.id)).get();
     writeAuditLog(req.user.id, 'package_updated', 'package', req.params.id, undefined, req.body);
     res.json(updated);
   } catch (err) {
@@ -301,20 +301,20 @@ router.patch('/packages/:id', (req, res) => {
   }
 });
 
-router.delete('/packages/:id', (req, res) => {
+router.delete('/packages/:id', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin'])) return;
-    const existing = db.select().from(schema.packages).where(eq(schema.packages.id, req.params.id)).get();
+    const existing = await db.select().from(schema.packages).where(eq(schema.packages.id, req.params.id)).get();
     if (!existing) return res.status(404).json({ error: 'Package not found' });
     if (existing.isDefault) return res.status(400).json({ error: 'Cannot delete default package' });
 
-    const usingTenants = db.select({ count: sql<number>`count(*)` }).from(schema.tenants)
+    const usingTenants = await db.select({ count: sql<number>`count(*)` }).from(schema.tenants)
       .where(eq(schema.tenants.packageCode, existing.code)).get();
     if ((usingTenants?.count || 0) > 0) {
       return res.status(400).json({ error: 'Package is assigned to tenants' });
     }
 
-    db.delete(schema.packages).where(eq(schema.packages.id, req.params.id)).run();
+    await db.delete(schema.packages).where(eq(schema.packages.id, req.params.id)).run();
     writeAuditLog(req.user.id, 'package_deleted', 'package', req.params.id, undefined, { code: existing.code });
     res.json({ success: true });
   } catch (err) {
@@ -328,11 +328,11 @@ router.delete('/packages/:id', (req, res) => {
 // ═══════════════════════════════════════════════════════════
 
 // List all tenants with user counts
-router.get('/tenants', (req, res) => {
+router.get('/tenants', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin', 'support'])) return;
     const { search, status } = req.query;
-    let allTenants = db.select().from(schema.tenants)
+    let allTenants = await db.select().from(schema.tenants)
       .orderBy(desc(schema.tenants.createdAt))
       .all();
 
@@ -357,17 +357,17 @@ router.get('/tenants', (req, res) => {
     }
 
     // Enrich with user count per tenant
-    const enriched = allTenants.map(t => {
+    const enriched = await Promise.all(allTenants.map(async t => {
       const tenantDb = tenantRegistry.ensureTenantDatabase(t.id).db;
-      const userCount = tenantDb.select({ count: sql<number>`count(*)` })
+      const userCount = await tenantDb.select({ count: sql<number>`count(*)` })
         .from(schema.users)
         .where(eq(schema.users.tenantId, t.id))
         .get();
-      const productCount = tenantDb.select({ count: sql<number>`count(*)` })
+      const productCount = await tenantDb.select({ count: sql<number>`count(*)` })
         .from(schema.products)
         .where(eq(schema.products.tenantId, t.id))
         .get();
-      const invoiceCount = tenantDb.select({ count: sql<number>`count(*)` })
+      const invoiceCount = await tenantDb.select({ count: sql<number>`count(*)` })
         .from(schema.invoices)
         .where(eq(schema.invoices.tenantId, t.id))
         .get();
@@ -379,7 +379,7 @@ router.get('/tenants', (req, res) => {
         invoiceCount: invoiceCount?.count || 0,
         databaseHealth: tenantRegistry.inspectTenantDatabase(t.id),
       };
-    });
+    }));
 
     res.json(enriched);
   } catch (err) {
@@ -389,23 +389,23 @@ router.get('/tenants', (req, res) => {
 });
 
 // Get single tenant detail
-router.get('/tenants/:id', (req, res) => {
+router.get('/tenants/:id', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin', 'support'])) return;
-    const tenant = db.select().from(schema.tenants)
+    const tenant = await db.select().from(schema.tenants)
       .where(eq(schema.tenants.id, req.params.id)).get();
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
     const tenantDb = tenantRegistry.ensureTenantDatabase(req.params.id).db;
-    const users = tenantDb.select().from(schema.users)
+    const users = await tenantDb.select().from(schema.users)
       .where(eq(schema.users.tenantId, req.params.id)).all();
-    const productCount = tenantDb.select({ count: sql<number>`count(*)` })
+    const productCount = await tenantDb.select({ count: sql<number>`count(*)` })
       .from(schema.products)
       .where(eq(schema.products.tenantId, req.params.id)).get();
-    const customerCount = tenantDb.select({ count: sql<number>`count(*)` })
+    const customerCount = await tenantDb.select({ count: sql<number>`count(*)` })
       .from(schema.customers)
       .where(eq(schema.customers.tenantId, req.params.id)).get();
-    const invoiceCount = tenantDb.select({ count: sql<number>`count(*)` })
+    const invoiceCount = await tenantDb.select({ count: sql<number>`count(*)` })
       .from(schema.invoices)
       .where(eq(schema.invoices.tenantId, req.params.id)).get();
 
@@ -424,10 +424,10 @@ router.get('/tenants/:id', (req, res) => {
   }
 });
 
-router.get('/tenants/:id/database', (req, res) => {
+router.get('/tenants/:id/database', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin', 'support'])) return;
-    const tenant = db.select({ id: schema.tenants.id }).from(schema.tenants).where(eq(schema.tenants.id, req.params.id)).get();
+    const tenant = await db.select({ id: schema.tenants.id }).from(schema.tenants).where(eq(schema.tenants.id, req.params.id)).get();
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
     res.json({ mode: DATABASE_MODE, ...tenantRegistry.inspectTenantDatabase(req.params.id) });
   } catch (err) {
@@ -436,10 +436,10 @@ router.get('/tenants/:id/database', (req, res) => {
   }
 });
 
-router.post('/tenants/:id/database/provision', (req, res) => {
+router.post('/tenants/:id/database/provision', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin'])) return;
-    const tenant = db.select({ id: schema.tenants.id }).from(schema.tenants).where(eq(schema.tenants.id, req.params.id)).get();
+    const tenant = await db.select({ id: schema.tenants.id }).from(schema.tenants).where(eq(schema.tenants.id, req.params.id)).get();
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
     tenantRegistry.provisionTenantDatabase(req.params.id);
     writeAuditLog(req.user.id, 'tenant_database_provisioned', 'tenant_database', req.params.id, req.params.id, { mode: DATABASE_MODE });
@@ -462,12 +462,12 @@ router.post('/tenants', async (req, res) => {
       return res.status(400).json({ error: `Cần thông tin owner và mật khẩu tối thiểu ${MIN_PASSWORD_LENGTH} ký tự.` });
     }
     const ownerEmail = safeEmail(ownerData.email);
-    const existingOwner = db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.email, ownerEmail)).get();
+    const existingOwner = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.email, ownerEmail)).get();
     if (existingOwner) return res.status(409).json({ error: 'Email owner đã được sử dụng.' });
     const tenantId = uuid();
     const now = new Date().toISOString();
-    const defaultPackage = db.select().from(schema.packages).where(eq(schema.packages.isDefault, true)).get()
-      || db.select().from(schema.packages).orderBy(desc(schema.packages.createdAt)).get();
+    const defaultPackage = await db.select().from(schema.packages).where(eq(schema.packages.isDefault, true)).get()
+      || await db.select().from(schema.packages).orderBy(desc(schema.packages.createdAt)).get();
 
     const tenant = {
       id: tenantId,
@@ -508,9 +508,9 @@ router.post('/tenants', async (req, res) => {
       status: 'active' as const,
       sessionVersion: 1,
     };
-    db.transaction((tx) => {
-      tx.insert(schema.tenants).values(tenant).run();
-      tx.insert(schema.subscriptions).values({
+    await db.transaction(async (tx) => {
+      await tx.insert(schema.tenants).values(tenant).run();
+      await tx.insert(schema.subscriptions).values({
         id: uuid(),
         tenantId,
         plan: 'yearly',
@@ -519,14 +519,14 @@ router.post('/tenants', async (req, res) => {
         note: 'Legacy record retained for data compatibility; HKDPlus local does not use subscription flow.',
         createdAt: now,
       }).run();
-      tx.insert(schema.users).values(owner).run();
+      await tx.insert(schema.users).values(owner).run();
     });
 
     // Provision the tenant database only after the control transaction has
     // committed, so a retry can safely resume without creating duplicates.
     await tenantRegistry.provisionTenantDatabase(tenantId);
 
-    const created = db.select().from(schema.tenants)
+    const created = await db.select().from(schema.tenants)
       .where(eq(schema.tenants.id, tenantId)).get();
     writeAuditLog(req.user.id, 'tenant_created', 'tenant', tenantId, tenantId, { ownerEmail });
 
@@ -541,7 +541,7 @@ router.post('/tenants', async (req, res) => {
 });
 
 // Update tenant
-router.patch('/tenants/:id', (req, res) => {
+router.patch('/tenants/:id', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin'])) return;
     const updates: Record<string, any> = {};
@@ -551,7 +551,7 @@ router.patch('/tenants/:id', (req, res) => {
     if (req.body?.settings !== undefined) updates.settings = req.body.settings;
     if (req.body?.packageCode !== undefined) updates.packageCode = String(req.body.packageCode).trim();
     if (updates.packageCode) {
-      const selected = db.select().from(schema.packages).where(eq(schema.packages.code, updates.packageCode)).get();
+      const selected = await db.select().from(schema.packages).where(eq(schema.packages.code, updates.packageCode)).get();
       if (!selected) return res.status(400).json({ error: 'Invalid packageCode' });
       updates.packageName = selected.name;
       updates.maxUsers = selected.maxUsers;
@@ -569,11 +569,11 @@ router.patch('/tenants/:id', (req, res) => {
       updates.settings = serializedSettings;
     }
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'No valid fields to update' });
-    db.update(schema.tenants).set(updates)
+    await db.update(schema.tenants).set(updates)
       .where(eq(schema.tenants.id, req.params.id)).run();
     tenantRegistry.syncTenantRecord(req.params.id);
 
-    const updated = db.select().from(schema.tenants)
+    const updated = await db.select().from(schema.tenants)
       .where(eq(schema.tenants.id, req.params.id)).get();
     if (!updated) return res.status(404).json({ error: 'Tenant not found' });
     writeAuditLog(req.user.id, 'tenant_updated', 'tenant', req.params.id, req.params.id, req.body);
@@ -589,7 +589,7 @@ router.patch('/tenants/:id', (req, res) => {
 });
 
 // Suspend / activate tenant
-router.post('/tenants/:id/status', (req, res) => {
+router.post('/tenants/:id/status', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin'])) return;
     const { status } = req.body;
@@ -597,20 +597,20 @@ router.post('/tenants/:id/status', (req, res) => {
       return res.status(400).json({ error: 'Invalid status' });
     }
 
-    const tenant = db.select({ id: schema.tenants.id })
+    const tenant = await db.select({ id: schema.tenants.id })
       .from(schema.tenants)
       .where(eq(schema.tenants.id, req.params.id)).get();
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
-    db.transaction((tx) => {
-      tx.update(schema.tenants).set({ status })
+    await db.transaction(async (tx) => {
+      await tx.update(schema.tenants).set({ status })
         .where(eq(schema.tenants.id, req.params.id)).run();
-      tx.update(schema.users)
+      await tx.update(schema.users)
         .set({ sessionVersion: sql`${schema.users.sessionVersion} + 1` })
         .where(eq(schema.users.tenantId, req.params.id)).run();
     });
     tenantRegistry.syncTenantRecord(req.params.id);
 
-    const updated = db.select().from(schema.tenants)
+    const updated = await db.select().from(schema.tenants)
       .where(eq(schema.tenants.id, req.params.id)).get();
     writeAuditLog(req.user.id, 'tenant_status_changed', 'tenant', req.params.id, req.params.id, { status });
 
@@ -625,23 +625,23 @@ router.post('/tenants/:id/status', (req, res) => {
 });
 
 // Delete tenant (and cascade data)
-router.delete('/tenants/:id', (req, res) => {
+router.delete('/tenants/:id', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin'])) return;
     const tenantId = req.params.id;
 
     // Cascade delete in order (due to foreign keys)
-    db.delete(schema.invoiceItems).where(
+    await db.delete(schema.invoiceItems).where(
       sql`invoice_id IN (SELECT id FROM invoices WHERE tenant_id = ${tenantId})`
     ).run();
-    db.delete(schema.debtLedger).where(eq(schema.debtLedger.tenantId, tenantId)).run();
-    db.delete(schema.invoices).where(eq(schema.invoices.tenantId, tenantId)).run();
-    db.delete(schema.customers).where(eq(schema.customers.tenantId, tenantId)).run();
-    db.delete(schema.products).where(eq(schema.products.tenantId, tenantId)).run();
-    db.delete(schema.categories).where(eq(schema.categories.tenantId, tenantId)).run();
-    db.delete(schema.users).where(eq(schema.users.tenantId, tenantId)).run();
-    db.delete(schema.subscriptions).where(eq(schema.subscriptions.tenantId, tenantId)).run();
-    db.delete(schema.tenants).where(eq(schema.tenants.id, tenantId)).run();
+    await db.delete(schema.debtLedger).where(eq(schema.debtLedger.tenantId, tenantId)).run();
+    await db.delete(schema.invoices).where(eq(schema.invoices.tenantId, tenantId)).run();
+    await db.delete(schema.customers).where(eq(schema.customers.tenantId, tenantId)).run();
+    await db.delete(schema.products).where(eq(schema.products.tenantId, tenantId)).run();
+    await db.delete(schema.categories).where(eq(schema.categories.tenantId, tenantId)).run();
+    await db.delete(schema.users).where(eq(schema.users.tenantId, tenantId)).run();
+    await db.delete(schema.subscriptions).where(eq(schema.subscriptions.tenantId, tenantId)).run();
+    await db.delete(schema.tenants).where(eq(schema.tenants.id, tenantId)).run();
     tenantRegistry.deleteTenantDatabase(tenantId);
     writeAuditLog(req.user.id, 'tenant_deleted', 'tenant', tenantId, tenantId);
 
@@ -656,14 +656,13 @@ router.delete('/tenants/:id', (req, res) => {
 // USER MANAGEMENT (across tenants)
 // ═══════════════════════════════════════════════════════════
 
-router.get('/users', (req, res) => {
+router.get('/users', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin', 'support'])) return;
     const { tenantId, search } = req.query;
-    let allUsers = db.select().from(schema.users).all();
-    const tenantMap = new Map(
-      db.select().from(schema.tenants).all().map((tenant) => [tenant.id, tenant])
-    );
+    let allUsers = await db.select().from(schema.users).all();
+    const tenants = await db.select().from(schema.tenants).all() as any[];
+    const tenantMap = new Map<string, any>(tenants.map((tenant) => [tenant.id, tenant]));
 
     if (tenantId) {
       allUsers = allUsers.filter(u => u.tenantId === tenantId);
@@ -691,19 +690,19 @@ router.get('/users', (req, res) => {
   }
 });
 
-router.post('/users', (req, res) => {
+router.post('/users', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin'])) return;
     const allowedRoles = ['owner', 'manager', 'cashier', 'warehouse', 'accountant'] as const;
     if (!allowedRoles.includes(req.body.role)) {
       return res.status(400).json({ error: 'Invalid role. Allowed: owner, manager, cashier, warehouse, accountant' });
     }
-    const tenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, req.body.tenantId)).get();
+    const tenant = await db.select().from(schema.tenants).where(eq(schema.tenants.id, req.body.tenantId)).get();
     if (!tenant) {
       return res.status(404).json({ error: 'Tenant not found' });
     }
     const tenantDb = tenantDatabase(tenant.id);
-    const userCount = tenantDb.select({ count: sql<number>`count(*)` }).from(schema.users)
+    const userCount = await tenantDb.select({ count: sql<number>`count(*)` }).from(schema.users)
       .where(eq(schema.users.tenantId, tenant.id)).get();
     if (Number(tenant.maxUsers || 0) > 0 && Number(userCount?.count || 0) >= Number(tenant.maxUsers)) {
       return res.status(409).json({ error: `Gói hiện tại giới hạn ${tenant.maxUsers} tài khoản.` });
@@ -721,9 +720,9 @@ router.post('/users', (req, res) => {
       password: bcrypt.hashSync(String(req.body.password), 12),
     };
     if (!user.name || !user.email) return res.status(400).json({ error: 'Name and email are required' });
-    const duplicateEmail = db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.email, user.email)).get();
+    const duplicateEmail = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.email, user.email)).get();
     if (duplicateEmail) return res.status(409).json({ error: 'Email đã được sử dụng.' });
-    db.insert(schema.users).values(user).run();
+    await db.insert(schema.users).values(user).run();
     tenantRegistry.syncUserToTenant(user);
     writeAuditLog(req.user.id, 'user_created', 'user', user.id, user.tenantId, { role: user.role });
     const { password: _, ...userData } = user;
@@ -734,7 +733,7 @@ router.post('/users', (req, res) => {
   }
 });
 
-router.patch('/users/:id', (req, res) => {
+router.patch('/users/:id', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin'])) return;
     if (req.body.role) {
@@ -748,7 +747,7 @@ router.patch('/users/:id', (req, res) => {
       if (req.body?.[field] !== undefined) updates[field] = field === 'email' ? String(req.body[field]).trim().toLowerCase() : String(req.body[field]).trim();
     }
     if (updates.email) {
-      const duplicateEmail = db.select({ id: schema.users.id }).from(schema.users)
+      const duplicateEmail = await db.select({ id: schema.users.id }).from(schema.users)
         .where(and(eq(schema.users.email, updates.email), sql`${schema.users.id} != ${req.params.id}`)).get();
       if (duplicateEmail) return res.status(409).json({ error: 'Email đã được sử dụng.' });
     }
@@ -757,9 +756,9 @@ router.patch('/users/:id', (req, res) => {
       updates.password = bcrypt.hashSync(String(req.body.password), 12);
     }
     if (Object.keys(updates).length) updates.sessionVersion = sql`${schema.users.sessionVersion} + 1`;
-    db.update(schema.users).set(updates)
+    await db.update(schema.users).set(updates)
       .where(eq(schema.users.id, req.params.id)).run();
-    const updated = db.select().from(schema.users)
+    const updated = await db.select().from(schema.users)
       .where(eq(schema.users.id, req.params.id)).get();
     if (!updated) return res.status(404).json({ error: 'User not found' });
     tenantRegistry.syncUserToTenant(updated);
@@ -772,11 +771,11 @@ router.patch('/users/:id', (req, res) => {
   }
 });
 
-router.delete('/users/:id', (req, res) => {
+router.delete('/users/:id', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin'])) return;
-    const existing = db.select().from(schema.users).where(eq(schema.users.id, req.params.id)).get();
-    db.delete(schema.users).where(eq(schema.users.id, req.params.id)).run();
+    const existing = await db.select().from(schema.users).where(eq(schema.users.id, req.params.id)).get();
+    await db.delete(schema.users).where(eq(schema.users.id, req.params.id)).run();
     if (existing) {
       tenantRegistry.deleteUserFromTenant(existing.tenantId, existing.id);
       writeAuditLog(req.user.id, 'user_deleted', 'user', req.params.id, existing.tenantId);
@@ -792,19 +791,19 @@ router.delete('/users/:id', (req, res) => {
 // SUBSCRIPTION MANAGEMENT
 // ═══════════════════════════════════════════════════════════
 
-router.get('/subscriptions', (req, res) => {
+router.get('/subscriptions', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin', 'support'])) return;
     const { status } = req.query;
-    let subscriptions = db.select().from(schema.subscriptions)
+    let subscriptions = await db.select().from(schema.subscriptions)
       .orderBy(desc(schema.subscriptions.createdAt)).all();
     if (status && status !== 'all') {
       subscriptions = subscriptions.filter((s) => s.status === status);
     }
-    const enriched = subscriptions.map((sub) => {
-      const tenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, sub.tenantId)).get();
+    const enriched = await Promise.all(subscriptions.map(async (sub) => {
+      const tenant = await db.select().from(schema.tenants).where(eq(schema.tenants.id, sub.tenantId)).get();
       return { ...sub, tenantName: tenant?.name || 'Unknown', tenantStatus: tenant?.status || 'unknown' };
-    });
+    }));
     res.json(enriched);
   } catch (err) {
     console.error('GET /api/admin/subscriptions error:', err);
@@ -812,7 +811,7 @@ router.get('/subscriptions', (req, res) => {
   }
 });
 
-router.post('/subscriptions/:tenantId/review', (req, res) => {
+router.post('/subscriptions/:tenantId/review', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin'])) return;
     const { tenantId } = req.params;
@@ -821,13 +820,13 @@ router.post('/subscriptions/:tenantId/review', (req, res) => {
       return res.status(400).json({ error: 'Invalid decision' });
     }
 
-    const tenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, tenantId)).get();
+    const tenant = await db.select().from(schema.tenants).where(eq(schema.tenants.id, tenantId)).get();
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
     const now = new Date().toISOString();
     const nextYear = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
 
-    let subscription = db.select().from(schema.subscriptions)
+    let subscription = await db.select().from(schema.subscriptions)
       .where(eq(schema.subscriptions.tenantId, tenantId)).get();
     if (!subscription) {
       const newSub = {
@@ -839,12 +838,12 @@ router.post('/subscriptions/:tenantId/review', (req, res) => {
         note: null,
         createdAt: now,
       };
-      db.insert(schema.subscriptions).values(newSub).run();
+      await db.insert(schema.subscriptions).values(newSub).run();
       subscription = newSub as any;
     }
 
     if (decision === 'approve') {
-      db.update(schema.subscriptions).set({
+      await db.update(schema.subscriptions).set({
         status: 'active',
         note: note || 'Approved by admin',
         startAt: now,
@@ -852,26 +851,26 @@ router.post('/subscriptions/:tenantId/review', (req, res) => {
         reviewedBy: req.user.id,
         reviewedAt: now,
       }).where(eq(schema.subscriptions.id, subscription.id)).run();
-      db.update(schema.tenants).set({
+      await db.update(schema.tenants).set({
         status: 'active',
         subscriptionStatus: 'active',
         subscriptionStartAt: now,
         subscriptionEndAt: nextYear,
       }).where(eq(schema.tenants.id, tenantId)).run();
     } else {
-      db.update(schema.subscriptions).set({
+      await db.update(schema.subscriptions).set({
         status: 'cancelled',
         note: note || 'Rejected by admin',
         reviewedBy: req.user.id,
         reviewedAt: now,
       }).where(eq(schema.subscriptions.id, subscription.id)).run();
-      db.update(schema.tenants).set({
+      await db.update(schema.tenants).set({
         subscriptionStatus: 'expired',
         status: 'suspended',
       }).where(eq(schema.tenants.id, tenantId)).run();
     }
     writeAuditLog(req.user.id, `subscription_${decision}`, 'subscription', subscription.id, tenantId, { note: note || null });
-    const updated = db.select().from(schema.subscriptions).where(eq(schema.subscriptions.id, subscription.id)).get();
+    const updated = await db.select().from(schema.subscriptions).where(eq(schema.subscriptions.id, subscription.id)).get();
     res.json(updated);
   } catch (err) {
     console.error('POST /api/admin/subscriptions/:tenantId/review error:', err);
@@ -879,16 +878,16 @@ router.post('/subscriptions/:tenantId/review', (req, res) => {
   }
 });
 
-router.post('/subscriptions/:tenantId/renew', (req, res) => {
+router.post('/subscriptions/:tenantId/renew', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin'])) return;
     const { tenantId } = req.params;
     const now = new Date().toISOString();
     const nextYear = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
-    const tenant = db.select().from(schema.tenants).where(eq(schema.tenants.id, tenantId)).get();
+    const tenant = await db.select().from(schema.tenants).where(eq(schema.tenants.id, tenantId)).get();
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
-    db.update(schema.tenants).set({
+    await db.update(schema.tenants).set({
       status: 'active',
       subscriptionStatus: 'active',
       subscriptionPlan: 'yearly',
@@ -897,7 +896,7 @@ router.post('/subscriptions/:tenantId/renew', (req, res) => {
       subscriptionEndAt: nextYear,
     }).where(eq(schema.tenants.id, tenantId)).run();
 
-    let subscription = db.select().from(schema.subscriptions).where(eq(schema.subscriptions.tenantId, tenantId)).get();
+    let subscription = await db.select().from(schema.subscriptions).where(eq(schema.subscriptions.tenantId, tenantId)).get();
     if (!subscription) {
       const created = {
         id: uuid(),
@@ -912,10 +911,10 @@ router.post('/subscriptions/:tenantId/renew', (req, res) => {
         note: 'Renewed by admin',
         createdAt: now,
       };
-      db.insert(schema.subscriptions).values(created).run();
+      await db.insert(schema.subscriptions).values(created).run();
       subscription = created as any;
     } else {
-      db.update(schema.subscriptions).set({
+      await db.update(schema.subscriptions).set({
         status: 'active',
         startAt: now,
         endAt: nextYear,
@@ -936,7 +935,7 @@ router.post('/subscriptions/:tenantId/renew', (req, res) => {
 // AUDIT LOGS
 // ═══════════════════════════════════════════════════════════
 
-router.get('/audit-logs', (req, res) => {
+router.get('/audit-logs', async (req, res) => {
   try {
     if (!ensureAdminRole(req, res, ['super_admin', 'admin', 'support'])) return;
     const { tenantId, limit = '100' } = req.query;
@@ -944,14 +943,14 @@ router.get('/audit-logs', (req, res) => {
     // In per-tenant mode tenant activity is written to the tenant database;
     // the control database contains only platform-admin activity. Returning
     // control rows alone would make the SaaS audit screen silently incomplete.
-    let logs = db.select().from(schema.auditLogs).all();
+    let logs = await db.select().from(schema.auditLogs).all();
     if (PER_TENANT_DATABASES) {
       logs = logs.filter((log) => log.actorType === 'admin');
       const tenants = requestedTenantId
-        ? tenantRows().filter((tenant) => tenant.id === requestedTenantId)
-        : tenantRows();
+        ? (await tenantRows()).filter((tenant) => tenant.id === requestedTenantId)
+        : await tenantRows();
       for (const tenant of tenants) {
-        logs = logs.concat(tenantDatabase(tenant.id).select().from(schema.auditLogs).all());
+        logs = logs.concat(await tenantDatabase(tenant.id).select().from(schema.auditLogs).all());
       }
     }
     if (requestedTenantId) logs = logs.filter((log) => log.tenantId === requestedTenantId);

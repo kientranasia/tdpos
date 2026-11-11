@@ -48,7 +48,6 @@ export const users = sqliteTable('users', {
   status: text('status', { enum: ['active', 'inactive'] }).notNull().default('active'),
   sessionVersion: integer('session_version').notNull().default(1),
 });
-
 // ─── Permissions ───────────────────────────────────────────
 export const permissions = sqliteTable('permissions', {
   id: text('id').primaryKey(),
@@ -57,7 +56,6 @@ export const permissions = sqliteTable('permissions', {
   action: text('action').notNull(),
   label: text('label').notNull(),
 });
-
 export const rolePermissions = sqliteTable('role_permissions', {
   id: text('id').primaryKey(),
   role: text('role').notNull(),
@@ -398,7 +396,6 @@ export const payableLedger = sqliteTable('payable_ledger', {
   createdAt: text('created_at').notNull(),
   createdBy: text('created_by').notNull(),
 });
-
 // ─── Invoices ──────────────────────────────────────────────
 export const invoices = sqliteTable('invoices', {
   id: text('id').primaryKey(),
@@ -629,3 +626,5 @@ export const customerCareLogs = sqliteTable('customer_care_logs', {
   createdAt: text('created_at').notNull(),
   createdBy: text('created_by').notNull(),
 });
+
+
