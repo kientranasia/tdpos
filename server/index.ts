@@ -28,6 +28,7 @@ import {
   INSTANCE_SECRET,
   INSTANCE_ID,
 } from './runtimeConfig';
+import { bootstrapAdminAccount } from './bootstrapAdmin';
 
 const app = express();
 const PORT = API_PORT;
@@ -5022,6 +5023,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 const startServer = async () => {
+  await bootstrapAdminAccount();
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🚀 HKD Smart API đang chạy tại http://localhost:${PORT}`);
     console.log(`   Health: http://localhost:${PORT}/api/health`);

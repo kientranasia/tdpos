@@ -14,6 +14,11 @@ services:
       # The default Compose stack is for the online deployment behind
       # Cloudflare Tunnel. Use docker-compose.offline.yml for LAN/offline.
       OFFLINE_MODE: ${OFFLINE_MODE:-false}
+      ENABLE_PLATFORM_ADMIN: ${ENABLE_PLATFORM_ADMIN:-false}
+      ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+      ADMIN_BOOTSTRAP_NAME: ${ADMIN_BOOTSTRAP_NAME:-HKD Smart Platform}
+      ADMIN_BOOTSTRAP_ROLE: ${ADMIN_BOOTSTRAP_ROLE:-super_admin}
       JWT_SECRET: ${JWT_SECRET:-}
       HKDPLUS_INSTANCE_SECRET: ${HKDPLUS_INSTANCE_SECRET:-}
       HKDPLUS_SETUP_TOKEN: ${HKDPLUS_SETUP_TOKEN:-}
