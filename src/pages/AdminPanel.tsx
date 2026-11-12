@@ -64,6 +64,11 @@ export default function AdminPanel() {
     priceMonthly: 150000,
     isDefault: true,
   });
+  const activeTenantUsersAtLimit = Boolean(
+    activeTenantUsers
+      && Number(activeTenantUsers.tenant.maxUsers || 0) > 0
+      && activeTenantUsers.users.length >= Number(activeTenantUsers.tenant.maxUsers),
+  );
 
   const loadAdminData = async () => {
     setLoading(true);
@@ -232,6 +237,10 @@ export default function AdminPanel() {
     event.preventDefault();
     if (!userForm.tenantId || !userForm.name || !userForm.email || !userForm.password) {
       setError('Vui lòng nhập đủ thông tin user.');
+      return;
+    }
+    if (activeTenantUsersAtLimit) {
+      setError(`Tenant đã dùng đủ ${activeTenantUsers?.tenant.maxUsers} tài khoản theo gói.`);
       return;
     }
     try {
@@ -564,26 +573,32 @@ export default function AdminPanel() {
               <div>
                 <h3 className="text-lg font-black uppercase tracking-tight">Tenant Users</h3>
                 <p className="text-xs text-slate-400">
-                  {activeTenantUsers.tenant.name} · {activeTenantUsers.users.length}/{activeTenantUsers.tenant.maxUsers || 5} users
+                  {activeTenantUsers.tenant.name} · {activeTenantUsers.users.length}/{activeTenantUsers.tenant.maxUsers || '∞'} tài khoản
                 </p>
               </div>
               <Button variant="ghost" className="h-9 px-3 text-xs" onClick={() => setActiveTenantUsers(null)}>Close</Button>
             </div>
 
-            <form onSubmit={handleCreateTenantUser} className="grid grid-cols-1 md:grid-cols-6 gap-3">
-              <Input value={userForm.name} onChange={(e) => setUserForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Tên user" className="h-10 bg-white/5 border-white/10 text-white" />
-              <Input type="email" value={userForm.email} onChange={(e) => setUserForm((prev) => ({ ...prev, email: e.target.value }))} placeholder="Email" className="h-10 bg-white/5 border-white/10 text-white" />
-              <Input value={userForm.phone} onChange={(e) => setUserForm((prev) => ({ ...prev, phone: e.target.value }))} placeholder="Phone" className="h-10 bg-white/5 border-white/10 text-white" />
-              <Input type="password" value={userForm.password} onChange={(e) => setUserForm((prev) => ({ ...prev, password: e.target.value }))} placeholder="Password" className="h-10 bg-white/5 border-white/10 text-white" />
-              <select value={userForm.role} onChange={(e) => setUserForm((prev) => ({ ...prev, role: e.target.value }))} className="h-10 rounded-lg bg-white/5 border border-white/10 px-3 text-sm">
-                <option value="manager">manager</option>
-                <option value="cashier">cashier</option>
-                <option value="owner">owner</option>
-              </select>
-              <Button type="submit" disabled={creatingUser} className="h-10 rounded-lg bg-sky-600 hover:bg-sky-700 text-xs font-black uppercase">
-                {creatingUser ? 'Creating...' : 'Add user'}
-              </Button>
-            </form>
+            {activeTenantUsersAtLimit ? (
+              <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-200">
+                Tenant đã dùng đủ {activeTenantUsers.tenant.maxUsers} tài khoản, bao gồm owner. Hãy đổi package trước khi thêm user.
+              </div>
+            ) : (
+              <form onSubmit={handleCreateTenantUser} className="grid grid-cols-1 gap-3 md:grid-cols-6">
+                <Input value={userForm.name} onChange={(e) => setUserForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Tên user" className="h-10 bg-white/5 border-white/10 text-white" />
+                <Input type="email" value={userForm.email} onChange={(e) => setUserForm((prev) => ({ ...prev, email: e.target.value }))} placeholder="Email" className="h-10 bg-white/5 border-white/10 text-white" />
+                <Input value={userForm.phone} onChange={(e) => setUserForm((prev) => ({ ...prev, phone: e.target.value }))} placeholder="Phone" className="h-10 bg-white/5 border-white/10 text-white" />
+                <Input type="password" value={userForm.password} onChange={(e) => setUserForm((prev) => ({ ...prev, password: e.target.value }))} placeholder="Password" className="h-10 bg-white/5 border-white/10 text-white" />
+                <select value={userForm.role} onChange={(e) => setUserForm((prev) => ({ ...prev, role: e.target.value }))} className="h-10 rounded-lg bg-white/5 border border-white/10 px-3 text-sm">
+                  <option value="manager">manager</option>
+                  <option value="cashier">cashier</option>
+                  <option value="owner">owner</option>
+                </select>
+                <Button type="submit" disabled={creatingUser} className="h-10 rounded-lg bg-sky-600 hover:bg-sky-700 text-xs font-black uppercase">
+                  {creatingUser ? 'Creating...' : 'Add user'}
+                </Button>
+              </form>
+            )}
 
             <div className="max-h-[340px] overflow-y-auto border border-white/10 rounded-lg">
               <table className="w-full text-left">
@@ -825,7 +840,7 @@ export default function AdminPanel() {
               <table className="w-full text-left">
                 <thead>
                   <tr className="border-b border-white/5 text-[10px] uppercase tracking-widest text-slate-500">
-                    <th className="px-6 py-4">Tenant</th><th className="px-6 py-4">Email</th><th className="px-6 py-4">Status</th><th className="px-6 py-4">Users</th><th className="px-6 py-4">Package</th><th className="px-6 py-4">Subscription</th><th className="px-6 py-4">Actions</th>
+                    <th className="px-6 py-4">Tenant</th><th className="px-6 py-4">Email</th><th className="px-6 py-4">Status</th><th className="px-6 py-4">Tài khoản</th><th className="px-6 py-4">Package</th><th className="px-6 py-4">Subscription</th><th className="px-6 py-4">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
@@ -837,7 +852,7 @@ export default function AdminPanel() {
                       </td>
                       <td className="px-6 py-4 text-xs text-slate-300">{tenant.email || '-'}</td>
                       <td className="px-6 py-4"><span className="text-xs font-black text-sky-400 uppercase">{tenant.status}</span></td>
-                      <td className="px-6 py-4 text-xs text-slate-300">{tenant.userCount || 0}/{tenant.maxUsers || 1}</td>
+                      <td className="px-6 py-4 text-xs text-slate-300">{tenant.userCount || 0}/{tenant.maxUsers || '∞'}</td>
                       <td className="px-6 py-4">
                         <select
                           defaultValue={tenant.packageCode || 'starter_1'}
@@ -847,7 +862,7 @@ export default function AdminPanel() {
                         >
                           {packages.map((pkg) => (
                             <option key={pkg.code} value={pkg.code} className="bg-slate-950">
-                              {pkg.name} · {pkg.maxUsers} users · {formatCurrency(pkg.priceMonthly)}/tháng
+                              {pkg.name} · {pkg.maxUsers} tài khoản · {formatCurrency(pkg.priceMonthly)}/tháng
                             </option>
                           ))}
                         </select>
@@ -937,7 +952,7 @@ export default function AdminPanel() {
               <form onSubmit={handleCreatePackage} className="bg-slate-950 rounded-lg border border-white/10 p-6 grid grid-cols-1 md:grid-cols-6 gap-3">
                 <Input value={packageForm.code} onChange={(e) => setPackageForm((prev) => ({ ...prev, code: e.target.value }))} placeholder="code (vd: starter_1)" className="h-10 rounded-lg bg-white/5 border-white/10 text-white" />
                 <Input value={packageForm.name} onChange={(e) => setPackageForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Tên gói" className="h-10 rounded-lg bg-white/5 border-white/10 text-white" />
-                <Input type="number" min={1} value={packageForm.maxUsers} onChange={(e) => setPackageForm((prev) => ({ ...prev, maxUsers: Number(e.target.value) }))} placeholder="Max users" className="h-10 rounded-lg bg-white/5 border-white/10 text-white" />
+                <Input type="number" min={1} value={packageForm.maxUsers} onChange={(e) => setPackageForm((prev) => ({ ...prev, maxUsers: Number(e.target.value) }))} placeholder="Số tài khoản tối đa" className="h-10 rounded-lg bg-white/5 border-white/10 text-white" />
                 <Input type="number" min={1} value={packageForm.priceMonthly} onChange={(e) => setPackageForm((prev) => ({ ...prev, priceMonthly: Number(e.target.value) }))} placeholder="Giá/tháng" className="h-10 rounded-lg bg-white/5 border-white/10 text-white" />
                 <label className="h-10 rounded-lg border border-white/10 bg-white/5 px-3 flex items-center gap-2 text-xs text-slate-300">
                   <input type="checkbox" checked={packageForm.isDefault} onChange={(e) => setPackageForm((prev) => ({ ...prev, isDefault: e.target.checked }))} />
@@ -952,7 +967,7 @@ export default function AdminPanel() {
                 <table className="w-full text-left">
                   <thead>
                     <tr className="border-b border-white/5 text-[10px] uppercase tracking-widest text-slate-500">
-                      <th className="px-6 py-4">Code</th><th className="px-6 py-4">Name</th><th className="px-6 py-4">Users</th><th className="px-6 py-4">Price</th><th className="px-6 py-4">Default</th><th className="px-6 py-4">Actions</th>
+                      <th className="px-6 py-4">Code</th><th className="px-6 py-4">Name</th><th className="px-6 py-4">Tài khoản tối đa</th><th className="px-6 py-4">Price</th><th className="px-6 py-4">Default</th><th className="px-6 py-4">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
@@ -960,7 +975,7 @@ export default function AdminPanel() {
                       <tr key={pkg.id}>
                         <td className="px-6 py-4 text-xs text-slate-300">{pkg.code}</td>
                         <td className="px-6 py-4 text-sm font-bold">{pkg.name}</td>
-                        <td className="px-6 py-4 text-sm text-sky-300">{pkg.maxUsers}</td>
+                        <td className="px-6 py-4 text-sm text-sky-300">{pkg.maxUsers} tài khoản</td>
                         <td className="px-6 py-4 text-sm text-amber-300">{formatCurrency(pkg.priceMonthly)}/tháng</td>
                         <td className="px-6 py-4 text-xs">{pkg.isDefault ? '✅' : '-'}</td>
                         <td className="px-6 py-4 flex gap-2">

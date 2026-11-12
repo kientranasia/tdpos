@@ -5,7 +5,7 @@ import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { backupsApi, licenseApi, permissionsApi, rolesApi, systemApi, usersApi } from '../lib/api';
 import { User } from '../types';
-import { Plus, Save, Settings2, ShieldCheck, Store, Trash2, Users } from 'lucide-react';
+import { Info, Plus, Save, Settings2, ShieldCheck, Store, Trash2, Users } from 'lucide-react';
 import AppPageHeader from '../components/layout/AppPageHeader';
 
 type SettingsTab = 'profile' | 'system' | 'invoice' | 'users';
@@ -50,7 +50,11 @@ export default function Settings() {
   });
 
   const [tenantUsers, setTenantUsers] = useState<User[]>([]);
-  const canCreateMoreUsers = !activeTenant?.maxUsers || tenantUsers.length < activeTenant.maxUsers;
+  const userLimit = Number(activeTenant?.maxUsers || 0);
+  const hasUserLimit = userLimit > 0;
+  const isSingleUserPlan = userLimit === 1;
+  const canCreateMoreUsers = !hasUserLimit || tenantUsers.length < userLimit;
+  const userSeatsLabel = hasUserLimit ? `${tenantUsers.length}/${userLimit}` : `${tenantUsers.length}/∞`;
   const [usersLoading, setUsersLoading] = useState(false);
   const [userError, setUserError] = useState('');
   const [userForm, setUserForm] = useState({
@@ -508,12 +512,31 @@ export default function Settings() {
 
           {activeTab === 'users' && (
             <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 space-y-4">
-          <div className="flex items-center gap-2 text-slate-900">
-            <Users className="h-4 w-4" />
-            <h2 className="text-base font-semibold">Nhân viên & phân quyền</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3 text-slate-900">
+            <div className="flex items-center gap-2">
+              <Users className="h-4 w-4" />
+              <h2 className="text-base font-semibold">Nhân viên & phân quyền</h2>
+            </div>
+            {isOwner && (
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                {activeTenant?.packageName || 'Gói hiện tại'} · {userSeatsLabel} tài khoản
+              </span>
+            )}
           </div>
 
-          {isOwner && (
+          {isOwner && isSingleUserPlan && (
+            <div className="flex gap-3 rounded-lg border border-sky-200 bg-sky-50 p-3 text-sky-900">
+              <Info className="mt-0.5 h-4 w-4 shrink-0 text-sky-600" />
+              <div>
+                <p className="text-sm font-semibold">Gói này dành cho một tài khoản owner</p>
+                <p className="mt-1 text-xs leading-5 text-sky-800">
+                  Tài khoản owner hiện tại là tài khoản duy nhất của hộ kinh doanh. Muốn thêm nhân viên, hãy liên hệ quản trị viên nền tảng để đổi sang gói doanh nghiệp.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {isOwner && !isSingleUserPlan && (
             <div className="space-y-3 rounded-lg border border-slate-200 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div><p className="text-sm font-medium text-slate-900">Nhóm quyền / vai trò</p><p className="text-xs text-slate-500">Tạo vai trò riêng rồi bật từng nhóm tính năng cho nhân viên.</p></div>
@@ -554,21 +577,35 @@ export default function Settings() {
             <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{userError}</div>
           )}
 
-          {isOwner && (
+          {isOwner && !isSingleUserPlan && (
             <div className="space-y-3 rounded-lg border border-slate-200 p-3">
-              <p className="text-sm font-medium text-slate-900">Tạo user mới (Manager/Cashier)</p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <Input value={userForm.name} onChange={(e) => setUserForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Tên nhân sự" />
-                <Input value={userForm.email} onChange={(e) => setUserForm((prev) => ({ ...prev, email: e.target.value }))} placeholder="Email đăng nhập" />
-                <Input value={userForm.phone} onChange={(e) => setUserForm((prev) => ({ ...prev, phone: e.target.value }))} placeholder="Số điện thoại" />
-                <Input type="password" value={userForm.password} onChange={(e) => setUserForm((prev) => ({ ...prev, password: e.target.value }))} placeholder="Mật khẩu" />
-                <select className="h-10 rounded-md border border-gray-300 px-3 text-sm" value={userForm.role} onChange={(e) => setUserForm((prev) => ({ ...prev, role: e.target.value }))}>
-                  {roleOptions.filter((role) => role.code !== 'owner').map((role) => <option key={role.code} value={role.code}>{role.name}</option>)}
-                </select>
-                <Button onClick={handleCreateUser} disabled={!canCreateMoreUsers} className="h-10 text-sm font-medium">
-                  Thêm nhân viên
-                </Button>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-medium text-slate-900">Thêm nhân viên</p>
+                  <p className="mt-1 text-xs text-slate-500">Owner được tính trong giới hạn tài khoản của gói.</p>
+                </div>
+                <span className={`text-xs font-medium ${canCreateMoreUsers ? 'text-emerald-700' : 'text-amber-700'}`}>
+                  {canCreateMoreUsers ? `Còn ${userLimit ? userLimit - tenantUsers.length : 'không giới hạn'} chỗ` : 'Đã đạt giới hạn gói'}
+                </span>
               </div>
+              {canCreateMoreUsers ? (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <Input value={userForm.name} onChange={(e) => setUserForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Tên nhân sự" />
+                  <Input value={userForm.email} onChange={(e) => setUserForm((prev) => ({ ...prev, email: e.target.value }))} placeholder="Email đăng nhập" />
+                  <Input value={userForm.phone} onChange={(e) => setUserForm((prev) => ({ ...prev, phone: e.target.value }))} placeholder="Số điện thoại" />
+                  <Input type="password" value={userForm.password} onChange={(e) => setUserForm((prev) => ({ ...prev, password: e.target.value }))} placeholder="Mật khẩu" />
+                  <select className="h-10 rounded-md border border-gray-300 px-3 text-sm" value={userForm.role} onChange={(e) => setUserForm((prev) => ({ ...prev, role: e.target.value }))}>
+                    {roleOptions.filter((role) => role.code !== 'owner').map((role) => <option key={role.code} value={role.code}>{role.name}</option>)}
+                  </select>
+                  <Button onClick={handleCreateUser} className="h-10 text-sm font-medium">
+                    Thêm nhân viên
+                  </Button>
+                </div>
+              ) : (
+                <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  Gói hiện tại đã dùng đủ {userLimit} tài khoản. Đổi gói để thêm nhân viên mới.
+                </div>
+              )}
             </div>
           )}
 
