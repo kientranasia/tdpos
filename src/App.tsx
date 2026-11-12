@@ -30,6 +30,7 @@ const InventoryOperations = lazy(() => import('./pages/InventoryOperations'));
 const SupplierDetail = lazy(() => import('./pages/SupplierDetail'));
 const Reports = lazy(() => import('./pages/Reports'));
 const Partners = lazy(() => import('./pages/Partners'));
+const AdminPanel = lazy(() => import('./pages/AdminPanel'));
 
 function RouteLoading() {
   return (
@@ -76,6 +77,7 @@ export default function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Login isRegister />} />
             <Route path="/onboarding" element={<TenantSetup />} />
+            <Route path="/admin" element={<AdminPanel />} />
 
             <Route path="/app" element={<MobileLayout />}>
               <Route index element={<Navigate to="/app/dashboard" replace />} />

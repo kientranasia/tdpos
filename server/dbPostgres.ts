@@ -62,6 +62,12 @@ const translateSqliteSql = (query: string) => {
   const insertIgnore = /^insert\s+or\s+ignore\s+into\s+/i.test(sql);
   if (insertIgnore) sql = sql.replace(/^insert\s+or\s+ignore\s+into\s+/i, 'insert into ');
   sql = replacePlaceholders(sql);
+  // Drizzle's SQLite dialect qualifies conflict-target columns with the
+  // table name. PostgreSQL requires bare column names in ON CONFLICT (...),
+  // while keeping qualified references in the DO UPDATE expression valid.
+  sql = sql.replace(/on conflict \(([^)]+)\)/i, (_match, target: string) => (
+    `on conflict (${target.replace(/"[^".]+"\./g, '')})`
+  ));
   if (insertIgnore && !/\bon\s+conflict\b/i.test(sql)) {
     const returningIndex = sql.search(/\sreturning\s/i);
     sql = returningIndex >= 0

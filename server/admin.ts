@@ -292,6 +292,14 @@ router.patch('/packages/:id', async (req, res) => {
     }
 
     await db.update(schema.packages).set(updates).where(eq(schema.packages.id, req.params.id)).run();
+    const nextCode = updates.code ?? existing.code;
+    const tenantUpdates = {
+      packageCode: nextCode,
+      packageName: updates.name ?? existing.name,
+      maxUsers: updates.maxUsers ?? existing.maxUsers,
+      packagePriceMonthly: updates.priceMonthly ?? existing.priceMonthly,
+    };
+    await db.update(schema.tenants).set(tenantUpdates).where(eq(schema.tenants.packageCode, existing.code)).run();
     const updated = await db.select().from(schema.packages).where(eq(schema.packages.id, req.params.id)).get();
     writeAuditLog(req.user.id, 'package_updated', 'package', req.params.id, undefined, req.body);
     res.json(updated);
@@ -466,8 +474,15 @@ router.post('/tenants', async (req, res) => {
     if (existingOwner) return res.status(409).json({ error: 'Email owner đã được sử dụng.' });
     const tenantId = uuid();
     const now = new Date().toISOString();
+    const requestedPackageCode = String(tenantData.packageCode || '').trim();
     const defaultPackage = await db.select().from(schema.packages).where(eq(schema.packages.isDefault, true)).get()
       || await db.select().from(schema.packages).orderBy(desc(schema.packages.createdAt)).get();
+    const selectedPackage = requestedPackageCode
+      ? await db.select().from(schema.packages).where(eq(schema.packages.code, requestedPackageCode)).get()
+      : defaultPackage;
+    if (requestedPackageCode && !selectedPackage) {
+      return res.status(400).json({ error: 'Gói dịch vụ không tồn tại.' });
+    }
 
     const tenant = {
       id: tenantId,
@@ -489,10 +504,10 @@ router.post('/tenants', async (req, res) => {
       subscriptionStatus: 'active' as const,
       subscriptionPlan: 'yearly' as const,
       subscriptionPriceMonthly: MONTHLY_SUBSCRIPTION_PRICE,
-      packageCode: defaultPackage?.code || 'starter_1',
-      packageName: defaultPackage?.name || 'Starter 1',
-      maxUsers: defaultPackage?.maxUsers || 1,
-      packagePriceMonthly: defaultPackage?.priceMonthly || 150000,
+      packageCode: selectedPackage?.code || 'starter_1',
+      packageName: selectedPackage?.name || 'Starter 1',
+      maxUsers: selectedPackage?.maxUsers || 1,
+      packagePriceMonthly: selectedPackage?.priceMonthly || 150000,
       settings: tenantData.settings ? JSON.stringify(tenantData.settings) : null,
       createdAt: now,
     };
@@ -515,8 +530,12 @@ router.post('/tenants', async (req, res) => {
         tenantId,
         plan: 'yearly',
         priceMonthly: MONTHLY_SUBSCRIPTION_PRICE,
-        status: 'pending_review',
-        note: 'Legacy record retained for data compatibility; HKDPlus local does not use subscription flow.',
+        status: 'active',
+        note: 'Created directly by platform admin.',
+        startAt: now,
+        endAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+        reviewedBy: req.user.id,
+        reviewedAt: now,
         createdAt: now,
       }).run();
       await tx.insert(schema.users).values(owner).run();
@@ -804,7 +823,23 @@ router.get('/subscriptions', async (req, res) => {
       const tenant = await db.select().from(schema.tenants).where(eq(schema.tenants.id, sub.tenantId)).get();
       return { ...sub, tenantName: tenant?.name || 'Unknown', tenantStatus: tenant?.status || 'unknown' };
     }));
-    res.json(enriched);
+    // Older admin-created tenants were incorrectly stored as pending_review.
+    // They are already active/trial tenants, so normalize them once and keep
+    // the approval workflow only for genuinely pending subscriptions.
+    const legacyAdminSubscriptions = enriched.filter((sub) => sub.status === 'pending_review' && ['active', 'trial'].includes(sub.tenantStatus));
+    for (const sub of legacyAdminSubscriptions) {
+      const now = new Date().toISOString();
+      await db.update(schema.subscriptions).set({
+        status: 'active',
+        note: 'Auto-activated for an existing admin-created tenant.',
+        startAt: sub.startAt || now,
+        reviewedBy: req.user.id,
+        reviewedAt: now,
+      }).where(eq(schema.subscriptions.id, sub.id)).run();
+      await db.update(schema.tenants).set({ subscriptionStatus: 'active' }).where(eq(schema.tenants.id, sub.tenantId)).run();
+      writeAuditLog(req.user.id, 'subscription_auto_activated', 'subscription', sub.id, sub.tenantId, { reason: 'admin_created_tenant' });
+    }
+    res.json(enriched.map((sub) => legacyAdminSubscriptions.some((legacy) => legacy.id === sub.id) ? { ...sub, status: 'active', note: 'Auto-activated for an existing admin-created tenant.' } : sub));
   } catch (err) {
     console.error('GET /api/admin/subscriptions error:', err);
     res.status(500).json({ error: 'Internal server error' });

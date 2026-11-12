@@ -112,7 +112,7 @@ export const productsApi = {
         ['tenantId', tenantId || ''],
         ['includeMeta', 'true'],
         ...Object.entries(filters || {})
-          .filter(([, value]) => value !== undefined && value !== null && value !== '')
+          .filter(([, value]) => value !== undefined && value !== null)
           .map(([key, value]) => [key, String(value)]),
       ]),
     }),
@@ -154,6 +154,16 @@ export const productComponentsApi = {
 export const customersApi = {
   list: (tenantId?: string, search?: string) =>
     request<any[]>('/customers', { params: { tenantId: tenantId || '', search: search || '' } }),
+  listPage: (tenantId?: string, filters?: { search?: string; limit?: number; offset?: number }) =>
+    request<{ items: any[]; total: number; offset: number; limit: number }>('/customers', {
+      params: Object.fromEntries([
+        ['tenantId', tenantId || ''],
+        ['includeMeta', 'true'],
+        ...Object.entries(filters || {})
+          .filter(([, value]) => value !== undefined && value !== null && value !== '')
+          .map(([key, value]) => [key, String(value)]),
+      ]),
+    }),
   get: (id: string) => request<any>(`/customers/${id}`),
   debtStatement: (id: string, filters?: { from?: string; to?: string }) =>
     request<any>(`/customers/${id}/debt-statement`, { params: filters as any }),
@@ -165,12 +175,30 @@ export const customersApi = {
 
 export const suppliersApi = {
   list: (search?: string) => request<any[]>('/suppliers', { params: { search: search || '' } }),
+  listPage: (filters?: { search?: string; limit?: number; offset?: number }) =>
+    request<{ items: any[]; total: number; offset: number; limit: number }>('/suppliers', {
+      params: Object.fromEntries([
+        ['includeMeta', 'true'],
+        ...Object.entries(filters || {})
+          .filter(([, value]) => value !== undefined && value !== null && value !== '')
+          .map(([key, value]) => [key, String(value)]),
+      ]),
+    }),
   create: (data: any) => request<any>('/suppliers', { method: 'POST', body: data }),
   update: (id: string, data: any) => request<any>(`/suppliers/${id}`, { method: 'PATCH', body: data }),
 };
 
 export const purchasesApi = {
   list: () => request<any[]>('/purchases'),
+  listPage: (filters?: { limit?: number; offset?: number }) =>
+    request<{ items: any[]; total: number; offset: number; limit: number }>('/purchases', {
+      params: Object.fromEntries([
+        ['includeMeta', 'true'],
+        ...Object.entries(filters || {})
+          .filter(([, value]) => value !== undefined && value !== null)
+          .map(([key, value]) => [key, String(value)]),
+      ]),
+    }),
   get: (id: string) => request<any>(`/purchases/${id}`),
   create: (data: any) => request<any>('/purchases', { method: 'POST', body: data }),
   returnable: (id: string) => request<any>(`/purchases/${id}/returnable`),
@@ -211,6 +239,16 @@ export const licenseApi = {
 export const invoicesApi = {
   list: (tenantId?: string, filters?: { customerId?: string; status?: string }) =>
     request<any[]>('/invoices', { params: { tenantId: tenantId || '', ...filters } }),
+  listPage: (tenantId?: string, filters?: { customerId?: string; status?: string; limit?: number; offset?: number }) =>
+    request<{ items: any[]; total: number; offset: number; limit: number }>('/invoices', {
+      params: Object.fromEntries([
+        ['tenantId', tenantId || ''],
+        ['includeMeta', 'true'],
+        ...Object.entries(filters || {})
+          .filter(([, value]) => value !== undefined && value !== null && value !== '')
+          .map(([key, value]) => [key, String(value)]),
+      ]),
+    }),
   get: (id: string) => request<any>(`/invoices/${id}`),
   create: (data: any) => request<any>('/invoices', { method: 'POST', body: data }),
   update: (id: string, data: any) => request<any>(`/invoices/${id}`, { method: 'PATCH', body: data }),

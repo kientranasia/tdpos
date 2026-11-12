@@ -1,4 +1,4 @@
-import { pgTable, text, integer, real } from 'drizzle-orm/pg-core';
+import { pgTable, text, integer, real, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 // ─── Tenants ───────────────────────────────────────────────
 export const tenants = pgTable('tenants', {
@@ -34,7 +34,10 @@ export const tenants = pgTable('tenants', {
   databaseStatus: text('database_status').notNull().default('shared'),
   databaseProvisionedAt: text('database_provisioned_at'),
   createdAt: text('created_at').notNull(),
-});
+}, (table) => ({
+  statusIdx: index('tenants_status_idx').on(table.status),
+  createdAtIdx: index('tenants_created_at_idx').on(table.createdAt),
+}));
 
 // ─── Users ─────────────────────────────────────────────────
 export const users = pgTable('users', {
@@ -47,7 +50,9 @@ export const users = pgTable('users', {
   tenantId: text('tenant_id').notNull().references(() => tenants.id),
   status: text('status', { enum: ['active', 'inactive'] }).notNull().default('active'),
   sessionVersion: integer('session_version').notNull().default(1),
-});
+}, (table) => ({
+  tenantStatusIdx: index('users_tenant_status_idx').on(table.tenantId, table.status),
+}));
 
 // ─── Permissions ───────────────────────────────────────────
 export const permissions = pgTable('permissions', {
@@ -72,7 +77,9 @@ export const userPermissions = pgTable('user_permissions', {
   permissionCode: text('permission_code').notNull().references(() => permissions.code),
   allowed: integer('allowed').notNull().default(1),
   updatedAt: text('updated_at').notNull(),
-});
+}, (table) => ({
+  tenantUserIdx: index('user_permissions_tenant_user_idx').on(table.tenantId, table.userId),
+}));
 
 export const roleProfiles = pgTable('role_profiles', {
   id: text('id').primaryKey(),
@@ -82,7 +89,9 @@ export const roleProfiles = pgTable('role_profiles', {
   description: text('description').notNull().default(''),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-});
+}, (table) => ({
+  tenantCodeUnique: uniqueIndex('role_profiles_tenant_code_uidx').on(table.tenantId, table.code),
+}));
 
 export const roleProfilePermissions = pgTable('role_profile_permissions', {
   id: text('id').primaryKey(),
@@ -137,7 +146,9 @@ export const documentSequences = pgTable('document_sequences', {
   prefix: text('prefix').notNull(),
   nextNumber: integer('next_number').notNull().default(1),
   updatedAt: text('updated_at').notNull(),
-});
+}, (table) => ({
+  tenantTypeUnique: uniqueIndex('document_sequences_tenant_type_uidx').on(table.tenantId, table.documentType),
+}));
 
 // ─── Categories ────────────────────────────────────────────
 export const categories = pgTable('categories', {
@@ -179,7 +190,12 @@ export const products = pgTable('products', {
   sourceCode: text('source_code'),
   sourceRelatedCode: text('source_related_code'),
   sourceImportedAt: text('source_imported_at'),
-});
+}, (table) => ({
+  tenantStatusIdx: index('products_tenant_status_idx').on(table.tenantId, table.status),
+  tenantSkuUnique: uniqueIndex('products_tenant_sku_uidx').on(table.tenantId, table.sku),
+  tenantBarcodeIdx: index('products_tenant_barcode_idx').on(table.tenantId, table.barcode),
+  tenantNameIdx: index('products_tenant_name_idx').on(table.tenantId, table.name),
+}));
 
 export const priceLists = pgTable('price_lists', {
   id: text('id').primaryKey(),
@@ -208,7 +224,10 @@ export const priceListItems = pgTable('price_list_items', {
   unitFactor: real('unit_factor').notNull().default(1),
   price: real('price').notNull(),
   createdAt: text('created_at').notNull(),
-});
+}, (table) => ({
+  listProductUnitIdx: index('price_list_items_list_product_unit_idx').on(table.priceListId, table.productId, table.unitName),
+  tenantProductIdx: index('price_list_items_tenant_product_idx').on(table.tenantId, table.productId),
+}));
 
 export const productUnits = pgTable('product_units', {
   id: text('id').primaryKey(),
@@ -226,7 +245,11 @@ export const productUnits = pgTable('product_units', {
   sourceImportedAt: text('source_imported_at'),
   active: integer('active').notNull().default(1),
   createdAt: text('created_at').notNull(),
-});
+}, (table) => ({
+  tenantProductIdx: index('product_units_tenant_product_idx').on(table.tenantId, table.productId),
+  tenantSkuIdx: index('product_units_tenant_sku_idx').on(table.tenantId, table.sku),
+  tenantBarcodeIdx: index('product_units_tenant_barcode_idx').on(table.tenantId, table.barcode),
+}));
 
 export const productComponents = pgTable('product_components', {
   id: text('id').primaryKey(),
@@ -235,7 +258,10 @@ export const productComponents = pgTable('product_components', {
   componentProductId: text('component_product_id').notNull().references(() => products.id),
   quantity: real('quantity').notNull(),
   createdAt: text('created_at').notNull(),
-});
+}, (table) => ({
+  comboIdx: index('product_components_tenant_combo_idx').on(table.tenantId, table.comboProductId),
+  componentIdx: index('product_components_tenant_component_idx').on(table.tenantId, table.componentProductId),
+}));
 
 export const productImportBatches = pgTable('product_import_batches', {
   id: text('id').primaryKey(),
@@ -259,7 +285,10 @@ export const productImportBatches = pgTable('product_import_batches', {
   createdBy: text('created_by').notNull(),
   createdAt: text('created_at').notNull(),
   completedAt: text('completed_at'),
-});
+}, (table) => ({
+  tenantSourceHashUnique: uniqueIndex('product_import_batches_tenant_source_hash_uidx').on(table.tenantId, table.sourceSystem, table.sourceHash),
+  tenantCreatedAtIdx: index('product_import_batches_tenant_created_at_idx').on(table.tenantId, table.createdAt),
+}));
 
 export const productImportIssues = pgTable('product_import_issues', {
   id: text('id').primaryKey(),
@@ -271,7 +300,10 @@ export const productImportIssues = pgTable('product_import_issues', {
   sku: text('sku').notNull().default(''),
   barcode: text('barcode').notNull().default(''),
   createdAt: text('created_at').notNull(),
-});
+}, (table) => ({
+  batchRowIdx: index('product_import_issues_batch_row_idx').on(table.batchId, table.rowNumber),
+  tenantCreatedAtIdx: index('product_import_issues_tenant_created_at_idx').on(table.tenantId, table.createdAt),
+}));
 
 // ─── Customers ─────────────────────────────────────────────
 export const customers = pgTable('customers', {
@@ -295,7 +327,11 @@ export const customers = pgTable('customers', {
   totalDebt: real('total_debt').notNull().default(0),
   type: text('type', { enum: ['retail', 'loyal'] }).notNull().default('retail'),
   tags: text('tags').notNull().default('[]'),
-});
+}, (table) => ({
+  tenantCodeIdx: index('customers_tenant_code_idx').on(table.tenantId, table.code),
+  tenantNameIdx: index('customers_tenant_name_idx').on(table.tenantId, table.name),
+  tenantPhoneIdx: index('customers_tenant_phone_idx').on(table.tenantId, table.phone),
+}));
 
 // ─── Suppliers ─────────────────────────────────────────────
 export const suppliers = pgTable('suppliers', {
@@ -309,7 +345,10 @@ export const suppliers = pgTable('suppliers', {
   currentPayable: real('current_payable').notNull().default(0),
   note: text('note').notNull().default(''),
   active: integer('active').notNull().default(1),
-});
+}, (table) => ({
+  tenantCodeIdx: index('suppliers_tenant_code_idx').on(table.tenantId, table.code),
+  tenantNameIdx: index('suppliers_tenant_name_idx').on(table.tenantId, table.name),
+}));
 
 // ─── Purchases ─────────────────────────────────────────────
 export const purchases = pgTable('purchases', {
@@ -328,7 +367,10 @@ export const purchases = pgTable('purchases', {
   status: text('status', { enum: ['confirmed', 'partial', 'unpaid'] }).notNull(),
   note: text('note').notNull().default(''),
   createdAt: text('created_at').notNull(),
-});
+}, (table) => ({
+  tenantCreatedAtIdx: index('purchases_tenant_created_at_idx').on(table.tenantId, table.createdAt),
+  tenantSupplierIdx: index('purchases_tenant_supplier_idx').on(table.tenantId, table.supplierId),
+}));
 
 export const purchaseItems = pgTable('purchase_items', {
   id: text('id').primaryKey(),
@@ -345,7 +387,10 @@ export const purchaseItems = pgTable('purchase_items', {
   isGift: integer('is_gift').notNull().default(0),
   sellingPrice: real('selling_price').notNull().default(0),
   note: text('note').notNull().default(''),
-});
+}, (table) => ({
+  purchaseIdx: index('purchase_items_purchase_idx').on(table.purchaseId),
+  productIdx: index('purchase_items_product_idx').on(table.productId),
+}));
 
 export const purchaseReturns = pgTable('purchase_returns', {
   id: text('id').primaryKey(),
@@ -357,7 +402,10 @@ export const purchaseReturns = pgTable('purchase_returns', {
   note: text('note').notNull().default(''),
   createdBy: text('created_by').notNull(),
   createdAt: text('created_at').notNull(),
-});
+}, (table) => ({
+  tenantCreatedAtIdx: index('purchase_returns_tenant_created_at_idx').on(table.tenantId, table.createdAt),
+  purchaseIdx: index('purchase_returns_purchase_idx').on(table.purchaseId),
+}));
 
 export const purchaseReturnItems = pgTable('purchase_return_items', {
   id: text('id').primaryKey(),
@@ -371,7 +419,10 @@ export const purchaseReturnItems = pgTable('purchase_return_items', {
   baseQuantity: real('base_quantity').notNull().default(0),
   price: real('price').notNull(),
   total: real('total').notNull(),
-});
+}, (table) => ({
+  returnIdx: index('purchase_return_items_return_idx').on(table.returnId),
+  purchaseItemIdx: index('purchase_return_items_purchase_item_idx').on(table.purchaseItemId),
+}));
 
 export const supplierCreditLedger = pgTable('supplier_credit_ledger', {
   id: text('id').primaryKey(),
@@ -430,7 +481,11 @@ export const invoices = pgTable('invoices', {
   version: integer('version').notNull().default(1),
   note: text('note').notNull().default(''),
   createdAt: text('created_at').notNull(),
-});
+}, (table) => ({
+  tenantCreatedAtIdx: index('invoices_tenant_created_at_idx').on(table.tenantId, table.createdAt),
+  tenantStatusIdx: index('invoices_tenant_status_idx').on(table.tenantId, table.status),
+  tenantCustomerIdx: index('invoices_tenant_customer_idx').on(table.tenantId, table.customerId),
+}));
 
 // ─── Invoice Items ─────────────────────────────────────────
 export const invoiceItems = pgTable('invoice_items', {
@@ -452,7 +507,10 @@ export const invoiceItems = pgTable('invoice_items', {
   baseQuantity: real('base_quantity').notNull().default(0),
   priceListId: text('price_list_id'),
   priceListName: text('price_list_name'),
-});
+}, (table) => ({
+  invoiceIdx: index('invoice_items_invoice_idx').on(table.invoiceId),
+  productIdx: index('invoice_items_product_idx').on(table.productId),
+}));
 
 export const salesReturns = pgTable('sales_returns', {
   id: text('id').primaryKey(),
@@ -467,7 +525,10 @@ export const salesReturns = pgTable('sales_returns', {
   note: text('note').notNull().default(''),
   createdBy: text('created_by').notNull(),
   createdAt: text('created_at').notNull(),
-});
+}, (table) => ({
+  tenantCreatedAtIdx: index('sales_returns_tenant_created_at_idx').on(table.tenantId, table.createdAt),
+  tenantInvoiceIdx: index('sales_returns_tenant_invoice_idx').on(table.tenantId, table.invoiceId),
+}));
 
 export const salesReturnItems = pgTable('sales_return_items', {
   id: text('id').primaryKey(),
@@ -481,7 +542,10 @@ export const salesReturnItems = pgTable('sales_return_items', {
   baseQuantity: real('base_quantity').notNull().default(0),
   price: real('price').notNull(),
   total: real('total').notNull(),
-});
+}, (table) => ({
+  returnIdx: index('sales_return_items_return_idx').on(table.returnId),
+  invoiceItemIdx: index('sales_return_items_invoice_item_idx').on(table.invoiceItemId),
+}));
 
 // ─── Debt Ledger ───────────────────────────────────────────
 export const debtLedger = pgTable('debt_ledger', {
@@ -494,7 +558,10 @@ export const debtLedger = pgTable('debt_ledger', {
   note: text('note').notNull().default(''),
   createdAt: text('created_at').notNull(),
   createdBy: text('created_by').notNull(),
-});
+}, (table) => ({
+  tenantCustomerCreatedAtIdx: index('debt_ledger_tenant_customer_created_at_idx').on(table.tenantId, table.customerId, table.createdAt),
+  tenantInvoiceIdx: index('debt_ledger_tenant_invoice_idx').on(table.tenantId, table.invoiceId),
+}));
 
 export const cashbookEntries = pgTable('cashbook_entries', {
   id: text('id').primaryKey(),
@@ -507,7 +574,10 @@ export const cashbookEntries = pgTable('cashbook_entries', {
   accountId: text('account_id'),
   createdAt: text('created_at').notNull(),
   createdBy: text('created_by').notNull(),
-});
+}, (table) => ({
+  tenantCreatedAtIdx: index('cashbook_entries_tenant_created_at_idx').on(table.tenantId, table.createdAt),
+  tenantReferenceIdx: index('cashbook_entries_tenant_reference_idx').on(table.tenantId, table.referenceId),
+}));
 
 export const stockReservations = pgTable('stock_reservations', {
   id: text('id').primaryKey(),
@@ -518,7 +588,10 @@ export const stockReservations = pgTable('stock_reservations', {
   status: text('status').notNull().default('reserved'),
   createdAt: text('created_at').notNull(),
   releasedAt: text('released_at'),
-});
+}, (table) => ({
+  tenantStatusProductIdx: index('stock_reservations_tenant_status_product_idx').on(table.tenantId, table.status, table.productId),
+  invoiceIdx: index('stock_reservations_invoice_idx').on(table.invoiceId),
+}));
 
 export const cashAccounts = pgTable('cash_accounts', {
   id: text('id').primaryKey(),
@@ -541,7 +614,10 @@ export const payments = pgTable('payments', {
   status: text('status').notNull().default('posted'),
   createdBy: text('created_by').notNull(),
   createdAt: text('created_at').notNull(),
-});
+}, (table) => ({
+  tenantCreatedAtIdx: index('payments_tenant_created_at_idx').on(table.tenantId, table.createdAt),
+  tenantCustomerIdx: index('payments_tenant_customer_idx').on(table.tenantId, table.customerId),
+}));
 
 export const paymentAllocations = pgTable('payment_allocations', {
   id: text('id').primaryKey(),
@@ -550,7 +626,10 @@ export const paymentAllocations = pgTable('payment_allocations', {
   invoiceId: text('invoice_id').notNull().references(() => invoices.id),
   amount: real('amount').notNull(),
   createdAt: text('created_at').notNull(),
-});
+}, (table) => ({
+  paymentIdx: index('payment_allocations_payment_idx').on(table.paymentId),
+  invoiceIdx: index('payment_allocations_invoice_idx').on(table.invoiceId),
+}));
 
 export const stockMovements = pgTable('stock_movements', {
   id: text('id').primaryKey(),
@@ -564,7 +643,11 @@ export const stockMovements = pgTable('stock_movements', {
   referenceId: text('reference_id'),
   createdAt: text('created_at').notNull(),
   createdBy: text('created_by').notNull(),
-});
+}, (table) => ({
+  tenantProductCreatedAtIdx: index('stock_movements_tenant_product_created_at_idx').on(table.tenantId, table.productId, table.createdAt),
+  tenantCreatedAtIdx: index('stock_movements_tenant_created_at_idx').on(table.tenantId, table.createdAt),
+  referenceIdx: index('stock_movements_reference_idx').on(table.tenantId, table.referenceId),
+}));
 
 // ─── Admin Users (Super Admins) ────────────────────────────
 export const adminUsers = pgTable('admin_users', {
@@ -613,7 +696,10 @@ export const auditLogs = pgTable('audit_logs', {
   tenantId: text('tenant_id'),
   meta: text('meta'),
   createdAt: text('created_at').notNull(),
-});
+}, (table) => ({
+  tenantCreatedAtIdx: index('audit_logs_tenant_created_at_idx').on(table.tenantId, table.createdAt),
+  actorCreatedAtIdx: index('audit_logs_actor_created_at_idx').on(table.actorId, table.createdAt),
+}));
 
 export const customerCareLogs = pgTable('customer_care_logs', {
   id: text('id').primaryKey(),

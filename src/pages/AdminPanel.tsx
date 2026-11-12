@@ -1,13 +1,44 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { LayoutDashboard, Users, CreditCard, ShieldCheck, Search, ExternalLink, RefreshCw, TrendingUp, BarChart3, Target, Store } from 'lucide-react';
-import { Button } from '../components/ui/Button';
-import { Input } from '../components/ui/Input';
+import {
+  Activity, ArrowUpRight, Building2, CheckCircle2, CreditCard, Database,
+  FileText, LayoutDashboard, LogOut, Package, Plus, RefreshCw, Search,
+  ShieldCheck, Store, UserPlus, Users, WalletCards, X,
+} from 'lucide-react';
 import { formatCurrency, normalizeSearchText } from '../lib/utils';
 import { adminApi } from '../lib/api';
 
 type AdminTab = 'overview' | 'tenants' | 'subscriptions' | 'packages' | 'users' | 'audit';
+type AnyRecord = Record<string, any>;
+const tabItems: Array<{ id: AdminTab; label: string; icon: React.ElementType }> = [
+  { id: 'overview', label: 'Tổng quan', icon: LayoutDashboard },
+  { id: 'tenants', label: 'Khách hàng', icon: Building2 },
+  { id: 'subscriptions', label: 'Gói & đăng ký', icon: CreditCard },
+  { id: 'packages', label: 'Quản lý gói', icon: Package },
+  { id: 'users', label: 'Tài khoản', icon: Users },
+  { id: 'audit', label: 'Nhật ký hệ thống', icon: FileText },
+];
 const tenantStatuses = ['all', 'active', 'trial', 'onboarding', 'pending_setup', 'suspended'];
 const subscriptionStatuses = ['all', 'pending_review', 'active', 'expired', 'cancelled'];
+const displayStatus: Record<string, string> = { active: 'Đang hoạt động', trial: 'Dùng thử', onboarding: 'Đang khởi tạo', pending_setup: 'Chờ thiết lập', suspended: 'Tạm khóa', pending_review: 'Chờ duyệt', expired: 'Hết hạn', cancelled: 'Đã hủy' };
+const statusClass: Record<string, string> = { active: 'bg-emerald-50 text-emerald-700 ring-emerald-200', trial: 'bg-sky-50 text-sky-700 ring-sky-200', onboarding: 'bg-amber-50 text-amber-700 ring-amber-200', pending_setup: 'bg-violet-50 text-violet-700 ring-violet-200', suspended: 'bg-rose-50 text-rose-700 ring-rose-200', pending_review: 'bg-amber-50 text-amber-700 ring-amber-200', expired: 'bg-slate-100 text-slate-600 ring-slate-200', cancelled: 'bg-slate-100 text-slate-600 ring-slate-200' };
+
+function valueOf<T = any>(item: AnyRecord | null | undefined, key: string, fallback?: T): T {
+  if (!item) return fallback as T;
+  return (item[key] ?? item[key.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`)] ?? fallback) as T;
+}
+function statusLabel(status: string) { return displayStatus[status] || status || 'Chưa xác định'; }
+function StatusBadge({ status }: { status: string }) { return <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${statusClass[status] || 'bg-slate-100 text-slate-600 ring-slate-200'}`}>{statusLabel(status)}</span>; }
+function Button({ children, variant = 'primary', className = '', ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger' }) {
+  const variants = { primary: 'bg-sky-600 text-white shadow-sm shadow-sky-600/20 hover:bg-sky-700', secondary: 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50', ghost: 'text-slate-600 hover:bg-slate-100', danger: 'bg-rose-50 text-rose-700 ring-1 ring-rose-200 hover:bg-rose-100' };
+  return <button {...props} className={`inline-flex items-center justify-center gap-2 rounded-xl px-3.5 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${variants[variant]} ${className}`}>{children}</button>;
+}
+function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) { return <label className="block space-y-1.5"><span className="text-xs font-semibold text-slate-600">{label}</span>{children}{hint && <span className="block text-[11px] text-slate-400">{hint}</span>}</label>; }
+function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) { return <input {...props} className={`w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-sky-500 focus:ring-4 focus:ring-sky-500/10 ${props.className || ''}`} />; }
+function SelectInput(props: React.SelectHTMLAttributes<HTMLSelectElement>) { return <select {...props} className={`w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition focus:border-sky-500 focus:ring-4 focus:ring-sky-500/10 ${props.className || ''}`} />; }
+function Modal({ title, subtitle, onClose, children, wide = false }: { title: string; subtitle?: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-sm"><div className={`max-h-[92vh] w-full overflow-y-auto rounded-3xl bg-white shadow-2xl ${wide ? 'max-w-4xl' : 'max-w-2xl'}`}><div className="sticky top-0 z-10 flex items-start justify-between border-b border-slate-100 bg-white px-6 py-5"><div><h2 className="text-lg font-bold text-slate-950">{title}</h2>{subtitle && <p className="mt-1 text-sm text-slate-500">{subtitle}</p>}</div><button onClick={onClose} className="rounded-xl p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Đóng"><X size={19} /></button></div><div className="p-6">{children}</div></div></div>;
+}
+function EmptyState({ title, description }: { title: string; description: string }) { return <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-6 py-12 text-center"><Database className="mx-auto mb-3 text-slate-300" size={30} /><p className="font-semibold text-slate-700">{title}</p><p className="mt-1 text-sm text-slate-500">{description}</p></div>; }
 
 export default function AdminPanel() {
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
@@ -15,1064 +46,79 @@ export default function AdminPanel() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [subscriptionFilter, setSubscriptionFilter] = useState('all');
   const [usersTenantFilter, setUsersTenantFilter] = useState('all');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [adminUser, setAdminUser] = useState<any>(null);
-  const [stats, setStats] = useState<any>(null);
-  const [tenants, setTenants] = useState<any[]>([]);
-  const [globalUsers, setGlobalUsers] = useState<any[]>([]);
-  const [subscriptions, setSubscriptions] = useState<any[]>([]);
-  const [packages, setPackages] = useState<any[]>([]);
-  const [auditLogs, setAuditLogs] = useState<any[]>([]);
-  const [activeTenantDetail, setActiveTenantDetail] = useState<any | null>(null);
-  const [activeTenantUsers, setActiveTenantUsers] = useState<{ tenant: any; users: any[] } | null>(null);
-  const [actionLoadingKey, setActionLoadingKey] = useState<string>('');
-  const [creatingUser, setCreatingUser] = useState(false);
-  const [updatingUser, setUpdatingUser] = useState(false);
-  const [savingPackage, setSavingPackage] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [createForm, setCreateForm] = useState({
-    tenantName: '',
-    ownerName: '',
-    ownerEmail: '',
-    ownerPassword: '',
-    phone: '',
-    address: '',
-  });
-  const [userForm, setUserForm] = useState({
-    tenantId: '',
-    name: '',
-    email: '',
-    password: '',
-    role: 'cashier',
-    phone: '',
-  });
-  const [editingUserForm, setEditingUserForm] = useState({
-    id: '',
-    name: '',
-    email: '',
-    phone: '',
-    role: 'cashier',
-    status: 'active',
-    password: '',
-  });
-  const [packageForm, setPackageForm] = useState({
-    code: '',
-    name: '',
-    maxUsers: 1,
-    priceMonthly: 150000,
-    isDefault: true,
-  });
-  const activeTenantUsersAtLimit = Boolean(
-    activeTenantUsers
-      && Number(activeTenantUsers.tenant.maxUsers || 0) > 0
-      && activeTenantUsers.users.length >= Number(activeTenantUsers.tenant.maxUsers),
-  );
+  const [email, setEmail] = useState(''); const [password, setPassword] = useState('');
+  const [adminUser, setAdminUser] = useState<AnyRecord | null>(null); const [stats, setStats] = useState<AnyRecord | null>(null);
+  const [tenants, setTenants] = useState<AnyRecord[]>([]); const [globalUsers, setGlobalUsers] = useState<AnyRecord[]>([]);
+  const [subscriptions, setSubscriptions] = useState<AnyRecord[]>([]); const [packages, setPackages] = useState<AnyRecord[]>([]); const [auditLogs, setAuditLogs] = useState<AnyRecord[]>([]);
+  const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [actionLoading, setActionLoading] = useState('');
+  const [createOpen, setCreateOpen] = useState(false); const [tenantDetail, setTenantDetail] = useState<AnyRecord | null>(null); const [tenantUsers, setTenantUsers] = useState<{ tenant: AnyRecord; users: AnyRecord[] } | null>(null); const [editingUser, setEditingUser] = useState<AnyRecord | null>(null); const [packageFormOpen, setPackageFormOpen] = useState(false); const [editingPackage, setEditingPackage] = useState<AnyRecord | null>(null);
+  const [createForm, setCreateForm] = useState({ tenantName: '', ownerName: '', ownerEmail: '', ownerPassword: '', phone: '', address: '', packageCode: '', status: 'trial' });
+  const [packageForm, setPackageForm] = useState({ code: '', name: '', maxUsers: 1, priceMonthly: 150000, isDefault: false }); const [editPackageForm, setEditPackageForm] = useState({ code: '', name: '', maxUsers: 1, priceMonthly: 150000, isDefault: false, status: 'active' });
+  const [userForm, setUserForm] = useState({ tenantId: '', name: '', email: '', password: '', role: 'cashier', phone: '' });
+  const [editForm, setEditForm] = useState({ name: '', email: '', phone: '', role: 'cashier', status: 'active', password: '' });
 
   const loadAdminData = async () => {
-    setLoading(true);
-    setError('');
+    if (!adminApi.getToken()) { setLoading(false); return; }
+    setLoading(true); setError('');
     try {
-      const [admin, adminStats, tenantList, globalUserList, subList, pkgList, logs] = await Promise.all([
-        adminApi.me(),
-        adminApi.stats(),
-        adminApi.tenants.list({ status: statusFilter }),
-        adminApi.users.list(),
-        adminApi.subscriptions.list({ status: subscriptionFilter }),
-        adminApi.packages.list(),
-        adminApi.auditLogs.list({ limit: '120' }),
-      ]);
-      setAdminUser(admin);
-      setStats(adminStats);
-      setTenants(tenantList);
-      setGlobalUsers(globalUserList);
-      setSubscriptions(subList);
-      setPackages(pkgList);
-      setAuditLogs(logs);
-    } catch (err) {
-      adminApi.clearSession();
-      setAdminUser(null);
-      setError(err instanceof Error ? err.message : 'Không thể tải dữ liệu admin.');
-    } finally {
-      setLoading(false);
-    }
+      const admin = await adminApi.me(); setAdminUser(admin);
+      const results = await Promise.allSettled([adminApi.stats(), adminApi.tenants.list({ status: statusFilter }), adminApi.users.list(), adminApi.subscriptions.list({ status: subscriptionFilter }), adminApi.packages.list(), adminApi.auditLogs.list({ limit: '120' })]);
+      const [statsResult, tenantsResult, usersResult, subsResult, packagesResult, logsResult] = results;
+      if (statsResult.status === 'fulfilled') setStats(statsResult.value);
+      if (tenantsResult.status === 'fulfilled') setTenants(Array.isArray(tenantsResult.value) ? tenantsResult.value : []);
+      if (usersResult.status === 'fulfilled') setGlobalUsers(Array.isArray(usersResult.value) ? usersResult.value : []);
+      if (subsResult.status === 'fulfilled') setSubscriptions(Array.isArray(subsResult.value) ? subsResult.value : []);
+      if (packagesResult.status === 'fulfilled') setPackages(Array.isArray(packagesResult.value) ? packagesResult.value : []);
+      if (logsResult.status === 'fulfilled') setAuditLogs(Array.isArray(logsResult.value) ? logsResult.value : []);
+      const failedCount = results.filter((result) => result.status === 'rejected').length;
+      if (failedCount) setNotice(`${failedCount} mục phụ chưa tải được. Bạn vẫn có thể sử dụng các chức năng đã sẵn sàng.`);
+    } catch (err) { adminApi.clearSession(); setAdminUser(null); setError(err instanceof Error ? err.message : 'Phiên quản trị đã hết hạn hoặc máy chủ không phản hồi.'); }
+    finally { setLoading(false); }
   };
+  useEffect(() => { if (adminApi.getToken()) loadAdminData(); else setLoading(false); }, []);
+  useEffect(() => { if (adminUser) loadAdminData(); }, [statusFilter, subscriptionFilter]);
 
-  useEffect(() => {
-    if (adminApi.getToken()) {
-      loadAdminData();
-    } else {
-      setLoading(false);
-    }
-  }, []);
+  const filteredTenants = useMemo(() => { const query = normalizeSearchText(searchTerm); return tenants.filter((tenant) => { const text = normalizeSearchText([tenant.name, tenant.email, tenant.ownerEmail, tenant.code, tenant.packageName].filter(Boolean).join(' ')); return !query || text.includes(query); }); }, [tenants, searchTerm]);
+  const filteredUsers = useMemo(() => { const query = normalizeSearchText(searchTerm); return globalUsers.filter((user) => { const tenantId = valueOf<string>(user, 'tenantId', ''); const text = normalizeSearchText([user.name, user.email, user.role, tenantId].filter(Boolean).join(' ')); return (usersTenantFilter === 'all' || tenantId === usersTenantFilter) && (!query || text.includes(query)); }); }, [globalUsers, searchTerm, usersTenantFilter]);
+  const handleLogin = async (event: React.FormEvent) => { event.preventDefault(); setLoading(true); setError(''); try { const session = await adminApi.login(email.trim(), password); adminApi.saveSession(session.token); await loadAdminData(); } catch (err) { setError(err instanceof Error ? err.message : 'Đăng nhập quản trị thất bại.'); setLoading(false); } };
+  const handleLogout = () => { adminApi.clearSession(); setAdminUser(null); setStats(null); setTenants([]); };
+  const handleCreateTenant = async (event: React.FormEvent) => { event.preventDefault(); setActionLoading('create-tenant'); setError(''); try { await adminApi.tenants.create({ tenant: { name: createForm.tenantName.trim(), phone: createForm.phone.trim(), address: createForm.address.trim(), status: createForm.status, invoicePrefix: 'INV', packageCode: createForm.packageCode || undefined }, owner: { name: createForm.ownerName.trim(), email: createForm.ownerEmail.trim(), password: createForm.ownerPassword, phone: createForm.phone.trim() } }); setCreateOpen(false); setCreateForm({ tenantName: '', ownerName: '', ownerEmail: '', ownerPassword: '', phone: '', address: '', packageCode: '', status: 'trial' }); setNotice('Đã tạo tenant và tài khoản owner.'); await loadAdminData(); setActiveTab('tenants'); } catch (err) { setError(err instanceof Error ? err.message : 'Không thể tạo tenant.'); } finally { setActionLoading(''); } };
+  const handleTenantStatus = async (tenant: AnyRecord, status: string) => { const id = valueOf<string>(tenant, 'id', ''); if (!id) return; setActionLoading(`tenant-${id}`); try { await adminApi.tenants.setStatus(id, status); setNotice(`Đã cập nhật trạng thái ${tenant.name || 'tenant'}.`); await loadAdminData(); } catch (err) { setError(err instanceof Error ? err.message : 'Không thể cập nhật trạng thái tenant.'); } finally { setActionLoading(''); } };
+  const openTenantDetail = async (tenant: AnyRecord) => { const id = valueOf<string>(tenant, 'id', ''); setActionLoading(`detail-${id}`); try { const [detail, database] = await Promise.all([adminApi.tenants.get(id), adminApi.tenants.database(id)]); setTenantDetail({ ...detail, databaseHealth: database }); } catch (err) { setError(err instanceof Error ? err.message : 'Không thể tải chi tiết tenant.'); } finally { setActionLoading(''); } };
+  const openTenantUsers = async (tenant: AnyRecord) => { const id = valueOf<string>(tenant, 'id', ''); setActionLoading(`users-${id}`); try { const users = await adminApi.users.list(id); setTenantUsers({ tenant, users: Array.isArray(users) ? users : [] }); } catch (err) { setError(err instanceof Error ? err.message : 'Không thể tải tài khoản tenant.'); } finally { setActionLoading(''); } };
+  const handleProvision = async (tenant: AnyRecord) => { const id = valueOf<string>(tenant, 'id', ''); setActionLoading(`provision-${id}`); try { await adminApi.tenants.provisionDatabase(id); setNotice('Đã gửi yêu cầu khởi tạo database tenant.'); await openTenantDetail(tenant); } catch (err) { setError(err instanceof Error ? err.message : 'Không thể khởi tạo database tenant.'); } finally { setActionLoading(''); } };
+  const handleSubscription = async (subscription: AnyRecord, decision: 'approve' | 'reject' | 'renew') => { const tenantId = valueOf<string>(subscription, 'tenantId', ''); if (!tenantId) return; setActionLoading(`${decision}-${tenantId}`); try { if (decision === 'renew') await adminApi.subscriptions.renew(tenantId); else await adminApi.subscriptions.review(tenantId, decision, decision === 'approve' ? 'Duyệt bởi quản trị viên' : 'Từ chối bởi quản trị viên'); setNotice('Đã cập nhật đăng ký.'); await loadAdminData(); } catch (err) { setError(err instanceof Error ? err.message : 'Không thể cập nhật đăng ký.'); } finally { setActionLoading(''); } };
+  const handleCreatePackage = async (event: React.FormEvent) => { event.preventDefault(); setActionLoading('create-package'); try { await adminApi.packages.create({ ...packageForm, maxUsers: Number(packageForm.maxUsers), priceMonthly: Number(packageForm.priceMonthly) }); setPackageForm({ code: '', name: '', maxUsers: 1, priceMonthly: 150000, isDefault: false }); setPackageFormOpen(false); setNotice('Đã tạo gói dịch vụ.'); await loadAdminData(); } catch (err) { setError(err instanceof Error ? err.message : 'Không thể tạo gói dịch vụ.'); } finally { setActionLoading(''); } };
+  const openEditPackage = (pkg: AnyRecord) => { setEditingPackage(pkg); setEditPackageForm({ code: valueOf(pkg, 'code', ''), name: valueOf(pkg, 'name', ''), maxUsers: Number(valueOf(pkg, 'maxUsers', 1)), priceMonthly: Number(valueOf(pkg, 'priceMonthly', 0)), isDefault: Boolean(valueOf(pkg, 'isDefault', false)), status: valueOf(pkg, 'status', 'active') }); };
+  const handleUpdatePackage = async (event: React.FormEvent) => { event.preventDefault(); if (!editingPackage) return; setActionLoading('update-package'); try { await adminApi.packages.update(valueOf(editingPackage, 'id', ''), { ...editPackageForm, maxUsers: Number(editPackageForm.maxUsers), priceMonthly: Number(editPackageForm.priceMonthly) }); setEditingPackage(null); setNotice('Đã cập nhật gói và đồng bộ hạn mức cho tenant đang dùng gói.'); await loadAdminData(); } catch (err) { setError(err instanceof Error ? err.message : 'Không thể cập nhật gói dịch vụ.'); } finally { setActionLoading(''); } };
+  const handleCreateUser = async (event: React.FormEvent) => { event.preventDefault(); setActionLoading('create-user'); try { await adminApi.users.create({ ...userForm }); setUserForm({ tenantId: '', name: '', email: '', password: '', role: 'cashier', phone: '' }); setTenantUsers(null); setNotice('Đã tạo tài khoản người dùng.'); await loadAdminData(); } catch (err) { setError(err instanceof Error ? err.message : 'Không thể tạo người dùng.'); } finally { setActionLoading(''); } };
+  const openEditUser = (user: AnyRecord) => { setEditingUser(user); setEditForm({ name: valueOf(user, 'name', ''), email: valueOf(user, 'email', ''), phone: valueOf(user, 'phone', ''), role: valueOf(user, 'role', 'cashier'), status: valueOf(user, 'status', 'active'), password: '' }); };
+  const handleUpdateUser = async (event: React.FormEvent) => { event.preventDefault(); if (!editingUser) return; setActionLoading('update-user'); try { await adminApi.users.update(valueOf(editingUser, 'id', ''), { ...editForm, ...(editForm.password ? { password: editForm.password } : {}) }); setEditingUser(null); setNotice('Đã cập nhật tài khoản.'); await loadAdminData(); } catch (err) { setError(err instanceof Error ? err.message : 'Không thể cập nhật tài khoản.'); } finally { setActionLoading(''); } };
+  const handleDeleteUser = async (user: AnyRecord) => { if (!window.confirm(`Xóa tài khoản ${valueOf(user, 'email', '')}?`)) return; setActionLoading(`delete-user-${valueOf(user, 'id', '')}`); try { await adminApi.users.delete(valueOf(user, 'id', '')); setNotice('Đã xóa tài khoản.'); await loadAdminData(); } catch (err) { setError(err instanceof Error ? err.message : 'Không thể xóa tài khoản.'); } finally { setActionLoading(''); } };
 
-  useEffect(() => {
-    if (adminUser) loadAdminData();
-  }, [statusFilter, subscriptionFilter]);
+  if (!adminUser && !adminApi.getToken()) return <div className="min-h-screen bg-slate-100 px-4 py-10 text-slate-900"><div className="mx-auto grid max-w-5xl overflow-hidden rounded-3xl bg-white shadow-xl shadow-slate-200/60 lg:grid-cols-[1.05fr_.95fr]"><div className="hidden bg-gradient-to-br from-sky-700 via-sky-600 to-cyan-500 p-10 text-white lg:block"><div className="flex items-center gap-3"><div className="rounded-2xl bg-white/15 p-3"><ShieldCheck size={25} /></div><div><p className="text-lg font-bold">HKD Smart</p><p className="text-xs text-sky-100">Platform control center</p></div></div><div className="mt-24"><p className="text-sm font-semibold text-sky-100">QUẢN TRỊ NỀN TẢNG</p><h1 className="mt-3 text-4xl font-bold leading-tight">Một nơi để vận hành toàn bộ hệ thống SaaS.</h1><p className="mt-5 max-w-sm text-sm leading-6 text-sky-100">Tạo khách hàng, cấp tài khoản owner, quản lý gói dịch vụ và theo dõi sức khỏe các tenant.</p></div></div><form onSubmit={handleLogin} className="p-7 sm:p-10"><div className="mb-10 flex items-center gap-3 lg:hidden"><div className="rounded-2xl bg-sky-600 p-3 text-white"><ShieldCheck size={24} /></div><div><p className="font-bold">HKD Smart</p><p className="text-xs text-slate-500">Platform admin</p></div></div><p className="text-sm font-semibold text-sky-600">ĐĂNG NHẬP QUẢN TRỊ</p><h2 className="mt-2 text-2xl font-bold text-slate-950">Chào mừng trở lại</h2><p className="mt-2 text-sm text-slate-500">Dùng tài khoản platform admin để tiếp tục.</p>{error && <div className="mt-6 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>}<div className="mt-8 space-y-5"><Field label="Email"><TextInput type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="admin@hkdplus.local" required /></Field><Field label="Mật khẩu"><TextInput type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Nhập mật khẩu" required /></Field><Button type="submit" className="w-full" disabled={loading}>{loading ? 'Đang xác thực...' : 'Đăng nhập'}</Button></div></form></div></div>;
 
-  const handleLogin = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setLoading(true);
-    setError('');
-    try {
-      const session = await adminApi.login(email, password);
-      adminApi.saveSession(session.token);
-      await loadAdminData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Đăng nhập admin thất bại.');
-      setLoading(false);
-    }
-  };
+  const statCards = [{ label: 'Tổng tenant', value: valueOf(stats, 'totalTenants', tenants.length) || 0, icon: Building2, tone: 'sky' }, { label: 'Đang hoạt động', value: valueOf(stats, 'activeTenants', tenants.filter((tenant) => valueOf<string>(tenant, 'status', '') === 'active').length) || 0, icon: Activity, tone: 'emerald' }, { label: 'Tài khoản người dùng', value: valueOf(stats, 'totalUsers', globalUsers.length) || 0, icon: Users, tone: 'violet' }, { label: 'Doanh thu ghi nhận', value: formatCurrency(Number(valueOf(stats, 'monthlyRevenue', valueOf(stats, 'totalRevenue', 0))) || 0), icon: WalletCards, tone: 'amber' }];
+  return <div className="min-h-screen bg-slate-100 text-slate-900"><div className="flex min-h-screen"><aside className="hidden w-64 shrink-0 border-r border-slate-200 bg-white lg:flex lg:flex-col"><div className="flex h-20 items-center gap-3 border-b border-slate-100 px-6"><div className="rounded-xl bg-sky-600 p-2.5 text-white"><ShieldCheck size={21} /></div><div><p className="font-bold tracking-tight">HKD Smart</p><p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Platform admin</p></div></div><nav className="flex-1 space-y-1 p-4">{tabItems.map((item) => { const Icon = item.icon; return <button key={item.id} onClick={() => setActiveTab(item.id)} className={`flex w-full items-center gap-3 rounded-xl px-3.5 py-3 text-left text-sm font-semibold transition ${activeTab === item.id ? 'bg-sky-50 text-sky-700' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'}`}><Icon size={18} />{item.label}</button>; })}</nav><div className="border-t border-slate-100 p-4"><div className="flex items-center gap-3 rounded-xl bg-slate-50 p-3"><div className="flex h-9 w-9 items-center justify-center rounded-full bg-sky-100 text-sm font-bold text-sky-700">{String(valueOf(adminUser, 'name', 'A')).slice(0, 1).toUpperCase()}</div><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{valueOf(adminUser, 'name', 'Quản trị viên')}</p><p className="truncate text-[11px] text-slate-500">{valueOf(adminUser, 'email', '')}</p></div><button onClick={handleLogout} className="text-slate-400 hover:text-rose-600" title="Đăng xuất"><LogOut size={16} /></button></div></div></aside><main className="min-w-0 flex-1"><header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 px-4 py-4 backdrop-blur sm:px-7"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-[.18em] text-sky-600">Platform control center</p><h1 className="mt-1 text-xl font-bold text-slate-950">{tabItems.find((item) => item.id === activeTab)?.label}</h1></div><div className="flex items-center gap-2"><Button variant="secondary" onClick={() => loadAdminData()} disabled={loading}><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Làm mới</Button><Button onClick={() => setCreateOpen(true)}><Plus size={17} /> Tạo tenant</Button></div></div><div className="mt-4 flex gap-2 overflow-x-auto lg:hidden">{tabItems.map((item) => <button key={item.id} onClick={() => setActiveTab(item.id)} className={`whitespace-nowrap rounded-full px-3 py-2 text-xs font-semibold ${activeTab === item.id ? 'bg-sky-600 text-white' : 'bg-slate-100 text-slate-600'}`}>{item.label}</button>)}</div></header><div className="mx-auto max-w-[1500px] space-y-6 p-4 sm:p-7">{(error || notice) && <div className={`flex items-center justify-between rounded-2xl px-4 py-3 text-sm ${error ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}><span>{error || notice}</span><button onClick={() => { setError(''); setNotice(''); }}><X size={16} /></button></div>}
 
-  const handleTenantStatus = async (tenantId: string, status: string) => {
-    try {
-      await adminApi.tenants.setStatus(tenantId, status);
-      await loadAdminData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể cập nhật trạng thái tenant.');
-    }
-  };
+  {activeTab === 'overview' && <><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{statCards.map((card) => { const Icon = card.icon; const tone = card.tone === 'sky' ? 'bg-sky-50 text-sky-600' : card.tone === 'emerald' ? 'bg-emerald-50 text-emerald-600' : card.tone === 'violet' ? 'bg-violet-50 text-violet-600' : 'bg-amber-50 text-amber-600'; return <div key={card.label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-start justify-between"><div><p className="text-sm text-slate-500">{card.label}</p><p className="mt-3 text-2xl font-bold text-slate-950">{card.value}</p></div><div className={`rounded-xl p-3 ${tone}`}><Icon size={20} /></div></div><div className="mt-5 flex items-center gap-1 text-xs text-slate-400"><ArrowUpRight size={14} className="text-emerald-500" /> Cập nhật theo dữ liệu hiện tại</div></div>; })}</div><div className="grid gap-6 xl:grid-cols-[1.3fr_.7fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5"><div className="flex items-center justify-between"><div><h2 className="font-bold">Tenant mới nhất</h2><p className="mt-1 text-sm text-slate-500">Theo dõi trạng thái khách hàng vừa tạo.</p></div><button onClick={() => setActiveTab('tenants')} className="text-sm font-semibold text-sky-600">Xem tất cả</button></div><div className="mt-5 space-y-2">{tenants.slice(0, 5).map((tenant) => <div key={tenant.id} className="flex items-center gap-3 rounded-xl border border-slate-100 p-3"><div className="rounded-xl bg-slate-100 p-2.5 text-slate-500"><Store size={17} /></div><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{tenant.name}</p><p className="truncate text-xs text-slate-500">{valueOf(tenant, 'ownerEmail', valueOf(tenant, 'email', 'Chưa có email'))}</p></div><StatusBadge status={valueOf(tenant, 'status', '')} /></div>)}{!tenants.length && <EmptyState title="Chưa có tenant" description="Tạo tenant đầu tiên để bắt đầu vận hành SaaS." />}</div></section><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="font-bold">Tác vụ nhanh</h2><p className="mt-1 text-sm text-slate-500">Các thao tác quản trị thường dùng.</p><div className="mt-5 grid gap-3"><button onClick={() => setCreateOpen(true)} className="flex items-center gap-3 rounded-xl border border-sky-100 bg-sky-50 p-4 text-left text-sm font-semibold text-sky-700 hover:bg-sky-100"><UserPlus size={19} /> Tạo khách hàng và owner</button><button onClick={() => setActiveTab('packages')} className="flex items-center gap-3 rounded-xl border border-slate-100 p-4 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"><Package size={19} /> Xem gói dịch vụ</button><button onClick={() => setActiveTab('audit')} className="flex items-center gap-3 rounded-xl border border-slate-100 p-4 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"><FileText size={19} /> Kiểm tra nhật ký</button></div></section></div></>}
 
-  const handleCreateTenant = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!createForm.tenantName || !createForm.ownerName || !createForm.ownerEmail || !createForm.ownerPassword) {
-      setError('Vui lòng nhập đầy đủ thông tin tenant và owner.');
-      return;
-    }
-    try {
-      await adminApi.tenants.create({
-        tenant: {
-          name: createForm.tenantName,
-          phone: createForm.phone,
-          address: createForm.address,
-          status: 'trial',
-          invoicePrefix: 'INV',
-        },
-        owner: {
-          name: createForm.ownerName,
-          email: createForm.ownerEmail,
-          password: createForm.ownerPassword,
-          phone: createForm.phone,
-        },
-      });
-      setCreateForm({ tenantName: '', ownerName: '', ownerEmail: '', ownerPassword: '', phone: '', address: '' });
-      await loadAdminData();
-      setActiveTab('tenants');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể tạo tenant.');
-    }
-  };
+  {activeTab === 'tenants' && <section className="rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div><h2 className="font-bold">Quản lý tenant</h2><p className="mt-1 text-sm text-slate-500">Tạo, theo dõi trạng thái và mở dữ liệu từng khách hàng.</p></div><div className="flex flex-wrap gap-2"><div className="relative"><Search size={15} className="absolute left-3 top-2.5 text-slate-400" /><TextInput className="w-56 py-2 pl-9 text-xs" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Tìm tenant..." /></div><SelectInput className="w-40 py-2 text-xs" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>{tenantStatuses.map((status) => <option key={status} value={status}>{status === 'all' ? 'Tất cả trạng thái' : statusLabel(status)}</option>)}</SelectInput></div></div><div className="overflow-hidden"><table className="w-full table-fixed text-left text-xs"><colgroup><col className="w-[24%]" /><col className="w-[18%]" /><col className="w-[12%]" /><col className="w-[15%]" /><col className="w-[11%]" /><col className="w-[20%]" /></colgroup><thead className="bg-slate-50 font-semibold uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2.5">Khách hàng</th><th className="px-3 py-2.5">Gói</th><th className="px-3 py-2.5">Tài khoản</th><th className="px-3 py-2.5">Trạng thái</th><th className="px-3 py-2.5">Cập nhật</th><th className="px-3 py-2.5 text-right">Thao tác</th></tr></thead><tbody className="divide-y divide-slate-100">{filteredTenants.map((tenant) => { const id = valueOf<string>(tenant, 'id', ''); return <tr key={id} className="hover:bg-slate-50/70"><td className="truncate px-3 py-2.5"><p className="truncate font-semibold text-slate-800">{tenant.name || 'Chưa đặt tên'}</p><p className="truncate text-[11px] text-slate-500">{valueOf(tenant, 'ownerEmail', valueOf(tenant, 'email', ''))}</p></td><td className="truncate px-3 py-2.5"><span className="font-semibold text-slate-700">{valueOf(tenant, 'packageName', valueOf(tenant, 'packageCode', 'Starter'))}</span><p className="text-[11px] text-slate-400">{Number(valueOf(tenant, 'maxUsers', 1))} user</p></td><td className="px-3 py-2.5 text-slate-600">{valueOf(tenant, 'userCount', valueOf(tenant, 'usersCount', 0))} / {valueOf(tenant, 'maxUsers', 1)}</td><td className="px-3 py-2.5"><StatusBadge status={valueOf(tenant, 'status', '')} /></td><td className="px-3 py-2.5 text-[11px] text-slate-500">{tenant.updatedAt ? new Date(tenant.updatedAt).toLocaleDateString('vi-VN') : '-'}</td><td className="px-3 py-2.5"><div className="flex justify-end gap-0.5"><button title="Chi tiết" onClick={() => openTenantDetail(tenant)} className="rounded-lg p-1.5 text-slate-500 hover:bg-sky-50 hover:text-sky-600"><ArrowUpRight size={15} /></button><button title="Tài khoản" onClick={() => openTenantUsers(tenant)} className="rounded-lg p-1.5 text-slate-500 hover:bg-sky-50 hover:text-sky-600"><Users size={15} /></button><select aria-label="Trạng thái tenant" value={valueOf(tenant, 'status', 'trial')} disabled={actionLoading === `tenant-${id}`} onChange={(event) => handleTenantStatus(tenant, event.target.value)} className="max-w-[110px] rounded-lg border border-slate-200 bg-white px-1.5 py-1 text-[11px]"><option value="trial">Dùng thử</option><option value="active">Hoạt động</option><option value="suspended">Tạm khóa</option></select></div></td></tr>; })}</tbody></table></div>{!filteredTenants.length && <div className="p-5"><EmptyState title="Không tìm thấy tenant" description="Thử đổi bộ lọc hoặc tạo tenant mới." /></div>}</section>}
 
-  const handleReviewSubscription = async (tenantId: string, decision: 'approve' | 'reject') => {
-    const resolvedTenantId = tenantId?.trim();
-    if (!resolvedTenantId) {
-      setError('Subscription action failed: missing tenant id.');
-      return;
-    }
-    try {
-      setActionLoadingKey(`review-${resolvedTenantId}-${decision}`);
-      await adminApi.subscriptions.review(resolvedTenantId, decision, decision === 'approve' ? 'Approved by admin' : 'Rejected by admin');
-      await loadAdminData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể review subscription.');
-    } finally {
-      setActionLoadingKey('');
-    }
-  };
+  {activeTab === 'subscriptions' && <section className="rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-5"><div><h2 className="font-bold">Gói & đăng ký</h2><p className="mt-1 text-sm text-slate-500">Theo dõi trạng thái sử dụng và gia hạn gói.</p></div><SelectInput className="w-48" value={subscriptionFilter} onChange={(event) => setSubscriptionFilter(event.target.value)}>{subscriptionStatuses.map((status) => <option key={status} value={status}>{status === 'all' ? 'Tất cả trạng thái' : statusLabel(status)}</option>)}</SelectInput></div><div className="overflow-x-auto"><table className="w-full min-w-[850px] text-left text-sm"><thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Tenant</th><th className="px-5 py-3">Gói</th><th className="px-5 py-3">Thời hạn</th><th className="px-5 py-3">Trạng thái</th><th className="px-5 py-3 text-right">Thao tác</th></tr></thead><tbody className="divide-y divide-slate-100">{subscriptions.map((subscription) => { const id = valueOf<string>(subscription, 'tenantId', ''); const status = valueOf<string>(subscription, 'status', ''); const pending = status === 'pending_review'; return <tr key={`${id}-${valueOf(subscription, 'id', '')}`}><td className="px-5 py-4 font-semibold">{valueOf(subscription, 'tenantName', id)}</td><td className="px-5 py-4">{valueOf(subscription, 'packageName', valueOf(subscription, 'packageCode', 'Starter'))}</td><td className="px-5 py-4 text-xs text-slate-500">{subscription.endAt ? new Date(subscription.endAt).toLocaleDateString('vi-VN') : 'Không giới hạn'}</td><td className="px-5 py-4"><StatusBadge status={status} /></td><td className="px-5 py-4"><div className="flex justify-end gap-2">{pending ? <><Button variant="secondary" className="px-3 py-2 text-xs" disabled={actionLoading !== ''} onClick={() => handleSubscription(subscription, 'approve')}><CheckCircle2 size={14} /> Duyệt</Button><Button variant="ghost" className="px-3 py-2 text-xs" disabled={actionLoading !== ''} onClick={() => handleSubscription(subscription, 'reject')}>Từ chối</Button></> : <span className="self-center text-xs font-semibold text-emerald-600">Đã kích hoạt</span>}<Button variant="ghost" className="px-3 py-2 text-xs" disabled={actionLoading !== ''} onClick={() => handleSubscription(subscription, 'renew')}>Gia hạn</Button></div></td></tr>; })}</tbody></table></div>{!subscriptions.length && <div className="p-5"><EmptyState title="Chưa có đăng ký" description="Các subscription mới sẽ xuất hiện ở đây." /></div>}</section>}
 
-  const handleRenewSubscription = async (tenantId: string) => {
-    const resolvedTenantId = tenantId?.trim();
-    if (!resolvedTenantId) {
-      setError('Renew failed: missing tenant id.');
-      return;
-    }
-    try {
-      setActionLoadingKey(`renew-${resolvedTenantId}`);
-      await adminApi.subscriptions.renew(resolvedTenantId);
-      await loadAdminData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể gia hạn subscription.');
-    } finally {
-      setActionLoadingKey('');
-    }
-  };
+  {activeTab === 'packages' && <section className="space-y-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold">Gói dịch vụ</h2><p className="mt-1 text-sm text-slate-500">Định nghĩa hạn mức user và giá để cấp cho tenant.</p></div><Button onClick={() => setPackageFormOpen(true)}><Plus size={17} /> Thêm gói</Button></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{packages.map((pkg) => <div key={pkg.id || pkg.code} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-start justify-between"><div><p className="text-xs font-semibold uppercase tracking-wider text-sky-600">{pkg.code}</p><h3 className="mt-2 text-lg font-bold">{pkg.name}</h3></div>{pkg.isDefault && <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-700">Mặc định</span>}</div><div className="mt-6 grid grid-cols-2 gap-3"><div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Giới hạn user</p><p className="mt-1 font-bold">{pkg.maxUsers}</p></div><div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Giá / tháng</p><p className="mt-1 font-bold">{formatCurrency(Number(pkg.priceMonthly || 0))}</p></div></div><div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3"><span className="text-xs text-slate-400">{pkg.status === 'active' ? 'Đang cung cấp' : 'Tạm dừng'}</span><button onClick={() => openEditPackage(pkg)} className="rounded-lg px-3 py-1.5 text-xs font-semibold text-sky-700 hover:bg-sky-50">Sửa gói</button></div></div>)}{!packages.length && <div className="md:col-span-2 xl:col-span-3"><EmptyState title="Chưa có gói dịch vụ" description="Tạo gói đầu tiên để cấp cho khách hàng." /></div>}</div></section>}
 
-  const handleOpenTenantDetail = async (tenantId: string) => {
-    try {
-      const [detail, database] = await Promise.all([
-        adminApi.tenants.get(tenantId),
-        adminApi.tenants.database(tenantId),
-      ]);
-      setActiveTenantDetail({ ...detail, databaseHealth: database });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể tải chi tiết tenant.');
-    }
-  };
+  {activeTab === 'users' && <section className="rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-5"><div><h2 className="font-bold">Tài khoản trên nền tảng</h2><p className="mt-1 text-sm text-slate-500">Theo dõi owner và user của từng tenant.</p></div><div className="flex flex-wrap gap-2"><div className="relative"><Search size={16} className="absolute left-3 top-3 text-slate-400" /><TextInput className="w-60 pl-9" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Tìm tên hoặc email..." /></div><SelectInput className="w-48" value={usersTenantFilter} onChange={(event) => setUsersTenantFilter(event.target.value)}><option value="all">Tất cả tenant</option>{tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</SelectInput></div></div><div className="overflow-x-auto"><table className="w-full min-w-[850px] text-left text-sm"><thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Người dùng</th><th className="px-5 py-3">Tenant</th><th className="px-5 py-3">Vai trò</th><th className="px-5 py-3">Trạng thái</th><th className="px-5 py-3 text-right">Thao tác</th></tr></thead><tbody className="divide-y divide-slate-100">{filteredUsers.map((user) => <tr key={user.id}><td className="px-5 py-4"><p className="font-semibold">{user.name}</p><p className="text-xs text-slate-500">{user.email}</p></td><td className="px-5 py-4 text-slate-600">{tenants.find((tenant) => tenant.id === valueOf(user, 'tenantId', ''))?.name || valueOf(user, 'tenantId', '-')}</td><td className="px-5 py-4"><span className="rounded-lg bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">{user.role}</span></td><td className="px-5 py-4"><StatusBadge status={valueOf(user, 'status', 'active')} /></td><td className="px-5 py-4"><div className="flex justify-end gap-1"><button onClick={() => openEditUser(user)} className="rounded-lg px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-sky-50">Sửa</button><button onClick={() => handleDeleteUser(user)} disabled={actionLoading !== ''} className="rounded-lg px-3 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50">Xóa</button></div></td></tr>)}</tbody></table></div>{!filteredUsers.length && <div className="p-5"><EmptyState title="Chưa có tài khoản" description="Tài khoản owner sẽ được tạo cùng tenant." /></div>}</section>}
 
-  const handleProvisionTenantDatabase = async (tenantId: string) => {
-    try {
-      setActionLoadingKey(`provision-${tenantId}`);
-      await adminApi.tenants.provisionDatabase(tenantId);
-      await handleOpenTenantDetail(tenantId);
-      await loadAdminData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể khởi tạo lại database tenant.');
-    } finally {
-      setActionLoadingKey('');
-    }
-  };
+  {activeTab === 'audit' && <section className="rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="border-b border-slate-100 p-5"><h2 className="font-bold">Nhật ký hệ thống</h2><p className="mt-1 text-sm text-slate-500">Truy vết thao tác quản trị và thay đổi dữ liệu.</p></div><div className="overflow-x-auto"><table className="w-full min-w-[800px] text-left text-sm"><thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Thời gian</th><th className="px-5 py-3">Hành động</th><th className="px-5 py-3">Đối tượng</th><th className="px-5 py-3">Người thực hiện</th></tr></thead><tbody className="divide-y divide-slate-100">{auditLogs.map((log) => <tr key={log.id}><td className="px-5 py-4 text-xs text-slate-500">{log.createdAt ? new Date(log.createdAt).toLocaleString('vi-VN') : '-'}</td><td className="px-5 py-4"><span className="rounded-lg bg-sky-50 px-2 py-1 text-xs font-semibold text-sky-700">{log.action}</span></td><td className="px-5 py-4 text-xs text-slate-600">{log.entityType || '-'} / {log.entityId || '-'}</td><td className="px-5 py-4 text-xs text-slate-500">{log.actorId || log.actorEmail || '-'}</td></tr>)}</tbody></table></div>{!auditLogs.length && <div className="p-5"><EmptyState title="Chưa có nhật ký" description="Các thao tác quản trị sẽ được ghi nhận tại đây." /></div>}</section>}
+  </div></main></div>
 
-  const handleOpenTenantUsers = async (tenant: any) => {
-    try {
-      const users = await adminApi.users.list(tenant.id);
-      setActiveTenantUsers({ tenant, users });
-      setUserForm((prev) => ({ ...prev, tenantId: tenant.id }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể tải danh sách user.');
-    }
-  };
-
-  const handleCreateTenantUser = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!userForm.tenantId || !userForm.name || !userForm.email || !userForm.password) {
-      setError('Vui lòng nhập đủ thông tin user.');
-      return;
-    }
-    if (activeTenantUsersAtLimit) {
-      setError(`Tenant đã dùng đủ ${activeTenantUsers?.tenant.maxUsers} tài khoản theo gói.`);
-      return;
-    }
-    try {
-      setCreatingUser(true);
-      await adminApi.users.create(userForm);
-      if (activeTenantUsers) {
-        const users = await adminApi.users.list(activeTenantUsers.tenant.id);
-        setActiveTenantUsers({ ...activeTenantUsers, users });
-      }
-      setGlobalUsers(await adminApi.users.list());
-      await loadAdminData();
-      setUserForm((prev) => ({ ...prev, name: '', email: '', password: '', phone: '', role: 'cashier' }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể tạo user.');
-    } finally {
-      setCreatingUser(false);
-    }
-  };
-
-  const handleDeleteUser = async (userId: string) => {
-    try {
-      await adminApi.users.delete(userId);
-      if (activeTenantUsers) {
-        const users = await adminApi.users.list(activeTenantUsers.tenant.id);
-        setActiveTenantUsers({ ...activeTenantUsers, users });
-      }
-      setGlobalUsers(await adminApi.users.list());
-      await loadAdminData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể xoá user.');
-    }
-  };
-
-  const openEditUser = (user: any) => {
-    setEditingUserForm({
-      id: user.id,
-      name: user.name || '',
-      email: user.email || '',
-      phone: user.phone || '',
-      role: user.role || 'cashier',
-      status: user.status || 'active',
-      password: '',
-    });
-  };
-
-  const closeEditUser = () => {
-    setEditingUserForm({
-      id: '',
-      name: '',
-      email: '',
-      phone: '',
-      role: 'cashier',
-      status: 'active',
-      password: '',
-    });
-  };
-
-  const handleUpdateUser = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!editingUserForm.id || !editingUserForm.name || !editingUserForm.email) {
-      setError('Thiếu thông tin user để cập nhật.');
-      return;
-    }
-    try {
-      setUpdatingUser(true);
-      const payload: any = {
-        name: editingUserForm.name,
-        email: editingUserForm.email,
-        phone: editingUserForm.phone,
-        role: editingUserForm.role,
-        status: editingUserForm.status,
-      };
-      if (editingUserForm.password.trim()) {
-        payload.password = editingUserForm.password.trim();
-      }
-      await adminApi.users.update(editingUserForm.id, payload);
-      if (activeTenantUsers) {
-        const users = await adminApi.users.list(activeTenantUsers.tenant.id);
-        setActiveTenantUsers({ ...activeTenantUsers, users });
-      }
-      setGlobalUsers(await adminApi.users.list());
-      await loadAdminData();
-      closeEditUser();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể cập nhật user.');
-    } finally {
-      setUpdatingUser(false);
-    }
-  };
-
-  const handleAssignPackage = async (tenantId: string, packageCode: string) => {
-    try {
-      setActionLoadingKey(`package-${tenantId}`);
-      await adminApi.tenants.update(tenantId, { packageCode });
-      await loadAdminData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể cập nhật gói.');
-    } finally {
-      setActionLoadingKey('');
-    }
-  };
-
-  const handleCreatePackage = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!packageForm.code || !packageForm.name || packageForm.maxUsers <= 0 || packageForm.priceMonthly <= 0) {
-      setError('Vui lòng nhập đầy đủ thông tin gói.');
-      return;
-    }
-    try {
-      setSavingPackage(true);
-      await adminApi.packages.create(packageForm);
-      const pkgList = await adminApi.packages.list();
-      setPackages(pkgList);
-      setPackageForm({ code: '', name: '', maxUsers: 1, priceMonthly: 150000, isDefault: false });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể tạo package.');
-    } finally {
-      setSavingPackage(false);
-    }
-  };
-
-  const handleSetDefaultPackage = async (pkg: any) => {
-    try {
-      await adminApi.packages.update(pkg.id, { isDefault: true });
-      const pkgList = await adminApi.packages.list();
-      setPackages(pkgList);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể đặt gói mặc định.');
-    }
-  };
-
-  const handleDeletePackage = async (pkg: any) => {
-    try {
-      await adminApi.packages.delete(pkg.id);
-      const pkgList = await adminApi.packages.list();
-      setPackages(pkgList);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể xoá package.');
-    }
-  };
-
-  const filteredTenants = useMemo(() => {
-    const term = normalizeSearchText(searchTerm);
-    if (!term) return tenants;
-    return tenants.filter((tenant) =>
-      normalizeSearchText(tenant.name).includes(term) ||
-      normalizeSearchText(tenant.id).includes(term) ||
-      normalizeSearchText(tenant.email).includes(term) ||
-      normalizeSearchText(tenant.phone).includes(term)
-    );
-  }, [searchTerm, tenants]);
-
-  const filteredSubscriptions = useMemo(() => {
-    const term = normalizeSearchText(searchTerm);
-    if (!term) return subscriptions;
-    return subscriptions.filter((sub) =>
-      normalizeSearchText(sub.tenantName).includes(term) ||
-      normalizeSearchText(sub.tenantId).includes(term)
-    );
-  }, [searchTerm, subscriptions]);
-
-  const filteredGlobalUsers = useMemo(() => {
-    const usersByTenant = usersTenantFilter === 'all'
-      ? globalUsers
-      : globalUsers.filter((user) => user.tenantId === usersTenantFilter);
-    const term = normalizeSearchText(searchTerm);
-    if (!term) return usersByTenant;
-    return usersByTenant.filter((user) =>
-      normalizeSearchText(user.name).includes(term) ||
-      normalizeSearchText(user.email).includes(term) ||
-      normalizeSearchText(user.tenantName).includes(term) ||
-      normalizeSearchText(user.role).includes(term)
-    );
-  }, [globalUsers, usersTenantFilter, searchTerm]);
-
-  const filteredAuditLogs = useMemo(() => {
-    const term = normalizeSearchText(searchTerm);
-    if (!term) return auditLogs;
-    return auditLogs.filter((log) =>
-      normalizeSearchText(log.action).includes(term) ||
-      normalizeSearchText(log.entityType).includes(term) ||
-      normalizeSearchText(log.entityId).includes(term) ||
-      normalizeSearchText(log.tenantId).includes(term)
-    );
-  }, [searchTerm, auditLogs]);
-
-  const overviewInsights = useMemo(() => {
-    const activeTenants = tenants.filter((t) => t.status === 'active');
-    const trialTenants = tenants.filter((t) => t.subscriptionStatus === 'trial');
-    const payingTenants = tenants.filter((t) => t.subscriptionStatus === 'active');
-    const pendingReview = subscriptions.filter((s) => s.status === 'pending_review').length;
-    const expiredTenants = tenants.filter((t) => ['expired', 'cancelled'].includes(t.subscriptionStatus)).length;
-    const totalMrr = payingTenants.reduce((sum, t) => sum + (t.packagePriceMonthly || t.subscriptionPriceMonthly || 0), 0);
-    const arpu = payingTenants.length ? Math.round(totalMrr / payingTenants.length) : 0;
-    const seatUtilization = tenants.length
-      ? Math.round((tenants.reduce((sum, t) => sum + (t.userCount || 0), 0) / Math.max(1, tenants.reduce((sum, t) => sum + (t.maxUsers || 1), 0))) * 100)
-      : 0;
-
-    const packageMixMap = tenants.reduce<Record<string, { name: string; tenants: number; mrr: number }>>((acc, t) => {
-      const code = t.packageCode || 'starter_1';
-      if (!acc[code]) {
-        acc[code] = { name: t.packageName || code, tenants: 0, mrr: 0 };
-      }
-      acc[code].tenants += 1;
-      acc[code].mrr += (t.packagePriceMonthly || t.subscriptionPriceMonthly || 0);
-      return acc;
-    }, {});
-
-    const packageMix = (Object.entries(packageMixMap) as Array<[string, { name: string; tenants: number; mrr: number }]>)
-      .map(([code, value]) => ({ code, name: value.name, tenants: value.tenants, mrr: value.mrr }))
-      .sort((a, b) => b.tenants - a.tenants);
-
-    const topMerchants = [...tenants]
-      .sort((a, b) => (b.invoiceCount || 0) - (a.invoiceCount || 0))
-      .slice(0, 5)
-      .map((t) => ({
-        id: t.id,
-        name: t.name,
-        packageName: t.packageName || 'Starter 1',
-        mrr: t.packagePriceMonthly || t.subscriptionPriceMonthly || 0,
-        invoiceCount: t.invoiceCount || 0,
-        userRatio: `${t.userCount || 0}/${t.maxUsers || 1}`,
-        status: t.subscriptionStatus || 'trial',
-      }));
-
-    const countBy = (values: string[]) => {
-      const map = values.reduce<Record<string, number>>((acc, value) => {
-        const key = value?.trim() || 'unknown';
-        acc[key] = (acc[key] || 0) + 1;
-        return acc;
-      }, {});
-      return Object.entries(map)
-        .map(([label, count]) => ({ label, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 6);
-    };
-
-    const insightsSource = tenants.map((t) => t.settings?.insights || {});
-    const industryMix = countBy(insightsSource.map((i) => i.industry || 'Chưa khai báo'));
-    const businessModelMix = countBy(insightsSource.map((i) => i.businessModel || 'Chưa khai báo'));
-    const staffSizeMix = countBy(insightsSource.map((i) => i.staffSize || 'Chưa khai báo'));
-    const goalMix = countBy(insightsSource.map((i) => i.primaryGoal || 'Chưa khai báo'));
-    const channelMix = countBy(
-      insightsSource.flatMap((i) => (Array.isArray(i.salesChannels) && i.salesChannels.length ? i.salesChannels : ['Chưa khai báo']))
-    );
-
-    return {
-      activeTenants: activeTenants.length,
-      trialTenants: trialTenants.length,
-      payingTenants: payingTenants.length,
-      pendingReview,
-      expiredTenants,
-      totalMrr,
-      arpu,
-      seatUtilization,
-      packageMix,
-      topMerchants,
-      industryMix,
-      businessModelMix,
-      staffSizeMix,
-      goalMix,
-      channelMix,
-    };
-  }, [tenants, subscriptions]);
-
-  if (!adminUser) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-white">
-        <form onSubmit={handleLogin} className="w-full max-w-md space-y-6 rounded-lg border border-white/10 bg-white/5 p-8 shadow-2xl">
-          <div className="space-y-2 text-center">
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-lg bg-sky-600">
-              <ShieldCheck className="h-8 w-8" />
-            </div>
-            <h1 className="text-2xl font-black uppercase italic tracking-tight">Admin CPanel</h1>
-            <p className="text-sm font-bold text-slate-400">Quản trị tenant, subscription và audit log.</p>
-          </div>
-          <Input type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="h-14 rounded-lg border-white/10 bg-white/10 font-bold text-white" placeholder="Nhập email admin" required />
-          <Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} className="h-14 rounded-lg border-white/10 bg-white/10 font-bold text-white" placeholder="Mật khẩu" required />
-          <Button type="submit" className="h-14 w-full rounded-lg bg-sky-600 font-black uppercase tracking-widest hover:bg-sky-700">
-            {loading ? 'Đang kiểm tra...' : 'Đăng nhập'}
-          </Button>
-          {error && <p className="text-center text-sm font-bold text-red-400">{error}</p>}
-        </form>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex h-screen bg-slate-900 text-white overflow-hidden">
-      {activeTenantDetail && (
-        <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-2xl rounded-lg border border-white/10 bg-slate-950 p-6 space-y-5">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-black uppercase tracking-tight">Tenant Detail</h3>
-              <Button variant="ghost" className="h-9 px-3 text-xs" onClick={() => setActiveTenantDetail(null)}>Close</Button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-              <div><p className="text-slate-500 text-xs uppercase">Name</p><p className="font-bold">{activeTenantDetail.name || '-'}</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Email</p><p className="font-bold">{activeTenantDetail.email || '-'}</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Phone</p><p className="font-bold">{activeTenantDetail.phone || '-'}</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Address</p><p className="font-bold">{activeTenantDetail.address || '-'}</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Status</p><p className="font-bold uppercase">{activeTenantDetail.status || '-'}</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Subscription</p><p className="font-bold uppercase">{activeTenantDetail.subscriptionStatus || '-'}</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Plan</p><p className="font-bold">{activeTenantDetail.subscriptionPlan || '-'}</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Price</p><p className="font-bold">{formatCurrency(activeTenantDetail.subscriptionPriceMonthly || 150000)}/tháng</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Users</p><p className="font-bold">{activeTenantDetail.users?.length || 0}</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Created</p><p className="font-bold">{activeTenantDetail.createdAt ? new Date(activeTenantDetail.createdAt).toLocaleString('vi-VN') : '-'}</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Industry</p><p className="font-bold">{activeTenantDetail.settings?.insights?.industry || '-'}</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Business model</p><p className="font-bold">{activeTenantDetail.settings?.insights?.businessModel || '-'}</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Staff size</p><p className="font-bold">{activeTenantDetail.settings?.insights?.staffSize || '-'}</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Monthly orders est.</p><p className="font-bold">{activeTenantDetail.settings?.insights?.monthlyOrdersEstimate || '-'}</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Database</p><p className="font-bold uppercase">{activeTenantDetail.databaseHealth?.integrity || activeTenantDetail.databaseStatus || '-'}</p></div>
-              <div><p className="text-slate-500 text-xs uppercase">Schema version</p><p className="font-bold">{activeTenantDetail.databaseHealth?.schemaVersion ?? '-'}</p></div>
-              <div className="md:col-span-2 flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-3">
-                <span className="text-xs text-slate-400">{activeTenantDetail.databaseHealth?.sizeBytes ? `${Math.round(activeTenantDetail.databaseHealth.sizeBytes / 1024)} KB` : 'Chưa có file tenant'}</span>
-                <Button type="button" variant="ghost" className="h-8 px-3 text-xs" onClick={() => handleProvisionTenantDatabase(activeTenantDetail.id)} disabled={actionLoadingKey === `provision-${activeTenantDetail.id}`}>
-                  {actionLoadingKey === `provision-${activeTenantDetail.id}` ? 'Đang kiểm tra...' : 'Provision / kiểm tra lại'}
-                </Button>
-              </div>
-              <div className="md:col-span-2"><p className="text-slate-500 text-xs uppercase">Sales channels</p><p className="font-bold">{Array.isArray(activeTenantDetail.settings?.insights?.salesChannels) && activeTenantDetail.settings?.insights?.salesChannels.length ? activeTenantDetail.settings?.insights?.salesChannels.join(', ') : '-'}</p></div>
-              <div className="md:col-span-2"><p className="text-slate-500 text-xs uppercase">Primary goal</p><p className="font-bold">{activeTenantDetail.settings?.insights?.primaryGoal || '-'}</p></div>
-            </div>
-          </div>
-        </div>
-      )}
-      {activeTenantUsers && (
-        <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-4xl rounded-lg border border-white/10 bg-slate-950 p-6 space-y-5">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-lg font-black uppercase tracking-tight">Tenant Users</h3>
-                <p className="text-xs text-slate-400">
-                  {activeTenantUsers.tenant.name} · {activeTenantUsers.users.length}/{activeTenantUsers.tenant.maxUsers || '∞'} tài khoản
-                </p>
-              </div>
-              <Button variant="ghost" className="h-9 px-3 text-xs" onClick={() => setActiveTenantUsers(null)}>Close</Button>
-            </div>
-
-            {activeTenantUsersAtLimit ? (
-              <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-200">
-                Tenant đã dùng đủ {activeTenantUsers.tenant.maxUsers} tài khoản, bao gồm owner. Hãy đổi package trước khi thêm user.
-              </div>
-            ) : (
-              <form onSubmit={handleCreateTenantUser} className="grid grid-cols-1 gap-3 md:grid-cols-6">
-                <Input value={userForm.name} onChange={(e) => setUserForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Tên user" className="h-10 bg-white/5 border-white/10 text-white" />
-                <Input type="email" value={userForm.email} onChange={(e) => setUserForm((prev) => ({ ...prev, email: e.target.value }))} placeholder="Email" className="h-10 bg-white/5 border-white/10 text-white" />
-                <Input value={userForm.phone} onChange={(e) => setUserForm((prev) => ({ ...prev, phone: e.target.value }))} placeholder="Phone" className="h-10 bg-white/5 border-white/10 text-white" />
-                <Input type="password" value={userForm.password} onChange={(e) => setUserForm((prev) => ({ ...prev, password: e.target.value }))} placeholder="Password" className="h-10 bg-white/5 border-white/10 text-white" />
-                <select value={userForm.role} onChange={(e) => setUserForm((prev) => ({ ...prev, role: e.target.value }))} className="h-10 rounded-lg bg-white/5 border border-white/10 px-3 text-sm">
-                  <option value="manager">manager</option>
-                  <option value="cashier">cashier</option>
-                  <option value="owner">owner</option>
-                </select>
-                <Button type="submit" disabled={creatingUser} className="h-10 rounded-lg bg-sky-600 hover:bg-sky-700 text-xs font-black uppercase">
-                  {creatingUser ? 'Creating...' : 'Add user'}
-                </Button>
-              </form>
-            )}
-
-            <div className="max-h-[340px] overflow-y-auto border border-white/10 rounded-lg">
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="border-b border-white/10 text-[10px] uppercase tracking-widest text-slate-500">
-                    <th className="px-4 py-3">Name</th><th className="px-4 py-3">Email</th><th className="px-4 py-3">Role</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {activeTenantUsers.users.map((user) => (
-                    <tr key={user.id}>
-                      <td className="px-4 py-3 text-sm">{user.name}</td>
-                      <td className="px-4 py-3 text-sm text-slate-300">{user.email}</td>
-                      <td className="px-4 py-3 text-xs uppercase text-sky-300">{user.role}</td>
-                      <td className="px-4 py-3 text-xs uppercase text-slate-300">{user.status}</td>
-                      <td className="px-4 py-3 flex gap-2">
-                        <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => openEditUser(user)}>Edit</Button>
-                        <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => handleDeleteUser(user.id)}>Delete</Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-      {editingUserForm.id && (
-        <div className="fixed inset-0 z-[130] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <form onSubmit={handleUpdateUser} className="w-full max-w-xl rounded-lg border border-white/10 bg-slate-950 p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-black uppercase tracking-tight">Edit User / Reset Password</h3>
-              <Button type="button" variant="ghost" className="h-8 px-2 text-xs" onClick={closeEditUser}>Close</Button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Input value={editingUserForm.name} onChange={(e) => setEditingUserForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Name" className="h-10 bg-white/5 border-white/10 text-white" />
-              <Input type="email" value={editingUserForm.email} onChange={(e) => setEditingUserForm((prev) => ({ ...prev, email: e.target.value }))} placeholder="Email" className="h-10 bg-white/5 border-white/10 text-white" />
-              <Input value={editingUserForm.phone} onChange={(e) => setEditingUserForm((prev) => ({ ...prev, phone: e.target.value }))} placeholder="Phone" className="h-10 bg-white/5 border-white/10 text-white" />
-              <select value={editingUserForm.role} onChange={(e) => setEditingUserForm((prev) => ({ ...prev, role: e.target.value }))} className="h-10 rounded-lg bg-white/5 border border-white/10 px-3 text-sm">
-                <option value="owner">owner</option>
-                <option value="manager">manager</option>
-                <option value="cashier">cashier</option>
-              </select>
-              <select value={editingUserForm.status} onChange={(e) => setEditingUserForm((prev) => ({ ...prev, status: e.target.value }))} className="h-10 rounded-lg bg-white/5 border border-white/10 px-3 text-sm">
-                <option value="active">active</option>
-                <option value="inactive">inactive</option>
-              </select>
-              <Input
-                type="password"
-                value={editingUserForm.password}
-                onChange={(e) => setEditingUserForm((prev) => ({ ...prev, password: e.target.value }))}
-                placeholder="New password (optional)"
-                className="h-10 bg-white/5 border-white/10 text-white"
-              />
-            </div>
-            <p className="text-xs text-slate-400">To reset password, enter a new password above and save.</p>
-            <Button type="submit" disabled={updatingUser} className="h-10 rounded-lg bg-sky-600 hover:bg-sky-700 text-xs font-black uppercase">
-              {updatingUser ? 'Updating...' : 'Save Changes'}
-            </Button>
-          </form>
-        </div>
-      )}
-
-      <div className="w-72 bg-slate-950 border-r border-white/5 flex flex-col p-6 space-y-6">
-        <div className="flex items-center gap-3 px-2">
-          <div className="h-10 w-10 bg-sky-600 rounded-lg flex items-center justify-center text-white shadow-lg shadow-sky-600/20">
-            <ShieldCheck className="h-6 w-6" />
-          </div>
-          <span className="font-black text-xl tracking-tighter uppercase italic">ADMIN CPANEL</span>
-        </div>
-        <nav className="flex-1 space-y-1">
-          {[
-            { id: 'overview' as const, label: 'Overview', icon: LayoutDashboard },
-            { id: 'tenants' as const, label: 'Tenants', icon: Users },
-            { id: 'subscriptions' as const, label: 'Subscriptions', icon: CreditCard },
-            { id: 'packages' as const, label: 'Packages', icon: CreditCard },
-            { id: 'users' as const, label: 'Users', icon: Users },
-            { id: 'audit' as const, label: 'Audit Logs', icon: ShieldCheck },
-          ].map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id)}
-              className={`w-full flex items-center gap-4 px-4 py-4 rounded-lg transition-all font-black text-xs uppercase tracking-widest ${
-                activeTab === item.id ? 'bg-sky-600 text-white shadow-lg shadow-sky-600/20' : 'text-slate-500 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              <item.icon className="h-5 w-5" />
-              {item.label}
-            </button>
-          ))}
-        </nav>
-      </div>
-
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-24 px-10 border-b border-white/5 flex items-center justify-between bg-slate-950/50 backdrop-blur-xl gap-4">
-          <div className="relative w-full max-w-xl">
-            <Search className="absolute left-5 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-500" />
-            <Input
-              placeholder="Search tenant, subscription, action..."
-              className="h-14 pl-14 rounded-lg bg-white/5 border-white/10 text-white placeholder:text-slate-500 font-bold focus:ring-sky-500/20"
-              value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
-            />
-          </div>
-          <div className="flex items-center gap-3">
-            <Button onClick={loadAdminData} variant="ghost" className="h-11 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300">
-              <RefreshCw className="h-4 w-4 mr-2" /> Refresh
-            </Button>
-            <div className="text-right">
-              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Logged in as</p>
-              <p className="text-sm font-black text-sky-400 uppercase italic">{adminUser.name}</p>
-            </div>
-          </div>
-        </header>
-
-        <main className="flex-1 overflow-y-auto p-10 space-y-8">
-          {error && <p className="text-sm font-bold text-red-400">{error}</p>}
-
-          {activeTab === 'overview' && (
-            <>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
-                {[
-                  { label: 'MRR (Package)', val: formatCurrency(overviewInsights.totalMrr), hint: 'Doanh thu gói theo tháng', color: 'text-emerald-400', icon: TrendingUp },
-                  { label: 'ARPU', val: formatCurrency(overviewInsights.arpu), hint: 'Doanh thu TB / merchant trả phí', color: 'text-sky-400', icon: BarChart3 },
-                  { label: 'Paying Merchants', val: overviewInsights.payingTenants, hint: `${overviewInsights.trialTenants} trial • ${overviewInsights.pendingReview} chờ duyệt`, color: 'text-blue-400', icon: Store },
-                  { label: 'Seat Utilization', val: `${overviewInsights.seatUtilization}%`, hint: 'Mức dùng user seat toàn hệ thống', color: 'text-amber-400', icon: Target },
-                ].map((item) => (
-                  <div key={item.label} className="p-5 bg-slate-950 border border-white/5 rounded-lg shadow-sm">
-                    <div className="flex items-center justify-between mb-3">
-                      <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{item.label}</p>
-                      <item.icon className={`h-4 w-4 ${item.color}`} />
-                    </div>
-                    <p className={`text-2xl font-black tracking-tight ${item.color}`}>{item.val}</p>
-                    <p className="text-[11px] text-slate-400 mt-2">{item.hint}</p>
-                  </div>
-                ))}
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-                <div className="lg:col-span-2 bg-slate-950 rounded-lg border border-white/10 overflow-hidden">
-                  <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between">
-                    <h3 className="text-sm font-black uppercase tracking-widest text-slate-300">Top Merchants Insight</h3>
-                    <span className="text-[10px] text-slate-500">Theo số đơn & gói hiện tại</span>
-                  </div>
-                  <table className="w-full text-left">
-                    <thead>
-                      <tr className="border-b border-white/5 text-[10px] uppercase tracking-widest text-slate-500">
-                        <th className="px-6 py-3">Merchant</th>
-                        <th className="px-6 py-3">Package</th>
-                        <th className="px-6 py-3">MRR</th>
-                        <th className="px-6 py-3">Orders</th>
-                        <th className="px-6 py-3">Users</th>
-                        <th className="px-6 py-3">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5">
-                      {overviewInsights.topMerchants.map((m) => (
-                        <tr key={m.id}>
-                          <td className="px-6 py-3 text-sm font-bold text-white">{m.name}</td>
-                          <td className="px-6 py-3 text-xs text-slate-300">{m.packageName}</td>
-                          <td className="px-6 py-3 text-xs text-emerald-300">{formatCurrency(m.mrr)}</td>
-                          <td className="px-6 py-3 text-xs text-sky-300">{m.invoiceCount}</td>
-                          <td className="px-6 py-3 text-xs text-slate-300">{m.userRatio}</td>
-                          <td className="px-6 py-3 text-xs uppercase text-amber-300">{m.status}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="bg-slate-950 rounded-lg border border-white/10 p-5 space-y-4">
-                  <h3 className="text-sm font-black uppercase tracking-widest text-slate-300">Package Mix</h3>
-                  <div className="space-y-3">
-                    {overviewInsights.packageMix.map((pkg) => (
-                      <div key={pkg.code} className="rounded-lg bg-white/5 border border-white/5 p-3">
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm font-bold text-white">{pkg.name}</p>
-                          <p className="text-xs text-slate-400">{pkg.tenants} merchants</p>
-                        </div>
-                        <p className="text-xs text-emerald-300 mt-1">{formatCurrency(pkg.mrr)}/tháng</p>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="pt-2 border-t border-white/10 text-xs text-slate-400 space-y-1">
-                    <p>Active: <span className="text-sky-300 font-bold">{overviewInsights.activeTenants}</span></p>
-                    <p>Expired/Cancelled: <span className="text-red-300 font-bold">{overviewInsights.expiredTenants}</span></p>
-                    <p>Pending review: <span className="text-amber-300 font-bold">{overviewInsights.pendingReview}</span></p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                {[
-                  { title: 'Industry Mix', data: overviewInsights.industryMix },
-                  { title: 'Business Model Mix', data: overviewInsights.businessModelMix },
-                  { title: 'Staff Size Mix', data: overviewInsights.staffSizeMix },
-                  { title: 'Primary Goal Mix', data: overviewInsights.goalMix },
-                  { title: 'Sales Channel Mix', data: overviewInsights.channelMix },
-                ].map((block) => (
-                  <div key={block.title} className="bg-slate-950 rounded-lg border border-white/10 p-5 space-y-3">
-                    <h3 className="text-sm font-black uppercase tracking-widest text-slate-300">{block.title}</h3>
-                    <div className="space-y-2">
-                      {block.data.map((item) => (
-                        <div key={`${block.title}-${item.label}`} className="flex items-center justify-between rounded-lg bg-white/5 border border-white/5 p-3">
-                          <p className="text-sm text-white">{item.label}</p>
-                          <p className="text-xs font-black text-sky-300">{item.count} tenants</p>
-                        </div>
-                      ))}
-                      {block.data.length === 0 && (
-                        <p className="text-xs text-slate-500">No data yet.</p>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <form onSubmit={handleCreateTenant} className="bg-slate-950 rounded-lg border border-white/10 p-6 space-y-4">
-                <h3 className="text-lg font-black uppercase italic tracking-tight">Tạo Tenant Mới</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <Input value={createForm.tenantName} onChange={(e) => setCreateForm(prev => ({ ...prev, tenantName: e.target.value }))} placeholder="Tên tenant" className="h-11 rounded-lg bg-white/5 border-white/10 text-white" />
-                  <Input value={createForm.phone} onChange={(e) => setCreateForm(prev => ({ ...prev, phone: e.target.value }))} placeholder="Số điện thoại" className="h-11 rounded-lg bg-white/5 border-white/10 text-white" />
-                  <Input value={createForm.address} onChange={(e) => setCreateForm(prev => ({ ...prev, address: e.target.value }))} placeholder="Địa chỉ" className="h-11 rounded-lg bg-white/5 border-white/10 text-white" />
-                  <Input value={createForm.ownerName} onChange={(e) => setCreateForm(prev => ({ ...prev, ownerName: e.target.value }))} placeholder="Tên owner" className="h-11 rounded-lg bg-white/5 border-white/10 text-white" />
-                  <Input value={createForm.ownerEmail} onChange={(e) => setCreateForm(prev => ({ ...prev, ownerEmail: e.target.value }))} placeholder="Email owner" className="h-11 rounded-lg bg-white/5 border-white/10 text-white" />
-                  <Input type="password" value={createForm.ownerPassword} onChange={(e) => setCreateForm(prev => ({ ...prev, ownerPassword: e.target.value }))} placeholder="Mật khẩu owner" className="h-11 rounded-lg bg-white/5 border-white/10 text-white" />
-                </div>
-                <Button type="submit" className="h-11 rounded-lg bg-sky-600 hover:bg-sky-700 font-black uppercase tracking-widest">Tạo tenant</Button>
-              </form>
-            </>
-          )}
-
-          {activeTab === 'tenants' && (
-            <div className="bg-slate-950 rounded-lg border border-white/10 overflow-hidden">
-              <div className="p-6 border-b border-white/5 flex items-center gap-3">
-                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="h-10 rounded-lg bg-white/5 border border-white/10 px-3 text-xs font-black uppercase tracking-widest text-slate-300">
-                  {tenantStatuses.map((status) => <option key={status} value={status} className="bg-slate-950">{status}</option>)}
-                </select>
-              </div>
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="border-b border-white/5 text-[10px] uppercase tracking-widest text-slate-500">
-                    <th className="px-6 py-4">Tenant</th><th className="px-6 py-4">Email</th><th className="px-6 py-4">Status</th><th className="px-6 py-4">Tài khoản</th><th className="px-6 py-4">Package</th><th className="px-6 py-4">Subscription</th><th className="px-6 py-4">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {filteredTenants.map((tenant) => (
-                    <tr key={tenant.id}>
-                      <td className="px-6 py-4">
-                        <p className="font-black text-white uppercase">{tenant.name}</p>
-                        <p className="text-xs text-slate-500">{tenant.id}</p>
-                      </td>
-                      <td className="px-6 py-4 text-xs text-slate-300">{tenant.email || '-'}</td>
-                      <td className="px-6 py-4"><span className="text-xs font-black text-sky-400 uppercase">{tenant.status}</span></td>
-                      <td className="px-6 py-4 text-xs text-slate-300">{tenant.userCount || 0}/{tenant.maxUsers || '∞'}</td>
-                      <td className="px-6 py-4">
-                        <select
-                          defaultValue={tenant.packageCode || 'starter_1'}
-                          onChange={(e) => handleAssignPackage(tenant.id, e.target.value)}
-                          className="h-9 rounded-lg bg-white/5 border border-white/10 px-2 text-[11px] text-slate-300"
-                          disabled={actionLoadingKey === `package-${tenant.id}`}
-                        >
-                          {packages.map((pkg) => (
-                            <option key={pkg.code} value={pkg.code} className="bg-slate-950">
-                              {pkg.name} · {pkg.maxUsers} tài khoản · {formatCurrency(pkg.priceMonthly)}/tháng
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="px-6 py-4">
-                        <p className="text-xs font-black text-amber-300 uppercase">{tenant.subscriptionStatus || 'trial'}</p>
-                        <p className="text-xs text-slate-500">{tenant.subscriptionPlan || 'yearly'} · {formatCurrency(tenant.subscriptionPriceMonthly || 150000)}/tháng</p>
-                      </td>
-                      <td className="px-6 py-4 flex gap-2">
-                        <Button variant="ghost" className="h-9 px-3 rounded-lg text-xs" onClick={() => handleTenantStatus(tenant.id, tenant.status === 'suspended' ? 'active' : 'suspended')}>
-                          {tenant.status === 'suspended' ? 'Activate' : 'Suspend'}
-                        </Button>
-                        <Button variant="ghost" className="h-9 px-3 rounded-lg text-xs" onClick={() => handleRenewSubscription(tenant.id)}>
-                          Activate 1y
-                        </Button>
-                        <Button variant="ghost" className="h-9 px-3 rounded-lg text-xs" onClick={() => handleOpenTenantUsers(tenant)}>Users</Button>
-                        <Button variant="ghost" className="h-9 px-3 rounded-lg text-xs" onClick={() => handleOpenTenantDetail(tenant.id)}><ExternalLink className="h-4 w-4" /></Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {activeTab === 'users' && (
-            <div className="bg-slate-950 rounded-lg border border-white/10 overflow-hidden">
-              <div className="p-6 border-b border-white/5 flex items-center gap-3">
-                <select
-                  value={usersTenantFilter}
-                  onChange={(e) => setUsersTenantFilter(e.target.value)}
-                  className="h-10 rounded-lg bg-white/5 border border-white/10 px-3 text-xs font-black uppercase tracking-widest text-slate-300"
-                >
-                  <option value="all" className="bg-slate-950">all tenants</option>
-                  {tenants.map((tenant) => (
-                    <option key={tenant.id} value={tenant.id} className="bg-slate-950">
-                      {tenant.name}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-slate-400">
-                  {filteredGlobalUsers.length} users
-                </p>
-              </div>
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="border-b border-white/5 text-[10px] uppercase tracking-widest text-slate-500">
-                    <th className="px-6 py-4">User</th><th className="px-6 py-4">Role</th><th className="px-6 py-4">Status</th><th className="px-6 py-4">Tenant</th><th className="px-6 py-4">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {filteredGlobalUsers.map((user) => (
-                    <tr key={user.id}>
-                      <td className="px-6 py-4">
-                        <p className="text-sm font-bold text-white">{user.name || '-'}</p>
-                        <p className="text-xs text-slate-400">{user.email || '-'}</p>
-                      </td>
-                      <td className="px-6 py-4 text-xs font-black uppercase text-sky-300">{user.role || '-'}</td>
-                      <td className="px-6 py-4 text-xs uppercase text-slate-300">{user.status || '-'}</td>
-                      <td className="px-6 py-4">
-                        <p className="text-sm text-white">{user.tenantName || '-'}</p>
-                        <p className="text-xs text-slate-500">{user.tenantEmail || user.tenantId}</p>
-                      </td>
-                      <td className="px-6 py-4 flex gap-2">
-                        <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => openEditUser(user)}>Edit</Button>
-                        <Button
-                          variant="ghost"
-                          className="h-8 px-2 text-xs"
-                          onClick={() => {
-                            const tenantRef = tenants.find((tenant) => tenant.id === user.tenantId);
-                            if (tenantRef) handleOpenTenantUsers(tenantRef);
-                          }}
-                        >
-                          Tenant Users
-                        </Button>
-                        <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => handleDeleteUser(user.id)}>Delete</Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {activeTab === 'packages' && (
-            <div className="space-y-6">
-              <form onSubmit={handleCreatePackage} className="bg-slate-950 rounded-lg border border-white/10 p-6 grid grid-cols-1 md:grid-cols-6 gap-3">
-                <Input value={packageForm.code} onChange={(e) => setPackageForm((prev) => ({ ...prev, code: e.target.value }))} placeholder="code (vd: starter_1)" className="h-10 rounded-lg bg-white/5 border-white/10 text-white" />
-                <Input value={packageForm.name} onChange={(e) => setPackageForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Tên gói" className="h-10 rounded-lg bg-white/5 border-white/10 text-white" />
-                <Input type="number" min={1} value={packageForm.maxUsers} onChange={(e) => setPackageForm((prev) => ({ ...prev, maxUsers: Number(e.target.value) }))} placeholder="Số tài khoản tối đa" className="h-10 rounded-lg bg-white/5 border-white/10 text-white" />
-                <Input type="number" min={1} value={packageForm.priceMonthly} onChange={(e) => setPackageForm((prev) => ({ ...prev, priceMonthly: Number(e.target.value) }))} placeholder="Giá/tháng" className="h-10 rounded-lg bg-white/5 border-white/10 text-white" />
-                <label className="h-10 rounded-lg border border-white/10 bg-white/5 px-3 flex items-center gap-2 text-xs text-slate-300">
-                  <input type="checkbox" checked={packageForm.isDefault} onChange={(e) => setPackageForm((prev) => ({ ...prev, isDefault: e.target.checked }))} />
-                  Default
-                </label>
-                <Button type="submit" disabled={savingPackage} className="h-10 rounded-lg bg-sky-600 hover:bg-sky-700 text-xs font-black uppercase">
-                  {savingPackage ? 'Saving...' : 'Create Package'}
-                </Button>
-              </form>
-
-              <div className="bg-slate-950 rounded-lg border border-white/10 overflow-hidden">
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="border-b border-white/5 text-[10px] uppercase tracking-widest text-slate-500">
-                      <th className="px-6 py-4">Code</th><th className="px-6 py-4">Name</th><th className="px-6 py-4">Tài khoản tối đa</th><th className="px-6 py-4">Price</th><th className="px-6 py-4">Default</th><th className="px-6 py-4">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/5">
-                    {packages.map((pkg) => (
-                      <tr key={pkg.id}>
-                        <td className="px-6 py-4 text-xs text-slate-300">{pkg.code}</td>
-                        <td className="px-6 py-4 text-sm font-bold">{pkg.name}</td>
-                        <td className="px-6 py-4 text-sm text-sky-300">{pkg.maxUsers} tài khoản</td>
-                        <td className="px-6 py-4 text-sm text-amber-300">{formatCurrency(pkg.priceMonthly)}/tháng</td>
-                        <td className="px-6 py-4 text-xs">{pkg.isDefault ? '✅' : '-'}</td>
-                        <td className="px-6 py-4 flex gap-2">
-                          {!pkg.isDefault && (
-                            <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => handleSetDefaultPackage(pkg)}>Set Default</Button>
-                          )}
-                          {!pkg.isDefault && (
-                            <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => handleDeletePackage(pkg)}>Delete</Button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'subscriptions' && (
-            <div className="bg-slate-950 rounded-lg border border-white/10 overflow-hidden">
-              <div className="p-6 border-b border-white/5">
-                <select value={subscriptionFilter} onChange={(e) => setSubscriptionFilter(e.target.value)} className="h-10 rounded-lg bg-white/5 border border-white/10 px-3 text-xs font-black uppercase tracking-widest text-slate-300">
-                  {subscriptionStatuses.map((status) => <option key={status} value={status} className="bg-slate-950">{status}</option>)}
-                </select>
-              </div>
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="border-b border-white/5 text-[10px] uppercase tracking-widest text-slate-500">
-                    <th className="px-6 py-4">Tenant</th><th className="px-6 py-4">Plan</th><th className="px-6 py-4">Status</th><th className="px-6 py-4">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {filteredSubscriptions.map((sub) => (
-                    <tr key={sub.id}>
-                      <td className="px-6 py-4">
-                        <p className="font-black text-white">{sub.tenantName}</p>
-                        <p className="text-xs text-slate-500">{sub.tenantId}</p>
-                      </td>
-                      <td className="px-6 py-4 text-xs text-slate-300">{sub.plan} · {formatCurrency(sub.priceMonthly)}/tháng</td>
-                      <td className="px-6 py-4 text-xs font-black uppercase text-amber-300">{sub.status}</td>
-                      <td className="px-6 py-4 flex gap-2">
-                        <Button
-                          variant="ghost"
-                          className="h-9 px-3 rounded-lg text-xs"
-                          disabled={actionLoadingKey !== ''}
-                          onClick={() => handleReviewSubscription(sub.tenantId || sub.tenant_id, 'approve')}
-                        >
-                          {actionLoadingKey === `review-${sub.tenantId || sub.tenant_id}-approve` ? 'Updating...' : 'Approve'}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          className="h-9 px-3 rounded-lg text-xs"
-                          disabled={actionLoadingKey !== ''}
-                          onClick={() => handleReviewSubscription(sub.tenantId || sub.tenant_id, 'reject')}
-                        >
-                          {actionLoadingKey === `review-${sub.tenantId || sub.tenant_id}-reject` ? 'Updating...' : 'Reject'}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          className="h-9 px-3 rounded-lg text-xs"
-                          disabled={actionLoadingKey !== ''}
-                          onClick={() => handleRenewSubscription(sub.tenantId || sub.tenant_id)}
-                        >
-                          {actionLoadingKey === `renew-${sub.tenantId || sub.tenant_id}` ? 'Updating...' : 'Renew 1y'}
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {activeTab === 'audit' && (
-            <div className="bg-slate-950 rounded-lg border border-white/10 overflow-hidden">
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="border-b border-white/5 text-[10px] uppercase tracking-widest text-slate-500">
-                    <th className="px-6 py-4">Time</th><th className="px-6 py-4">Action</th><th className="px-6 py-4">Entity</th><th className="px-6 py-4">Tenant</th><th className="px-6 py-4">Actor</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {filteredAuditLogs.map((log) => (
-                    <tr key={log.id}>
-                      <td className="px-6 py-4 text-xs text-slate-400">{new Date(log.createdAt).toLocaleString('vi-VN')}</td>
-                      <td className="px-6 py-4 text-xs font-black text-sky-300 uppercase">{log.action}</td>
-                      <td className="px-6 py-4 text-xs text-slate-300">{log.entityType}:{log.entityId}</td>
-                      <td className="px-6 py-4 text-xs text-slate-500">{log.tenantId || '-'}</td>
-                      <td className="px-6 py-4 text-xs text-slate-500">{log.actorId}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </main>
-      </div>
-    </div>
-  );
+  {createOpen && <Modal title="Tạo khách hàng mới" subtitle="Tạo tenant và tài khoản owner trong một lần thao tác." onClose={() => setCreateOpen(false)}><form onSubmit={handleCreateTenant} className="space-y-5"><div className="grid gap-4 sm:grid-cols-2"><Field label="Tên hộ kinh doanh / doanh nghiệp"><TextInput value={createForm.tenantName} onChange={(event) => setCreateForm({ ...createForm, tenantName: event.target.value })} required placeholder="Ví dụ: Cửa hàng Minh Anh" /></Field><Field label="Gói dịch vụ"><SelectInput value={createForm.packageCode} onChange={(event) => setCreateForm({ ...createForm, packageCode: event.target.value })}><option value="">Tự động dùng gói mặc định</option>{packages.map((pkg) => <option key={pkg.code || pkg.id} value={pkg.code}>{pkg.name} · {pkg.maxUsers} user</option>)}</SelectInput></Field><Field label="Tên owner"><TextInput value={createForm.ownerName} onChange={(event) => setCreateForm({ ...createForm, ownerName: event.target.value })} required placeholder="Người quản lý chính" /></Field><Field label="Email owner"><TextInput type="email" value={createForm.ownerEmail} onChange={(event) => setCreateForm({ ...createForm, ownerEmail: event.target.value })} required placeholder="owner@example.com" /></Field><Field label="Mật khẩu owner" hint="Tối thiểu 10 ký tự"><TextInput type="password" value={createForm.ownerPassword} onChange={(event) => setCreateForm({ ...createForm, ownerPassword: event.target.value })} required minLength={10} placeholder="Mật khẩu đăng nhập" /></Field><Field label="Số điện thoại"><TextInput value={createForm.phone} onChange={(event) => setCreateForm({ ...createForm, phone: event.target.value })} placeholder="Không bắt buộc" /></Field></div><div className="grid gap-4 sm:grid-cols-2"><Field label="Địa chỉ"><TextInput value={createForm.address} onChange={(event) => setCreateForm({ ...createForm, address: event.target.value })} placeholder="Không bắt buộc" /></Field><Field label="Trạng thái ban đầu" hint="Chỉ chọn trạng thái vận hành; khởi tạo là trạng thái hệ thống."><SelectInput value={createForm.status} onChange={(event) => setCreateForm({ ...createForm, status: event.target.value })}><option value="trial">Dùng thử</option><option value="active">Đang hoạt động</option></SelectInput></Field></div><div className="flex justify-end gap-2 border-t border-slate-100 pt-5"><Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Hủy</Button><Button type="submit" disabled={actionLoading === 'create-tenant'}>{actionLoading === 'create-tenant' ? 'Đang tạo...' : 'Tạo tenant'}</Button></div></form></Modal>}
+  {tenantDetail && <Modal title={tenantDetail.name || 'Chi tiết tenant'} subtitle="Thông tin vận hành và database của khách hàng." onClose={() => setTenantDetail(null)}><div className="grid gap-4 sm:grid-cols-2"><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Trạng thái</p><div className="mt-2"><StatusBadge status={valueOf(tenantDetail, 'status', '')} /></div></div><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Gói dịch vụ</p><p className="mt-2 font-semibold">{valueOf(tenantDetail, 'packageName', valueOf(tenantDetail, 'packageCode', 'Starter'))}</p></div><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Owner</p><p className="mt-2 font-semibold">{valueOf(tenantDetail, 'ownerEmail', valueOf(tenantDetail, 'email', '-'))}</p></div><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Database</p><p className="mt-2 font-semibold text-slate-700">{valueOf(valueOf(tenantDetail, 'databaseHealth', {}), 'status', 'Sẵn sàng')}</p></div></div><div className="mt-6 flex justify-end gap-2"><Button variant="secondary" onClick={() => handleProvision(tenantDetail)} disabled={actionLoading !== ''}><Database size={16} /> Khởi tạo lại database</Button><Button onClick={() => setTenantDetail(null)}>Đóng</Button></div></Modal>}
+  {tenantUsers && <Modal title={`Tài khoản · ${tenantUsers.tenant.name || 'Tenant'}`} subtitle={`${tenantUsers.users.length} tài khoản trong tenant này.`} onClose={() => setTenantUsers(null)} wide><div className="overflow-x-auto rounded-2xl border border-slate-200"><table className="w-full min-w-[650px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Tên</th><th className="px-4 py-3">Email</th><th className="px-4 py-3">Vai trò</th><th className="px-4 py-3">Trạng thái</th><th className="px-4 py-3 text-right">Thao tác</th></tr></thead><tbody className="divide-y divide-slate-100">{tenantUsers.users.map((user) => <tr key={user.id}><td className="px-4 py-3 font-semibold">{user.name}</td><td className="px-4 py-3 text-slate-600">{user.email}</td><td className="px-4 py-3">{user.role}</td><td className="px-4 py-3"><StatusBadge status={valueOf(user, 'status', 'active')} /></td><td className="px-4 py-3 text-right"><button onClick={() => openEditUser(user)} className="text-xs font-semibold text-sky-700">Sửa</button></td></tr>)}</tbody></table></div><form onSubmit={handleCreateUser} className="mt-6 rounded-2xl bg-slate-50 p-4"><div className="mb-4 flex items-center gap-2"><UserPlus size={17} className="text-sky-600" /><p className="font-semibold">Thêm user cho tenant</p></div><div className="grid gap-3 sm:grid-cols-2"><TextInput placeholder="Tên người dùng" value={userForm.name} onChange={(event) => setUserForm({ ...userForm, name: event.target.value, tenantId: valueOf(tenantUsers.tenant, 'id', '') })} required /><TextInput type="email" placeholder="Email" value={userForm.email} onChange={(event) => setUserForm({ ...userForm, email: event.target.value, tenantId: valueOf(tenantUsers.tenant, 'id', '') })} required /><TextInput type="password" placeholder="Mật khẩu tối thiểu 10 ký tự" minLength={10} value={userForm.password} onChange={(event) => setUserForm({ ...userForm, password: event.target.value, tenantId: valueOf(tenantUsers.tenant, 'id', '') })} required /><SelectInput value={userForm.role} onChange={(event) => setUserForm({ ...userForm, role: event.target.value, tenantId: valueOf(tenantUsers.tenant, 'id', '') })}><option value="cashier">Thu ngân</option><option value="manager">Quản lý</option><option value="owner">Owner</option></SelectInput></div><div className="mt-3 flex justify-end"><Button type="submit" disabled={actionLoading === 'create-user'}>{actionLoading === 'create-user' ? 'Đang tạo...' : 'Thêm tài khoản'}</Button></div></form></Modal>}
+  {packageFormOpen && <Modal title="Tạo gói dịch vụ" subtitle="Thiết lập hạn mức cho nhóm khách hàng." onClose={() => setPackageFormOpen(false)}><form onSubmit={handleCreatePackage} className="space-y-5"><div className="grid gap-4 sm:grid-cols-2"><Field label="Mã gói"><TextInput value={packageForm.code} onChange={(event) => setPackageForm({ ...packageForm, code: event.target.value })} required placeholder="business_10" /></Field><Field label="Tên gói"><TextInput value={packageForm.name} onChange={(event) => setPackageForm({ ...packageForm, name: event.target.value })} required placeholder="Business" /></Field><Field label="Số user tối đa"><TextInput type="number" min={1} value={packageForm.maxUsers} onChange={(event) => setPackageForm({ ...packageForm, maxUsers: Number(event.target.value) })} required /></Field><Field label="Giá theo tháng"><TextInput type="number" min={0} value={packageForm.priceMonthly} onChange={(event) => setPackageForm({ ...packageForm, priceMonthly: Number(event.target.value) })} required /></Field></div><div className="flex justify-end gap-2 border-t border-slate-100 pt-5"><Button type="button" variant="secondary" onClick={() => setPackageFormOpen(false)}>Hủy</Button><Button type="submit" disabled={actionLoading === 'create-package'}>{actionLoading === 'create-package' ? 'Đang lưu...' : 'Lưu gói'}</Button></div></form></Modal>}
+  {editingPackage && <Modal title="Cập nhật gói dịch vụ" subtitle="Thay đổi sẽ được đồng bộ cho các tenant đang sử dụng gói này." onClose={() => setEditingPackage(null)}><form onSubmit={handleUpdatePackage} className="space-y-5"><div className="grid gap-4 sm:grid-cols-2"><Field label="Mã gói"><TextInput value={editPackageForm.code} onChange={(event) => setEditPackageForm({ ...editPackageForm, code: event.target.value })} required /></Field><Field label="Tên gói"><TextInput value={editPackageForm.name} onChange={(event) => setEditPackageForm({ ...editPackageForm, name: event.target.value })} required /></Field><Field label="Số user tối đa"><TextInput type="number" min={1} value={editPackageForm.maxUsers} onChange={(event) => setEditPackageForm({ ...editPackageForm, maxUsers: Number(event.target.value) })} required /></Field><Field label="Giá theo tháng"><TextInput type="number" min={0} value={editPackageForm.priceMonthly} onChange={(event) => setEditPackageForm({ ...editPackageForm, priceMonthly: Number(event.target.value) })} required /></Field><Field label="Trạng thái"><SelectInput value={editPackageForm.status} onChange={(event) => setEditPackageForm({ ...editPackageForm, status: event.target.value })}><option value="active">Đang cung cấp</option><option value="suspended">Tạm dừng</option></SelectInput></Field><label className="flex items-center gap-2 self-end pb-3 text-sm font-semibold text-slate-600"><input type="checkbox" checked={editPackageForm.isDefault} onChange={(event) => setEditPackageForm({ ...editPackageForm, isDefault: event.target.checked })} /> Gói mặc định</label></div><div className="flex justify-end gap-2 border-t border-slate-100 pt-5"><Button type="button" variant="secondary" onClick={() => setEditingPackage(null)}>Hủy</Button><Button type="submit" disabled={actionLoading === 'update-package'}>{actionLoading === 'update-package' ? 'Đang lưu...' : 'Lưu thay đổi'}</Button></div></form></Modal>}
+  {editingUser && <Modal title="Cập nhật tài khoản" subtitle="Thay đổi thông tin và quyền truy cập người dùng." onClose={() => setEditingUser(null)}><form onSubmit={handleUpdateUser} className="space-y-5"><div className="grid gap-4 sm:grid-cols-2"><Field label="Tên"><TextInput value={editForm.name} onChange={(event) => setEditForm({ ...editForm, name: event.target.value })} required /></Field><Field label="Email"><TextInput type="email" value={editForm.email} onChange={(event) => setEditForm({ ...editForm, email: event.target.value })} required /></Field><Field label="Vai trò"><SelectInput value={editForm.role} onChange={(event) => setEditForm({ ...editForm, role: event.target.value })}><option value="cashier">Thu ngân</option><option value="manager">Quản lý</option><option value="owner">Owner</option></SelectInput></Field><Field label="Trạng thái"><SelectInput value={editForm.status} onChange={(event) => setEditForm({ ...editForm, status: event.target.value })}><option value="active">Đang hoạt động</option><option value="suspended">Tạm khóa</option></SelectInput></Field></div><Field label="Mật khẩu mới" hint="Để trống nếu không đổi"><TextInput type="password" minLength={10} value={editForm.password} onChange={(event) => setEditForm({ ...editForm, password: event.target.value })} /></Field><div className="flex justify-end gap-2 border-t border-slate-100 pt-5"><Button type="button" variant="secondary" onClick={() => setEditingUser(null)}>Hủy</Button><Button type="submit" disabled={actionLoading === 'update-user'}>{actionLoading === 'update-user' ? 'Đang lưu...' : 'Lưu thay đổi'}</Button></div></form></Modal>}
+  </div>;
 }

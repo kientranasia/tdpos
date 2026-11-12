@@ -5,7 +5,7 @@ import cors from 'cors';
 import morgan from 'morgan';
 import { controlDb, db, tenantRegistry } from './db';
 import * as schema from './schema';
-import { eq, desc, and, like, sql, inArray, ne } from 'drizzle-orm';
+import { eq, desc, and, sql, inArray, ne, or } from 'drizzle-orm';
 import { v4 as uuid } from 'uuid';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -29,6 +29,7 @@ import {
   INSTANCE_SECRET,
   INSTANCE_ID,
   PER_TENANT_DATABASES,
+  DATABASE_PROVIDER,
 } from './runtimeConfig';
 import { bootstrapAdminAccount } from './bootstrapAdmin';
 
@@ -59,22 +60,44 @@ const documentReference = (document: any, prefix: string) => document
   ? document.documentNo || fallbackDocumentNo(prefix, document.id)
   : null;
 
-const nextSupplierCode = async (tenantId: string) => {
-  const rows = await db.select({ code: schema.suppliers.code }).from(schema.suppliers)
-    .where(eq(schema.suppliers.tenantId, tenantId)).all() as Array<{ code: string }>;
-  const usedCodes = new Set(rows.map((row) => String(row.code || '').toUpperCase()));
-  const highest = rows.reduce((result, row) => {
-    const match = String(row.code || '').match(/^NCC(\d{3})$/i);
-    return match ? Math.max(result, Number(match[1])) : result;
-  }, 0);
-  let sequence = highest + 1;
-  let code = `NCC${String(sequence).padStart(3, '0')}`;
-  while (usedCodes.has(code)) {
-    sequence += 1;
-    code = `NCC${String(sequence).padStart(3, '0')}`;
+const nextSequenceNumber = async (tenantId: string, documentType: string, prefix: string, existingCodePattern?: RegExp) => {
+  const now = new Date().toISOString();
+  const existing = await db.select({ nextNumber: schema.documentSequences.nextNumber }).from(schema.documentSequences).where(and(
+    eq(schema.documentSequences.tenantId, tenantId),
+    eq(schema.documentSequences.documentType, documentType),
+  )).get();
+
+  let initialNext = 2;
+  if (!existing && existingCodePattern) {
+    const source = documentType === 'supplier'
+      ? await db.select({ code: schema.suppliers.code }).from(schema.suppliers).where(eq(schema.suppliers.tenantId, tenantId)).all()
+      : await db.select({ code: schema.customers.code }).from(schema.customers).where(eq(schema.customers.tenantId, tenantId)).all();
+    const highest = source.reduce((result, row) => {
+      const match = String(row.code || '').match(existingCodePattern);
+      return match ? Math.max(result, Number(match[1])) : result;
+    }, 0);
+    initialNext = highest + 2;
   }
-  return code;
+
+  const row = await db.insert(schema.documentSequences).values({
+    id: uuid(),
+    tenantId,
+    documentType,
+    prefix,
+    nextNumber: initialNext,
+    updatedAt: now,
+  }).onConflictDoUpdate({
+    target: [schema.documentSequences.tenantId, schema.documentSequences.documentType],
+    set: {
+      nextNumber: sql`${schema.documentSequences.nextNumber} + 1`,
+      updatedAt: now,
+    },
+  }).returning({ nextNumber: schema.documentSequences.nextNumber }).get();
+
+  return Math.max(1, Number(row?.nextNumber || initialNext) - 1);
 };
+
+const nextSupplierCode = async (tenantId: string) => `NCC${String(await nextSequenceNumber(tenantId, 'supplier', 'NCC', /^NCC(\d+)$/i)).padStart(3, '0')}`;
 
 const withTenantAccess = (tenant: any) => {
   if (!tenant) return null;
@@ -362,6 +385,18 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Liveness stays cheap and dependency-free. Readiness is used by the
+// container/orchestrator and must prove that the selected database is reachable.
+app.get('/api/ready', async (_req, res) => {
+  try {
+    await db.select({ value: sql<number>`1` }).from(schema.tenants).limit(1).get();
+    res.json({ status: 'ready', database: 'ok', timestamp: new Date().toISOString() });
+  } catch (err) {
+    console.error('GET /api/ready error:', err);
+    res.status(503).json({ status: 'not_ready', database: 'unavailable' });
+  }
+});
+
 // ─── Admin Routes ───────────────────────────────────────────
 // The customer/offline build deliberately has no separate technical admin surface.
 // A platform admin can only be enabled explicitly for a non-offline deployment.
@@ -568,25 +603,12 @@ const persistLicenseToken = async (token: string) => {
   return { status: 'active', customerName: values.customerName, expiresAt: values.expiresAt };
 };
 const nextDocumentNo = async (tenantId: string, documentType: string, prefix: string) => {
-  const now = new Date().toISOString();
-  const existing = await db.select().from(schema.documentSequences).where(and(
-    eq(schema.documentSequences.tenantId, tenantId),
-    eq(schema.documentSequences.documentType, documentType),
-  )).get();
-  const next = existing?.nextNumber || 1;
-  if (existing) await db.update(schema.documentSequences).set({ nextNumber: next + 1, updatedAt: now }).where(eq(schema.documentSequences.id, existing.id)).run();
-  else await db.insert(schema.documentSequences).values({ id: uuid(), tenantId, documentType, prefix, nextNumber: next + 1, updatedAt: now }).run();
+  const next = await nextSequenceNumber(tenantId, documentType, prefix);
   return `${prefix}-${String(next).padStart(6, '0')}`;
 };
 
 const nextCustomerCode = async (tenantId: string) => {
-  const existing = await db.select({ code: schema.customers.code }).from(schema.customers)
-    .where(and(eq(schema.customers.tenantId, tenantId), like(schema.customers.code, 'KH%'))).all() as Array<{ code: string }>;
-  const max = existing.reduce((highest, row) => {
-    const value = Number(String(row.code || '').replace(/^KH/i, ''));
-    return Number.isFinite(value) ? Math.max(highest, value) : highest;
-  }, 0);
-  return `KH${String(max + 1).padStart(6, '0')}`;
+  return `KH${String(await nextSequenceNumber(tenantId, 'customer', 'KH', /^KH(\d+)$/i)).padStart(6, '0')}`;
 };
 
 app.get('/api/system/status', async (req, res) => {
@@ -601,7 +623,9 @@ app.get('/api/system/status', async (req, res) => {
       addresses: ownerOnly ? interfaces : [],
       localUrl: ownerOnly ? (process.env.HKDPLUS_PUBLIC_URL || 'https://hkdplus.lan') : null,
       apiPort: PORT,
-      database: DATABASE_MODE === 'per_tenant' ? 'SQLite per tenant' : 'SQLite',
+      database: DATABASE_PROVIDER === 'postgres'
+        ? 'PostgreSQL'
+        : (DATABASE_MODE === 'per_tenant' ? 'SQLite per tenant' : 'SQLite'),
       databaseMode: DATABASE_MODE,
       dataPath: OFFLINE_MODE && ownerOnly ? path.dirname(DB_PATH) : null,
       license: license ? { status: license.status, customerName: license.customerName, expiresAt: license.expiresAt, lastValidatedAt: license.lastValidatedAt } : { status: 'unlicensed' },
@@ -1534,31 +1558,67 @@ const withStockAvailability = async (tenantId: string, product: any, defaultPric
   return { ...product, units, components, reservedStock, availableStock };
 };
 
-const withStockAvailabilityBatch = async (tenantId: string, products: any[], defaultPrices: DefaultPriceLookup, availabilityProducts = products) => {
+const withStockAvailabilityBatch = async (tenantId: string, products: any[], defaultPrices: DefaultPriceLookup) => {
+  if (!products.length) return [];
+  const rootProductIds = products.map((product) => product.id);
+  const productById = new Map(products.map((product) => [product.id, product]));
+  const componentsByProduct = new Map<string, any[]>();
+  const loadedComponentCombos = new Set<string>();
+  let pendingComboIds = new Set(products.filter((product) => product.productType === 'combo').map((product) => product.id));
+
+  // Load only the component graph needed by this page. The old implementation
+  // loaded every unit, combo component and reservation for the tenant on every
+  // product request, which became expensive once the catalog grew large.
+  for (let depth = 0; depth < 8 && pendingComboIds.size; depth += 1) {
+    const comboIds = Array.from(pendingComboIds).filter((id) => !loadedComponentCombos.has(id));
+    if (!comboIds.length) break;
+    comboIds.forEach((id) => loadedComponentCombos.add(id));
+    const componentRows = await db.select().from(schema.productComponents)
+      .where(and(eq(schema.productComponents.tenantId, tenantId), inArray(schema.productComponents.comboProductId, comboIds))).all();
+    const missingProductIds = new Set<string>();
+    const nextComboIds = new Set<string>();
+    for (const component of componentRows) {
+      const rows = componentsByProduct.get(component.comboProductId) || [];
+      rows.push(component);
+      componentsByProduct.set(component.comboProductId, rows);
+      if (!productById.has(component.componentProductId)) missingProductIds.add(component.componentProductId);
+    }
+    if (missingProductIds.size) {
+      const relatedProducts = await db.select().from(schema.products).where(and(
+        eq(schema.products.tenantId, tenantId),
+        inArray(schema.products.id, Array.from(missingProductIds)),
+      )).all();
+      relatedProducts.forEach((product) => productById.set(product.id, product));
+    }
+    for (const component of componentRows) {
+      if (productById.get(component.componentProductId)?.productType === 'combo') nextComboIds.add(component.componentProductId);
+    }
+    pendingComboIds = nextComboIds;
+  }
+
   const activeUnits = await db.select().from(schema.productUnits)
-    .where(and(eq(schema.productUnits.tenantId, tenantId), eq(schema.productUnits.active, true))).all();
-  const components = await db.select().from(schema.productComponents)
-    .where(eq(schema.productComponents.tenantId, tenantId)).all();
+    .where(and(
+      eq(schema.productUnits.tenantId, tenantId),
+      eq(schema.productUnits.active, true),
+      inArray(schema.productUnits.productId, rootProductIds),
+    )).all();
+  const relatedProductIds = Array.from(productById.keys());
   const reservedRows = await db.select({
     productId: schema.stockReservations.productId,
     quantity: sql<number>`coalesce(sum(${schema.stockReservations.quantity}), 0)`,
   }).from(schema.stockReservations)
-    .where(and(eq(schema.stockReservations.tenantId, tenantId), eq(schema.stockReservations.status, 'reserved')))
+    .where(and(
+      eq(schema.stockReservations.tenantId, tenantId),
+      eq(schema.stockReservations.status, 'reserved'),
+      inArray(schema.stockReservations.productId, relatedProductIds),
+    ))
     .groupBy(schema.stockReservations.productId)
     .all();
-
-  const productById = new Map(availabilityProducts.map((product) => [product.id, product]));
   const unitsByProduct = new Map<string, any[]>();
   activeUnits.forEach((unit) => {
     const rows = unitsByProduct.get(unit.productId) || [];
     rows.push(unit);
     unitsByProduct.set(unit.productId, rows);
-  });
-  const componentsByProduct = new Map<string, any[]>();
-  components.forEach((component) => {
-    const rows = componentsByProduct.get(component.comboProductId) || [];
-    rows.push(component);
-    componentsByProduct.set(component.comboProductId, rows);
   });
   const reservedByProduct = new Map<string, number>(reservedRows.map((row) => [String(row.productId), Number(row.quantity || 0)]));
   const availabilityMemo = new Map<string, number>();
@@ -1811,23 +1871,32 @@ app.put('/api/price-lists/:id/items', async (req, res) => {
 app.get('/api/products/lookup', async (req, res) => {
   try {
     if (!ensureAnyPermission(req, res, ['inventory.view', 'sales.view'])) return;
-    const code = String(req.query.code || '').trim().toLowerCase();
+    const code = String(req.query.code || '').trim();
     if (!code) return res.status(400).json({ error: 'Thiếu mã cần tra cứu' });
-    const rows = await db.select().from(schema.products).where(and(
+    const normalizedCode = code.toLowerCase();
+    const productMatches = await db.select().from(schema.products).where(and(
       eq(schema.products.tenantId, req.user.tenantId),
       eq(schema.products.status, 'active'),
-    )).all();
-    const activeProductIds = new Set(rows.map((row) => row.id));
-    const unit = await db.select().from(schema.productUnits).where(eq(schema.productUnits.tenantId, req.user.tenantId)).all().find((row) => (
-      activeProductIds.has(row.productId)
-      && (
-      String(row.barcode || '').trim().toLowerCase() === code
-      || String(row.sku || row.sourceCode || '').trim().toLowerCase() === code
-      )
-    ));
-    const product = rows.find((row) => row.sku.toLowerCase() === code || String(row.barcode || '').toLowerCase() === code) || unit;
+      or(
+        sql`lower(${schema.products.sku}) = ${normalizedCode}`,
+        sql`lower(coalesce(${schema.products.barcode}, '')) = ${normalizedCode}`,
+      ),
+    )).limit(2).all();
+    const unitMatches = await db.select().from(schema.productUnits).where(and(
+      eq(schema.productUnits.tenantId, req.user.tenantId),
+      eq(schema.productUnits.active, true),
+      or(
+        sql`lower(coalesce(${schema.productUnits.sku}, '')) = ${normalizedCode}`,
+        sql`lower(coalesce(${schema.productUnits.barcode}, '')) = ${normalizedCode}`,
+        sql`lower(coalesce(${schema.productUnits.sourceCode}, '')) = ${normalizedCode}`,
+      ),
+    )).limit(2).all();
+    if (productMatches.length + unitMatches.length > 1) return res.status(409).json({ error: 'Mã sản phẩm đang bị trùng trong hệ thống.' });
+    const product = productMatches[0] || unitMatches[0];
     if (!product) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
-    const resolved = 'productId' in product ? await db.select().from(schema.products).where(eq(schema.products.id, product.productId)).get() : product;
+    const resolved = 'productId' in product
+      ? await db.select().from(schema.products).where(and(eq(schema.products.id, product.productId), eq(schema.products.tenantId, req.user.tenantId), eq(schema.products.status, 'active'))).get()
+      : product;
     if (!resolved) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
     res.json(redactProductForUser(req, await withStockAvailability(req.user.tenantId, resolved, await loadDefaultPriceLookup(req.user.tenantId))));
   } catch (err) {
@@ -1842,47 +1911,37 @@ app.get('/api/products', async (req, res) => {
     const { category, search, productType } = req.query;
     const requestedStatus = String(req.query.status || '').toLowerCase();
     const includeInactive = String(req.query.includeInactive || '').toLowerCase() === 'true';
-    const allTenantProducts = await db.select().from(schema.products)
-      .where(eq(schema.products.tenantId, req.user.tenantId)).all();
-    let allProducts = includeInactive || requestedStatus === 'all'
-      ? allTenantProducts
-      : allTenantProducts.filter((product) => product.status === (requestedStatus === 'inactive' ? 'inactive' : 'active'));
-
-    // Apply additional filters in-memory for simplicity
-    if (category && category !== 'all') {
-      allProducts = allProducts.filter(p => p.category === category);
-    }
-    if (productType && productType !== 'all') {
-      allProducts = allProducts.filter(p => p.productType === productType);
-    }
-    if (search) {
-      const searchStr = normalizeSearchText(search);
-      const matchingUnitProductIds = new Set(
-        (await db.select({ productId: schema.productUnits.productId, sku: schema.productUnits.sku, barcode: schema.productUnits.barcode })
-          .from(schema.productUnits)
-          .where(eq(schema.productUnits.tenantId, req.user.tenantId))
-          .all())
-          .filter((unit) => normalizeSearchText(unit.sku).includes(searchStr) || normalizeSearchText(unit.barcode).includes(searchStr))
-          .map((unit) => unit.productId)
-      );
-      allProducts = allProducts.filter(p =>
-        normalizeSearchText(p.name).includes(searchStr) ||
-        normalizeSearchText(p.sku).includes(searchStr) ||
-        normalizeSearchText(p.barcode).includes(searchStr) ||
-        matchingUnitProductIds.has(p.id)
-      );
-    }
-
-    const total = allProducts.length;
     const parsedLimit = Number(req.query.limit);
     const parsedOffset = Number(req.query.offset);
-    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(Math.floor(parsedLimit), 500) : 0;
+    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(Math.floor(parsedLimit), 500) : 100;
     const offset = Number.isFinite(parsedOffset) && parsedOffset > 0 ? Math.floor(parsedOffset) : 0;
-    const pageProducts = limit ? allProducts.slice(offset, offset + limit) : allProducts;
+    const filters = [eq(schema.products.tenantId, req.user.tenantId)];
+    if (!includeInactive && requestedStatus !== 'all') filters.push(eq(schema.products.status, requestedStatus === 'inactive' ? 'inactive' : 'active'));
+    if (category && category !== 'all') filters.push(eq(schema.products.category, String(category)));
+    if (productType && productType !== 'all') filters.push(eq(schema.products.productType, productType as 'standard' | 'combo'));
+    const searchValue = String(search || '').trim();
+    if (searchValue) {
+      const term = `%${searchValue}%`;
+      filters.push(or(
+        sql`lower(${schema.products.name}) LIKE lower(${term})`,
+        sql`lower(${schema.products.sku}) LIKE lower(${term})`,
+        sql`lower(coalesce(${schema.products.barcode}, '')) LIKE lower(${term})`,
+        sql`EXISTS (SELECT 1 FROM product_units pu WHERE pu.tenant_id = ${req.user.tenantId} AND pu.product_id = ${schema.products.id} AND (lower(coalesce(pu.sku, '')) LIKE lower(${term}) OR lower(coalesce(pu.barcode, '')) LIKE lower(${term}) OR lower(coalesce(pu.source_code, '')) LIKE lower(${term})))`,
+      ) as any);
+    }
+    const whereClause = and(...filters);
+    const countRow = await db.select({ count: sql<number>`count(*)` }).from(schema.products).where(whereClause).get();
+    const total = Number(countRow?.count || 0);
+    const pageProducts = await db.select().from(schema.products)
+      .where(whereClause)
+      .orderBy(schema.products.name, schema.products.id)
+      .limit(limit)
+      .offset(offset)
+      .all();
     const defaultPrices = await loadDefaultPriceLookup(req.user.tenantId);
-    const enrichedProducts = (await withStockAvailabilityBatch(req.user.tenantId, pageProducts, defaultPrices, allTenantProducts)).map((product) => redactProductForUser(req, product));
+    const enrichedProducts = (await withStockAvailabilityBatch(req.user.tenantId, pageProducts, defaultPrices)).map((product) => redactProductForUser(req, product));
     if (String(req.query.includeMeta || '').toLowerCase() === 'true') {
-      return res.json({ items: enrichedProducts, total, offset, limit: limit || total });
+      return res.json({ items: enrichedProducts, total, offset, limit });
     }
     res.json(enrichedProducts);
   } catch (err) {
@@ -1894,20 +1953,20 @@ app.get('/api/products', async (req, res) => {
 app.get('/api/products/summary', async (req, res) => {
   try {
     if (!ensureAnyPermission(req, res, ['inventory.view', 'sales.view', 'dashboard.view'])) return;
-    const rows = await db.select({
-      stock: schema.products.stock,
-      purchasePrice: schema.products.purchasePrice,
-      trackStock: schema.products.trackStock,
-      lowStockThreshold: schema.products.lowStockThreshold,
+    const summary = await db.select({
+      total: sql<number>`count(*)`,
+      totalStock: sql<number>`coalesce(sum(${schema.products.stock}), 0)`,
+      stockValue: sql<number>`coalesce(sum(${schema.products.stock} * ${schema.products.purchasePrice}), 0)`,
+      lowStock: sql<number>`coalesce(sum(case when ${schema.products.trackStock} = 1 and ${schema.products.stock} <= ${schema.products.lowStockThreshold} then 1 else 0 end), 0)`,
     }).from(schema.products).where(and(
       eq(schema.products.tenantId, req.user.tenantId),
       eq(schema.products.status, 'active'),
-    )).all();
+    )).get();
     res.json({
-      total: rows.length,
-      totalStock: rows.reduce((sum, row) => sum + Number(row.stock || 0), 0),
-      stockValue: hasPermission(req, 'inventory.view_cost') ? rows.reduce((sum, row) => sum + Number(row.stock || 0) * Number(row.purchasePrice || 0), 0) : 0,
-      lowStock: rows.filter((row) => Boolean(row.trackStock) && Number(row.stock || 0) <= Number(row.lowStockThreshold || 0)).length,
+      total: Number(summary?.total || 0),
+      totalStock: Number(summary?.totalStock || 0),
+      stockValue: hasPermission(req, 'inventory.view_cost') ? Number(summary?.stockValue || 0) : 0,
+      lowStock: Number(summary?.lowStock || 0),
     });
   } catch (err) {
     console.error('GET /api/products/summary error:', err);
@@ -2878,11 +2937,32 @@ backfillSalesCashbookAccounts();
 app.get('/api/suppliers', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'partners.view')) return;
-    let rows = await db.select().from(schema.suppliers)
-      .where(eq(schema.suppliers.tenantId, req.user.tenantId)).all();
+    const includeMeta = String(req.query.includeMeta || '') === 'true';
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
     const search = normalizeSearchText(req.query.search);
-    if (search) rows = rows.filter((row) => normalizeSearchText(`${row.code} ${row.name} ${row.phone}`).includes(search));
-    res.json(rows);
+    const conditions = [eq(schema.suppliers.tenantId, req.user.tenantId)];
+    if (search) {
+      const term = `%${search}%`;
+      conditions.push(or(
+        sql`lower(${schema.suppliers.code}) like ${term}`,
+        sql`lower(${schema.suppliers.name}) like ${term}`,
+        sql`lower(${schema.suppliers.phone}) like ${term}`,
+      ) as any);
+    }
+    const whereClause = and(...conditions);
+    const totalRow = includeMeta
+      ? await db.select({ count: sql<number>`count(*)` }).from(schema.suppliers).where(whereClause).get()
+      : null;
+    const rows = await db.select().from(schema.suppliers)
+      .where(whereClause)
+      .orderBy(schema.suppliers.name, schema.suppliers.id)
+      .limit(includeMeta ? limit : 5000)
+      .offset(includeMeta ? offset : 0)
+      .all();
+    res.json(includeMeta
+      ? { items: rows, total: Number(totalRow?.count || 0), offset, limit }
+      : rows);
   } catch (err) {
     console.error('GET /api/suppliers error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -2925,10 +3005,22 @@ app.patch('/api/suppliers/:id', async (req, res) => {
 app.get('/api/purchases', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'purchases.view')) return;
-    const rows = await db.select().from(schema.purchases).where(eq(schema.purchases.tenantId, req.user.tenantId)).orderBy(desc(schema.purchases.createdAt)).all();
+    const includeMeta = String(req.query.includeMeta || '') === 'true';
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    const purchaseWhere = eq(schema.purchases.tenantId, req.user.tenantId);
+    const totalRow = includeMeta
+      ? await db.select({ count: sql<number>`count(*)` }).from(schema.purchases).where(purchaseWhere).get()
+      : null;
+    const rows = await db.select().from(schema.purchases)
+      .where(purchaseWhere)
+      .orderBy(desc(schema.purchases.createdAt), desc(schema.purchases.id))
+      .limit(includeMeta ? limit : 5000)
+      .offset(includeMeta ? offset : 0)
+      .all();
     const tenantUsers = await db.select().from(schema.users).where(eq(schema.users.tenantId, req.user.tenantId)).all();
     const userNameById = new Map(tenantUsers.map((user) => [user.id, user.name]));
-    res.json(await Promise.all(rows.map(async (purchase) => {
+    const items = await Promise.all(rows.map(async (purchase) => {
       const items = await db.select({ quantity: schema.purchaseItems.quantity }).from(schema.purchaseItems).where(eq(schema.purchaseItems.purchaseId, purchase.id)).all();
       return {
         ...purchase,
@@ -2937,7 +3029,10 @@ app.get('/api/purchases', async (req, res) => {
         itemCount: items.length,
         totalQuantity: items.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
       };
-    })));
+    }));
+    res.json(includeMeta
+      ? { items, total: Number(totalRow?.count || 0), offset, limit }
+      : items);
   } catch (err) {
     console.error('GET /api/purchases error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -3215,27 +3310,41 @@ app.get('/api/customers', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'partners.view')) return;
     const { search } = req.query;
+    const includeMeta = String(req.query.includeMeta || '') === 'true';
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
     const tenantUsers = await db.select().from(schema.users)
       .where(eq(schema.users.tenantId, req.user.tenantId)).all();
     const userNameById = new Map(tenantUsers.map((u) => [u.id, u.name]));
-    let allCustomers = await db.select().from(schema.customers)
-      .where(eq(schema.customers.tenantId, req.user.tenantId)).all();
-
-    if (search) {
-      const searchStr = normalizeSearchText(search);
-      allCustomers = allCustomers.filter(c =>
-        normalizeSearchText(c.name).includes(searchStr) ||
-        normalizeSearchText(c.phone).includes(searchStr)
-      );
+    const conditions = [eq(schema.customers.tenantId, req.user.tenantId)];
+    const searchStr = normalizeSearchText(search);
+    if (searchStr) {
+      const term = `%${searchStr}%`;
+      conditions.push(or(
+        sql`lower(${schema.customers.code}) like ${term}`,
+        sql`lower(${schema.customers.name}) like ${term}`,
+        sql`lower(${schema.customers.phone}) like ${term}`,
+        sql`lower(${schema.customers.address}) like ${term}`,
+      ) as any);
     }
-
-    res.json(
-      allCustomers.map((customer) => ({
+    const whereClause = and(...conditions);
+    const totalRow = includeMeta
+      ? await db.select({ count: sql<number>`count(*)` }).from(schema.customers).where(whereClause).get()
+      : null;
+    const allCustomers = await db.select().from(schema.customers)
+      .where(whereClause)
+      .orderBy(schema.customers.name, schema.customers.id)
+      .limit(includeMeta ? limit : 5000)
+      .offset(includeMeta ? offset : 0)
+      .all();
+    const items = allCustomers.map((customer) => ({
         ...customer,
         tags: customer.tags ? JSON.parse(customer.tags) : [],
         createdByName: customer.createdBy ? userNameById.get(customer.createdBy) || null : null,
-      }))
-    );
+      }));
+    res.json(includeMeta
+      ? { items, total: Number(totalRow?.count || 0), offset, limit }
+      : items);
   } catch (err) {
     console.error('GET /api/customers error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -3690,26 +3799,35 @@ app.get('/api/invoices', async (req, res) => {
     if (!ensurePermission(req, res, 'sales.view')) return;
     await autoCloseLegacyInvoices(req);
     const { customerId, status } = req.query;
+    const includeMeta = String(req.query.includeMeta || '') === 'true';
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
     const tenantUsers = await db.select().from(schema.users)
       .where(eq(schema.users.tenantId, req.user.tenantId)).all();
     const userNameById = new Map(tenantUsers.map((u) => [u.id, u.name]));
-    let allInvoices = await db.select().from(schema.invoices)
-      .where(eq(schema.invoices.tenantId, req.user.tenantId))
-      .orderBy(desc(schema.invoices.createdAt)).all();
-
-    if (customerId) {
-      allInvoices = allInvoices.filter(i => i.customerId === customerId);
-    }
+    const conditions = [eq(schema.invoices.tenantId, req.user.tenantId)];
+    if (customerId) conditions.push(eq(schema.invoices.customerId, String(customerId)) as any);
     if (status && status !== 'all') {
-      allInvoices = allInvoices.filter(i => i.status === status);
+      const invoiceStatus = String(status) as 'partial' | 'unpaid' | 'completed';
+      conditions.push(eq(schema.invoices.status, invoiceStatus) as any);
     }
-
-    res.json(
-      allInvoices.map((invoice) => ({
+    const whereClause = and(...conditions);
+    const totalRow = includeMeta
+      ? await db.select({ count: sql<number>`count(*)` }).from(schema.invoices).where(whereClause).get()
+      : null;
+    const allInvoices = await db.select().from(schema.invoices)
+      .where(whereClause)
+      .orderBy(desc(schema.invoices.createdAt), desc(schema.invoices.id))
+      .limit(includeMeta ? limit : 5000)
+      .offset(includeMeta ? offset : 0)
+      .all();
+    const items = allInvoices.map((invoice) => ({
         ...invoice,
         createdByName: userNameById.get(invoice.createdBy) || null,
-      }))
-    );
+      }));
+    res.json(includeMeta
+      ? { items, total: Number(totalRow?.count || 0), offset, limit }
+      : items);
   } catch (err) {
     console.error('GET /api/invoices error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -5026,39 +5144,33 @@ app.get('/api/dashboard/stats', async (req, res) => {
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
 
-    const allInvoices = await db.select().from(schema.invoices)
-      .where(eq(schema.invoices.tenantId, tid)).all();
-
-    const todayInvoices = allInvoices.filter(i => {
-      const d = new Date(i.createdAt);
-      return i.workflowStatus !== 'cancelled' && i.workflowStatus === 'closed' && d >= todayStart && d <= todayEnd;
-    });
-
-    const todayReturnRows = (await db.select().from(schema.salesReturns)
-      .where(eq(schema.salesReturns.tenantId, tid)).all()
-    ).filter((row) => {
-        const d = new Date(row.createdAt);
-        return d >= todayStart && d <= todayEnd;
-      });
-
-    const todayRevenue = todayInvoices.reduce((sum, i) => sum + i.finalAmount, 0) - todayReturnRows.reduce((sum, row) => sum + row.totalAmount, 0);
-    const todayOrders = todayInvoices.length;
-
-    const allCustomers = await db.select().from(schema.customers)
-      .where(eq(schema.customers.tenantId, tid)).all();
-    const totalDebt = allCustomers.reduce((sum, c) => sum + c.totalDebt, 0);
-
-    const allProducts = await db.select().from(schema.products)
-      .where(eq(schema.products.tenantId, tid)).all();
-    const lowStockProducts = allProducts.filter(p => p.trackStock && p.stock <= p.lowStockThreshold);
+    const startIso = todayStart.toISOString();
+    const endIso = todayEnd.toISOString();
+    const [invoiceStats, returnStats, customerStats, productStats] = await Promise.all([
+      db.select({
+        revenue: sql<number>`coalesce(sum(case when ${schema.invoices.workflowStatus} = 'closed' and ${schema.invoices.createdAt} >= ${startIso} and ${schema.invoices.createdAt} <= ${endIso} then ${schema.invoices.finalAmount} else 0 end), 0)`,
+        orders: sql<number>`coalesce(sum(case when ${schema.invoices.workflowStatus} = 'closed' and ${schema.invoices.createdAt} >= ${startIso} and ${schema.invoices.createdAt} <= ${endIso} then 1 else 0 end), 0)`,
+      }).from(schema.invoices).where(eq(schema.invoices.tenantId, tid)).get(),
+      db.select({
+        amount: sql<number>`coalesce(sum(case when ${schema.salesReturns.createdAt} >= ${startIso} and ${schema.salesReturns.createdAt} <= ${endIso} then ${schema.salesReturns.totalAmount} else 0 end), 0)`,
+      }).from(schema.salesReturns).where(eq(schema.salesReturns.tenantId, tid)).get(),
+      db.select({
+        totalDebt: sql<number>`coalesce(sum(${schema.customers.totalDebt}), 0)`,
+        totalCustomers: sql<number>`count(*)`,
+      }).from(schema.customers).where(eq(schema.customers.tenantId, tid)).get(),
+      db.select({
+        totalProducts: sql<number>`count(*)`,
+        lowStock: sql<number>`coalesce(sum(case when ${schema.products.trackStock} = 1 and ${schema.products.stock} <= ${schema.products.lowStockThreshold} then 1 else 0 end), 0)`,
+      }).from(schema.products).where(eq(schema.products.tenantId, tid)).get(),
+    ]);
 
     res.json({
-      todayRevenue,
-      todayOrders,
-      totalDebt,
-      lowStockCount: lowStockProducts.length,
-      totalProducts: allProducts.length,
-      totalCustomers: allCustomers.length,
+      todayRevenue: Number(invoiceStats?.revenue || 0) - Number(returnStats?.amount || 0),
+      todayOrders: Number(invoiceStats?.orders || 0),
+      totalDebt: Number(customerStats?.totalDebt || 0),
+      lowStockCount: Number(productStats?.lowStock || 0),
+      totalProducts: Number(productStats?.totalProducts || 0),
+      totalCustomers: Number(customerStats?.totalCustomers || 0),
     });
   } catch (err) {
     console.error('GET /api/dashboard/stats error:', err);

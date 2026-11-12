@@ -10,3 +10,4 @@ coverage/
 !.env.prod.example
 !.env.saas.example
 data/
+backups/

@@ -8,6 +8,13 @@
       "when": 1794400850491,
       "tag": "0000_milky_spirit",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794463802512,
+      "tag": "0001_fluffy_leper_queen",
+      "breakpoints": true
     }
   ]
 }
