@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect, type UIEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import { Product, Customer, PaymentMethod, InvoiceItem, Invoice } from '../types';
 import { formatCurrency, normalizeSearchText } from '../lib/utils';
@@ -49,6 +49,8 @@ const accountTypeForPayment = (paymentMethod: PaymentMethod) => (
   paymentMethod === 'transfer' ? 'bank' : paymentMethod === 'wallet' ? 'wallet' : 'cash'
 );
 
+const POS_CATALOG_PAGE_SIZE = 500;
+
 export default function POS() {
   const { products: loadedProducts, customers, activeTenant, currentUser, addInvoice, addCustomer, categories: appCategories } = useApp();
   
@@ -94,12 +96,98 @@ export default function POS() {
   const [showDraftsSheet, setShowDraftsSheet] = useState(false);
   const isCashier = currentUser?.role === 'cashier';
 
+  const [catalogProducts, setCatalogProducts] = useState<Product[]>([]);
+  const [catalogTotal, setCatalogTotal] = useState(0);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
   const [remoteProductResults, setRemoteProductResults] = useState<Product[]>([]);
+  const catalogOffsetRef = useRef(0);
+  const catalogLoadingRef = useRef(false);
+
   const products = useMemo(() => {
     const byId = new Map<string, Product>();
-    [...loadedProducts, ...remoteProductResults].forEach((product) => byId.set(product.id, product));
+    [...loadedProducts, ...catalogProducts, ...remoteProductResults].forEach((product) => byId.set(product.id, product));
     return Array.from(byId.values());
-  }, [loadedProducts, remoteProductResults]);
+  }, [loadedProducts, catalogProducts, remoteProductResults]);
+
+  useEffect(() => {
+    let active = true;
+    catalogOffsetRef.current = 0;
+    catalogLoadingRef.current = true;
+    setCatalogProducts([]);
+    setCatalogTotal(0);
+    setCatalogError('');
+    setCatalogLoading(true);
+
+    if (!activeTenant?.id) {
+      catalogLoadingRef.current = false;
+      setCatalogLoading(false);
+      return () => { active = false; };
+    }
+
+    productsApi.listPage(activeTenant.id, {
+      category: selectedCategory === 'All' ? undefined : selectedCategory,
+      productType: 'all',
+      limit: POS_CATALOG_PAGE_SIZE,
+      offset: 0,
+    }).then((result) => {
+      if (!active) return;
+      const items = result.items as Product[];
+      setCatalogProducts(items);
+      setCatalogTotal(Number(result.total) || items.length);
+      catalogOffsetRef.current = items.length;
+      setCatalogError('');
+    }).catch(() => {
+      if (!active) return;
+      setCatalogProducts([]);
+      setCatalogTotal(0);
+      setCatalogError('Không tải được danh sách hàng hóa. Bạn vẫn có thể tìm theo tên, SKU hoặc mã vạch.');
+    }).finally(() => {
+      if (!active) return;
+      catalogLoadingRef.current = false;
+      setCatalogLoading(false);
+    });
+
+    return () => {
+      active = false;
+      catalogLoadingRef.current = false;
+    };
+  }, [activeTenant?.id, selectedCategory]);
+
+  const loadMoreCatalogProducts = async () => {
+    if (!activeTenant?.id || catalogLoadingRef.current || catalogOffsetRef.current >= catalogTotal) return;
+    catalogLoadingRef.current = true;
+    setCatalogLoading(true);
+    try {
+      const result = await productsApi.listPage(activeTenant.id, {
+        category: selectedCategory === 'All' ? undefined : selectedCategory,
+        productType: 'all',
+        limit: POS_CATALOG_PAGE_SIZE,
+        offset: catalogOffsetRef.current,
+      });
+      const items = result.items as Product[];
+      setCatalogProducts((previous) => {
+        const byId = new Map(previous.map((product) => [product.id, product]));
+        items.forEach((product) => byId.set(product.id, product));
+        return Array.from(byId.values());
+      });
+      catalogOffsetRef.current += items.length;
+      setCatalogTotal(Number(result.total) || catalogOffsetRef.current);
+      setCatalogError('');
+    } catch {
+      setCatalogError('Không tải thêm được danh sách hàng hóa. Hãy thử cuộn lại sau ít giây.');
+    } finally {
+      catalogLoadingRef.current = false;
+      setCatalogLoading(false);
+    }
+  };
+
+  const handleProductListScroll = (event: UIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
+    if (element.scrollHeight - element.scrollTop - element.clientHeight < 360) {
+      void loadMoreCatalogProducts();
+    }
+  };
 
   useEffect(() => {
     const query = searchTerm.trim();
@@ -110,7 +198,7 @@ export default function POS() {
     let active = true;
     const timer = window.setTimeout(async () => {
       try {
-        const result = await productsApi.listPage(activeTenant?.id, { search: query, limit: 100, offset: 0 });
+        const result = await productsApi.listPage(activeTenant?.id, { search: query, limit: POS_CATALOG_PAGE_SIZE, offset: 0 });
         if (active) setRemoteProductResults(result.items as Product[]);
       } catch {
         if (active) setRemoteProductResults([]);
@@ -123,8 +211,8 @@ export default function POS() {
   }, [activeTenant?.id, searchTerm]);
 
   const priceProductIds = useMemo(
-    () => Array.from(new Set([...loadedProducts, ...remoteProductResults].map((product) => product.id))),
-    [loadedProducts, remoteProductResults]
+    () => Array.from(new Set([...loadedProducts, ...catalogProducts, ...remoteProductResults].map((product) => product.id))),
+    [loadedProducts, catalogProducts, remoteProductResults]
   );
 
   useEffect(() => {
@@ -301,8 +389,8 @@ export default function POS() {
   const inventorySummary = useMemo(() => {
     const inStockCount = products.filter((p) => p.stock > 0).length;
     const lowStockCount = products.filter((p) => p.stock > 0 && p.stock <= p.lowStockThreshold).length;
-    return { total: products.length, inStockCount, lowStockCount };
-  }, [products]);
+    return { total: catalogTotal || products.length, inStockCount, lowStockCount };
+  }, [products, catalogTotal]);
 
   const findProductByScanCode = (rawCode: string): { product: Product; unit: SaleUnit } | null => {
     const code = normalizeSearchText(rawCode);
@@ -1265,7 +1353,10 @@ export default function POS() {
           </div>
         </div>
         
-        <div className="pos-mobile-ui pos-mobile-content flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 pb-[18rem] sm:p-4 sm:pb-[18rem] lg:p-2 lg:pb-2">
+        <div
+          className="pos-mobile-ui pos-mobile-content flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 pb-[18rem] sm:p-4 sm:pb-[18rem] lg:p-2 lg:pb-2"
+          onScroll={handleProductListScroll}
+        >
           <div className={`${mobileProductPickerOpen ? 'mb-2' : 'hidden'} lg:hidden`}>
             <button
               onClick={() => setShowMobileFilters((v) => !v)}
@@ -1467,6 +1558,12 @@ export default function POS() {
               );
             })}
           </div>
+
+          {(catalogLoading || catalogError || (catalogTotal > 0 && catalogProducts.length < catalogTotal)) && (
+            <div className="mt-2 flex min-h-7 items-center justify-center rounded-md border border-slate-100 bg-slate-50 px-2 py-1 text-[10px] text-slate-500">
+              {catalogError ? catalogError : catalogLoading ? 'Đang tải thêm hàng hóa…' : `Đã tải ${catalogProducts.length.toLocaleString('vi-VN')} / ${catalogTotal.toLocaleString('vi-VN')} sản phẩm · Cuộn để tải thêm`}
+            </div>
+          )}
           
           {filteredProducts.length === 0 && (
             <div className="flex min-h-[220px] flex-col items-center justify-center text-slate-200 p-6 text-center space-y-3">

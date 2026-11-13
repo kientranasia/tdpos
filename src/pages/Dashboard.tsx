@@ -22,6 +22,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [salesReturns, setSalesReturns] = useState<any[]>([]);
   const [revenueRange, setRevenueRange] = useState<RevenueRange>(14);
+  const [hoveredRevenueKey, setHoveredRevenueKey] = useState<string | null>(null);
   const [customFrom, setCustomFrom] = useState(() => {
     const date = new Date();
     date.setDate(date.getDate() - 13);
@@ -95,6 +96,7 @@ export default function Dashboard() {
   const revenueRangeLabel = revenueRange === 'custom'
     ? `${customFrom || '...'} → ${customTo || '...'}`
     : `${revenueRange} ngày`;
+  const hoveredRevenueDay = revenueDays.find((day) => day.key === hoveredRevenueKey);
 
   const kpiRows = [
     ['Doanh thu hôm nay', kpis.revenue, 'text-slate-900'],
@@ -127,13 +129,24 @@ export default function Dashboard() {
               <button type="button" onClick={() => setRevenueRange('custom')} className={`rounded px-2 py-1 text-[10px] font-medium transition ${revenueRange === 'custom' ? 'bg-white text-sky-700 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>Tùy chọn</button>
             </div>
           </div>
+          <div className="mt-2 flex min-h-7 items-center justify-between gap-2 rounded-md border border-slate-100 bg-slate-50 px-2 py-1 text-[10px]">
+            <span className="truncate text-slate-500">{hoveredRevenueDay ? `Ngày ${hoveredRevenueDay.label}` : 'Rê chuột vào cột để xem số liệu'}</span>
+            <span className={`shrink-0 font-semibold tabular-nums ${hoveredRevenueDay?.value && hoveredRevenueDay.value < 0 ? 'text-rose-700' : 'text-slate-700'}`}>{hoveredRevenueDay ? formatCurrency(hoveredRevenueDay.value) : '—'}</span>
+          </div>
           {revenueRange === 'custom' && (
             <div className="mt-2 grid grid-cols-2 gap-2 rounded-md border border-slate-100 bg-slate-50 p-2">
               <label className="text-[10px] font-medium text-slate-500">Từ ngày<input type="date" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} className="mt-1 h-7 w-full rounded border border-slate-200 bg-white px-1.5 text-[11px] text-slate-700" /></label>
               <label className="text-[10px] font-medium text-slate-500">Đến ngày<input type="date" value={customTo} onChange={(event) => setCustomTo(event.target.value)} className="mt-1 h-7 w-full rounded border border-slate-200 bg-white px-1.5 text-[11px] text-slate-700" /></label>
             </div>
           )}
-          <div className="mt-2 flex h-28 min-w-0 items-end gap-0.5 sm:gap-1">{revenueDays.map((day) => <div key={day.key} className="group flex min-w-0 flex-1 flex-col justify-end"><div title={`${day.label}: ${formatCurrency(day.value)}`} className={`w-full min-h-[2px] rounded-t ${day.value < 0 ? 'bg-rose-500/80' : 'bg-sky-500/80'}`} style={{ height: `${Math.max(2, Math.abs(day.value) / revenueScale * 100)}%` }} /><span className="dashboard-revenue-label mt-1 block min-w-0 truncate text-center text-slate-400">{day.label}</span></div>)}</div>
+          <div className="mt-2 flex h-28 min-w-0 items-end gap-0.5 sm:gap-1">
+            {revenueDays.map((day) => (
+              <div key={day.key} tabIndex={0} aria-label={`${day.label}: ${formatCurrency(day.value)}`} onMouseEnter={() => setHoveredRevenueKey(day.key)} onMouseLeave={() => setHoveredRevenueKey(null)} onFocus={() => setHoveredRevenueKey(day.key)} onBlur={() => setHoveredRevenueKey(null)} className="group relative flex h-full min-w-0 flex-1 flex-col justify-end outline-none">
+                <div title={`${day.label}: ${formatCurrency(day.value)}`} className={`w-full min-h-[2px] rounded-t ${day.value < 0 ? 'bg-rose-500/80' : 'bg-sky-500/80'} transition-opacity group-hover:opacity-80 group-focus-visible:ring-2 group-focus-visible:ring-sky-500`} style={{ height: `${Math.max(2, Math.abs(day.value) / revenueScale * 100)}%` }} />
+                <span className="dashboard-revenue-label mt-1 block min-w-0 truncate text-center text-slate-400">{day.label}</span>
+              </div>
+            ))}
+          </div>
         </div>
         <div className="rounded border border-slate-200 bg-white p-2"><div className="mb-2 flex items-center justify-between"><h2 className="text-xs font-semibold text-slate-700">Hàng sắp hết</h2><AlertCircle className="h-3.5 w-3.5 text-amber-600" /></div>{lowStock.length ? lowStock.map((row) => <button type="button" key={row.id} className="flex w-full items-center justify-between border-b border-slate-100 py-1.5 text-left text-xs hover:bg-sky-50" onClick={() => navigate(`/app/inventory?productId=${encodeURIComponent(row.id)}`)}><span className="truncate pr-2 text-slate-700">{row.name}</span><span className="shrink-0 font-medium text-rose-700">{row.stock} {row.unit}</span></button>) : <p className="py-4 text-center text-xs text-slate-500">Kho đang ổn định.</p>}<Button size="sm" variant="ghost" className="mt-1 h-7 w-full text-xs" onClick={() => navigate('/app/inventory')}>Mở kho <ArrowRight className="ml-1 h-3.5 w-3.5" /></Button></div>
       </section>
