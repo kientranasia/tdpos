@@ -8,6 +8,7 @@ import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { productsApi, stockMovementsApi } from '../lib/api';
 import { normalizeSearchText } from '../lib/utils';
+import { createProductScanIndex, findProductInScanIndex, productScanFactor } from '../lib/productScanIndex';
 import { Product } from '../types';
 
 type OperationMode = 'dispose' | 'internal' | 'transfer';
@@ -17,19 +18,6 @@ const operationMeta: Record<OperationMode, { title: string; subtitle: string; no
   dispose: { title: 'Xuất hủy', subtitle: 'Ghi nhận hàng hỏng, mất hoặc hết hạn', note: 'Xuất hủy', icon: PackageX, accent: 'bg-rose-600' },
   internal: { title: 'Xuất dùng nội bộ', subtitle: 'Ghi nhận hàng lấy sử dụng trong cửa hàng', note: 'Xuất dùng nội bộ', icon: HandCoins, accent: 'bg-amber-600' },
   transfer: { title: 'Chuyển hàng', subtitle: 'Chuẩn bị luồng điều chuyển giữa các kho', note: 'Chuyển hàng', icon: ArrowLeftRight, accent: 'bg-sky-600' },
-};
-
-const productMatchesCode = (product: Product, code: string) => {
-  const normalizedCode = normalizeSearchText(code);
-  return normalizeSearchText(product.sku) === normalizedCode
-    || normalizeSearchText(product.barcode) === normalizedCode
-    || product.units?.some((unit) => normalizeSearchText(unit.barcode) === normalizedCode);
-};
-
-const productScanFactor = (product: Product, code: string) => {
-  const normalizedCode = normalizeSearchText(code);
-  const matchedUnit = product.units?.find((unit) => normalizeSearchText(unit.barcode) === normalizedCode);
-  return Math.max(1, Number(matchedUnit?.factor) || 1);
 };
 
 export default function InventoryOperations() {
@@ -49,6 +37,7 @@ export default function InventoryOperations() {
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const scanCodeIndex = useMemo(() => createProductScanIndex(products), [products]);
 
   const options = useMemo(() => {
     const query = normalizeSearchText(searchTerm);
@@ -74,8 +63,8 @@ export default function InventoryOperations() {
   }, [mode]);
 
   const findProductByCode = async (code: string) => {
-    const localMatch = products.find((product) => productMatchesCode(product, code));
-    if (localMatch) return { product: localMatch, factor: productScanFactor(localMatch, code) };
+    const localMatch = findProductInScanIndex(scanCodeIndex, code);
+    if (localMatch) return { product: localMatch.product, factor: Math.max(1, Number(localMatch.unit.factor) || 1) };
     try {
       const remoteMatch = await productsApi.lookup(code);
       const product = products.find((item) => item.id === remoteMatch.id) || remoteMatch as Product;

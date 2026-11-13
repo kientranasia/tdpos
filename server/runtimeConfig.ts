@@ -15,9 +15,11 @@ export const DATABASE_PROVIDER = String(process.env.DATABASE_PROVIDER || 'sqlite
 if (DATABASE_PROVIDER === 'postgres' && OFFLINE_MODE) {
   throw new Error('PostgreSQL chỉ được phép dùng cho bản SaaS, không dùng trong offline mode.');
 }
-// Online SaaS can opt into one SQLite file per tenant while the shared
-// database remains the safe default until the migration has been verified.
-export const DATABASE_MODE = !OFFLINE_MODE && process.env.DATABASE_MODE?.trim().toLowerCase() === 'per_tenant'
+// Online SaaS uses a shared PostgreSQL database with tenant_id isolation.
+// Keep the legacy value readable for old deployments, but do not advertise
+// per-tenant SQLite as a supported online production profile.
+export const DATABASE_MODE = !OFFLINE_MODE && DATABASE_PROVIDER === 'sqlite'
+  && process.env.DATABASE_MODE?.trim().toLowerCase() === 'per_tenant'
   ? 'per_tenant'
   : 'shared';
 export const PER_TENANT_DATABASES = DATABASE_MODE === 'per_tenant';
@@ -25,11 +27,19 @@ export const API_PORT = Number(process.env.API_PORT || 3101);
 export const DATA_DIR = path.resolve(process.env.HKDPLUS_DATA_DIR || path.join(process.cwd(), 'data'));
 const configuredSetupToken = process.env.HKDPLUS_SETUP_TOKEN?.trim() || '';
 export const MIN_PASSWORD_LENGTH = 10;
+const insecureSecretPattern = /your-super-secret|change[-_ ]?this|fallback[-_ ]?secret|admin123|password|replace[-_ ]?with|__.*__/i;
+
+if (DATABASE_PROVIDER === 'postgres' && process.env.NODE_ENV === 'production') {
+  const configuredPostgresPassword = process.env.POSTGRES_PASSWORD?.trim() || '';
+  if (!configuredPostgresPassword || insecureSecretPattern.test(configuredPostgresPassword)) {
+    throw new Error('POSTGRES_PASSWORD phải được cấu hình bằng secret riêng, không dùng placeholder.');
+  }
+}
 
 if (configuredSetupToken && configuredSetupToken.length < 32) {
   throw new Error('HKDPLUS_SETUP_TOKEN phải có ít nhất 32 ký tự.');
 }
-if (configuredSetupToken && process.env.NODE_ENV === 'production' && /your-super-secret|change[-_ ]?this|fallback[-_ ]?secret|admin123|password/i.test(configuredSetupToken)) {
+if (configuredSetupToken && process.env.NODE_ENV === 'production' && insecureSecretPattern.test(configuredSetupToken)) {
   throw new Error('HKDPLUS_SETUP_TOKEN đang dùng giá trị mặc định không an toàn.');
 }
 
@@ -41,7 +51,7 @@ const loadOrCreateSecret = (environmentName: string, fileName: string) => {
     if (configured.length < 32) {
       throw new Error(`${environmentName} phải có ít nhất 32 ký tự.`);
     }
-    if (process.env.NODE_ENV === 'production' && /your-super-secret|change[-_ ]?this|fallback[-_ ]?secret|admin123|password/i.test(configured)) {
+    if (process.env.NODE_ENV === 'production' && insecureSecretPattern.test(configured)) {
       throw new Error(`${environmentName} đang dùng giá trị mặc định không an toàn.`);
     }
     return configured;

@@ -1,4 +1,18 @@
-{$HKDPLUS_HOSTNAME:hkdplus.lan} {
+{
+  # The offline gateway is exposed on a non-standard host HTTPS port. Disable
+  # Caddy's built-in redirect so the redirect can preserve that external port.
+  auto_https disable_redirects
+  # Some mobile browsers omit SNI when the URL uses an IP address. Select the
+  # LAN certificate instead of aborting the TLS handshake in that case.
+  default_sni {$HKDPLUS_HOSTNAME:hkdsmart.local}
+}
+
+:80 {
+  encode gzip zstd
+  redir https://{$HKDPLUS_HOSTNAME:hkdsmart.local}:{$HKDPLUS_HTTPS_PORT:6688}{uri} 308
+}
+
+https://{$HKDPLUS_HOSTNAME:hkdsmart.local}, https://localhost, https://127.0.0.1 {
   tls internal
   encode gzip zstd
   reverse_proxy web:80

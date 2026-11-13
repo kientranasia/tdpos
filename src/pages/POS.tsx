@@ -10,6 +10,7 @@ import download from 'downloadjs';
 import { v4 as uuid } from 'uuid';
 import { cashAccountsApi, priceListsApi, productsApi } from '../lib/api';
 import { applyPriceListAdjustment } from '../lib/priceLists';
+import { createProductScanIndex, findProductInScanIndex } from '../lib/productScanIndex';
 
 // Components
 import { POSCartItem } from '../components/pos/POSCartItem';
@@ -165,6 +166,12 @@ export default function POS() {
   }, [selectedCustomer?.type, priceLists]);
 
   const productUnits = (product: Product): SaleUnit[] => product.units?.length ? product.units : [{ name: product.unit, factor: 1, sku: product.sku, barcode: product.barcode }];
+
+  // Scanning must stay fast even when the tenant has a large catalog. Build
+  // the exact-code index once instead of normalizing every product on each
+  // scan (which is noticeably slow with tens of thousands of SKUs).
+  const scanCodeIndex = useMemo(() => createProductScanIndex(products), [products]);
+
   const resolvePrice = (product: Product, unitName = product.unit, unitFactor = 1, seen = new Set<string>()): number => {
     if (product.productType === 'combo') {
       if (seen.has(product.id)) return 0;
@@ -299,13 +306,7 @@ export default function POS() {
   const findProductByScanCode = (rawCode: string): { product: Product; unit: SaleUnit } | null => {
     const code = normalizeSearchText(rawCode);
     if (!code) return null;
-    const product = products.find((p) => normalizeSearchText(p.barcode) === code || normalizeSearchText(p.sku) === code);
-    if (product) return { product, unit: productUnits(product)[0] };
-    for (const candidate of products) {
-      const unit = productUnits(candidate).find((row) => normalizeSearchText(row.barcode) === code || normalizeSearchText(row.sku) === code);
-      if (unit) return { product: candidate, unit };
-    }
-    return null;
+    return findProductInScanIndex(scanCodeIndex, code) as { product: Product; unit: SaleUnit } | null;
   };
 
   const handleScannedCode = async (code: string) => {

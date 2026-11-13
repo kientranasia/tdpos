@@ -2,6 +2,6 @@ services:
   api:
     environment:
       NODE_ENV: uat
-  web:
+  gateway:
     ports:
-      - "${WEB_PUBLIC_PORT:-18077}:80"
+      - "127.0.0.1:${WEB_HTTP_PORT:-16666}:80"

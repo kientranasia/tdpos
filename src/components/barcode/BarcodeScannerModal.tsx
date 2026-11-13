@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { BarcodeFormat, BrowserMultiFormatReader, IScannerControls } from '@zxing/browser';
-import { Camera, RefreshCw, ScanLine, X } from 'lucide-react';
+import type { BarcodeFormat } from '@zxing/browser';
+import { Camera, Flashlight, RefreshCw, ScanLine, X } from 'lucide-react';
 import { Button } from '../ui/Button';
 
 type BarcodeScannerModalProps = {
@@ -34,25 +34,45 @@ const getCameraError = (error: unknown) => {
 
 type NativeBarcode = { rawValue?: string };
 type NativeBarcodeDetector = {
-  detect: (source: HTMLVideoElement) => Promise<NativeBarcode[]>;
+  detect: (source: CanvasImageSource) => Promise<NativeBarcode[]>;
 };
 type NativeBarcodeDetectorConstructor = new (options?: { formats?: string[] }) => NativeBarcodeDetector;
 
 const nativeBarcodeFormats = [
-  'aztec',
   'code_128',
   'code_39',
-  'code_93',
   'codabar',
   'data_matrix',
   'ean_13',
   'ean_8',
   'itf',
-  'pdf417',
   'qr_code',
   'upc_a',
   'upc_e',
 ];
+
+const zxingBarcodeFormats = [
+  1, // CODABAR
+  4, // CODE_128
+  2, // CODE_39
+  5, // DATA_MATRIX
+  7, // EAN_13
+  6, // EAN_8
+  8, // ITF
+  11, // QR_CODE
+  14, // UPC_A
+  15, // UPC_E
+] as unknown as BarcodeFormat[];
+
+type BarcodeTrackCapabilities = MediaTrackCapabilities & {
+  focusMode?: string[];
+  torch?: boolean;
+};
+
+type BarcodeTrackConstraintSet = MediaTrackConstraintSet & {
+  focusMode?: string;
+  torch?: boolean;
+};
 
 const createNativeBarcodeDetector = async (): Promise<NativeBarcodeDetector | null> => {
   const detectorConstructor = (window as Window & {
@@ -81,7 +101,7 @@ export function BarcodeScannerModal({
   onDetected,
 }: BarcodeScannerModalProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const controlsRef = useRef<IScannerControls | null>(null);
+  const cameraTrackRef = useRef<MediaStreamTrack | null>(null);
   const startScannerRef = useRef<(() => void) | null>(null);
   const onCloseRef = useRef(onClose);
   const onDetectedRef = useRef(onDetected);
@@ -89,6 +109,8 @@ export function BarcodeScannerModal({
   const [starting, setStarting] = useState(false);
   const [scanStatus, setScanStatus] = useState<'starting' | 'scanning'>('starting');
   const [scanEngine, setScanEngine] = useState<'native' | 'zxing' | null>(null);
+  const [torchSupported, setTorchSupported] = useState(false);
+  const [torchEnabled, setTorchEnabled] = useState(false);
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -99,8 +121,8 @@ export function BarcodeScannerModal({
     if (!open) return;
 
     let cancelled = false;
-    let controls: IScannerControls | null = null;
     let stream: MediaStream | null = null;
+    let scanRun = 0;
     const video = videoRef.current;
 
     const stopStream = (mediaStream: MediaStream | null) => {
@@ -109,8 +131,12 @@ export function BarcodeScannerModal({
 
     const getCameraStream = async () => {
       const videoConstraints = {
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
+        // 720p is enough for retail barcodes and starts much faster than
+        // asking a phone for a full 1080p stream.
+        width: { ideal: 1280, min: 640 },
+        height: { ideal: 720, min: 480 },
+        frameRate: { ideal: 30, max: 30 },
+        aspectRatio: { ideal: 16 / 9 },
       };
       let nextStream: MediaStream;
 
@@ -131,32 +157,15 @@ export function BarcodeScannerModal({
         });
       }
 
-      // Once permission is granted, choose a device explicitly when the
-      // browser exposes a rear-camera label but did not honor facingMode.
-      try {
-        const currentTrack = nextStream.getVideoTracks()[0];
-        const currentSettings = currentTrack?.getSettings();
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const rearCamera = devices.find((device) =>
-          device.kind === 'videoinput' && /back|rear|environment|camera sau|sau/i.test(device.label)
-        );
-        if (rearCamera?.deviceId && rearCamera.deviceId !== currentSettings?.deviceId) {
-          stopStream(nextStream);
-          nextStream = await navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: { ...videoConstraints, deviceId: { exact: rearCamera.deviceId } },
-          });
-        }
-      } catch {
-        // Keep the already-open stream if device enumeration is unavailable.
-      }
-
       // Keep autofocus running while the user moves the barcode into frame.
       try {
         const track = nextStream.getVideoTracks()[0];
-        const capabilities = track?.getCapabilities() as MediaTrackCapabilities & { focusMode?: string[] };
+        cameraTrackRef.current = track || null;
+        const capabilities = track?.getCapabilities() as BarcodeTrackCapabilities;
+        setTorchSupported(Boolean(capabilities?.torch));
+        setTorchEnabled(false);
         if (track && capabilities.focusMode?.includes('continuous')) {
-          await track.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] });
+          await track.applyConstraints({ advanced: [{ focusMode: 'continuous' } as BarcodeTrackConstraintSet] });
         }
       } catch {
         // Focus controls are optional and not exposed by every mobile browser.
@@ -165,24 +174,60 @@ export function BarcodeScannerModal({
       return nextStream;
     };
 
-    const showDetectedCode = (rawCode: string) => {
+    const showDetectedCode = (rawCode: string, runId: number) => {
       const code = rawCode.trim();
-      if (!code || cancelled) return;
+      if (!code || cancelled || runId !== scanRun) return;
 
       cancelled = true;
       setScanStatus('scanning');
-      controls?.stop();
-      controlsRef.current?.stop();
       stopStream(stream);
       onDetectedRef.current(code);
       onCloseRef.current();
     };
 
+    const waitForNextFrame = () => new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => resolve());
+    });
+
+    const drawScanRegion = (canvas: HTMLCanvasElement, fullFrame: boolean) => {
+      if (!video.videoWidth || !video.videoHeight) return false;
+
+      const sourceWidth = video.videoWidth;
+      const sourceHeight = video.videoHeight;
+      const cropX = fullFrame ? 0 : Math.round(sourceWidth * 0.09);
+      const cropY = fullFrame ? 0 : Math.round(sourceHeight * 0.14);
+      const cropWidth = fullFrame ? sourceWidth : Math.round(sourceWidth * 0.82);
+      const cropHeight = fullFrame ? sourceHeight : Math.round(sourceHeight * 0.72);
+      const maxDecodeWidth = 960;
+      const scale = Math.min(1, maxDecodeWidth / cropWidth);
+
+      canvas.width = Math.max(1, Math.round(cropWidth * scale));
+      canvas.height = Math.max(1, Math.round(cropHeight * scale));
+      const context = canvas.getContext('2d', { alpha: false });
+      if (!context) return false;
+      context.imageSmoothingEnabled = false;
+      context.drawImage(
+        video,
+        cropX,
+        cropY,
+        cropWidth,
+        cropHeight,
+        0,
+        0,
+        canvas.width,
+        canvas.height,
+      );
+      return true;
+    };
+
     const startScanner = async () => {
+      const runId = ++scanRun;
       setError('');
       setStarting(true);
       setScanStatus('starting');
       setScanEngine(null);
+      setTorchSupported(false);
+      setTorchEnabled(false);
       if (!video) return;
 
       if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
@@ -191,28 +236,11 @@ export function BarcodeScannerModal({
         return;
       }
 
-      const reader = new BrowserMultiFormatReader(undefined, {
-        delayBetweenScanAttempts: 180,
-        delayBetweenScanSuccess: 180,
-      });
-      reader.possibleFormats = [
-        BarcodeFormat.AZTEC,
-        BarcodeFormat.CODABAR,
-        BarcodeFormat.DATA_MATRIX,
-        BarcodeFormat.EAN_13,
-        BarcodeFormat.EAN_8,
-        BarcodeFormat.ITF,
-        BarcodeFormat.PDF_417,
-        BarcodeFormat.CODE_128,
-        BarcodeFormat.CODE_39,
-        BarcodeFormat.UPC_A,
-        BarcodeFormat.UPC_E,
-        BarcodeFormat.QR_CODE,
-      ];
+      const nativeDetectorPromise = createNativeBarcodeDetector();
 
       try {
         stream = await getCameraStream();
-        if (cancelled) {
+        if (cancelled || runId !== scanRun) {
           stopStream(stream);
           return;
         }
@@ -221,25 +249,38 @@ export function BarcodeScannerModal({
         video.muted = true;
         video.playsInline = true;
         await video.play();
+        if (!video.videoWidth || !video.videoHeight) {
+          await new Promise<void>((resolve) => {
+            video.addEventListener('loadeddata', () => resolve(), { once: true });
+          });
+        }
         setStarting(false);
         setScanStatus('scanning');
 
-        const nativeDetector = await createNativeBarcodeDetector();
+        const nativeDetector = await nativeDetectorPromise;
         if (nativeDetector) {
           setScanEngine('native');
+          const canvas = document.createElement('canvas');
           const detectNative = async () => {
-            while (!cancelled && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+            let attempts = 0;
+            while (!cancelled && runId === scanRun && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
               try {
-                const results = await nativeDetector.detect(video);
+                // Most retail codes are placed in the guided region. A full
+                // frame retry every few attempts still catches badly aligned
+                // codes without making every detection expensive.
+                const fullFrame = attempts % 6 === 5;
+                if (!drawScanRegion(canvas, fullFrame)) break;
+                const results = await nativeDetector.detect(canvas);
                 const code = results.find((result) => result.rawValue?.trim())?.rawValue;
                 if (code) {
-                  showDetectedCode(code);
+                  showDetectedCode(code, runId);
                   return;
                 }
               } catch {
                 // A frame can fail while the camera is adjusting focus/exposure.
               }
-              await new Promise((resolve) => window.setTimeout(resolve, 120));
+              attempts += 1;
+              await waitForNextFrame();
             }
           };
           void detectNative();
@@ -247,16 +288,34 @@ export function BarcodeScannerModal({
         }
 
         setScanEngine('zxing');
-        controls = await reader.decodeFromStream(stream, video, (result, _decodeError, scanControls) => {
-            if (cancelled || !result) return;
-            scanControls.stop();
-            showDetectedCode(result.getText());
-          });
-
-        if (cancelled) controls.stop();
-        else controlsRef.current = controls;
+        // Keep the fallback decoder out of the initial page bundle. Modern
+        // browsers use BarcodeDetector; ZXing is loaded only when needed.
+        const { BrowserMultiFormatReader } = await import('@zxing/browser');
+        const reader = new BrowserMultiFormatReader(undefined, {
+          delayBetweenScanAttempts: 90,
+          delayBetweenScanSuccess: 90,
+        });
+        reader.possibleFormats = zxingBarcodeFormats;
+        const canvas = document.createElement('canvas');
+        let attempts = 0;
+        while (!cancelled && runId === scanRun && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+          try {
+            const fullFrame = attempts % 5 === 4;
+            if (drawScanRegion(canvas, fullFrame)) {
+              const result = reader.decodeFromCanvas(canvas);
+              if (result) {
+                showDetectedCode(result.getText(), runId);
+                return;
+              }
+            }
+          } catch {
+            // ZXing throws when a frame has no readable code; keep scanning.
+          }
+          attempts += 1;
+          await waitForNextFrame();
+        }
       } catch (scannerError) {
-        if (!cancelled) {
+        if (!cancelled && runId === scanRun) {
           stopStream(stream);
           setError(getCameraError(scannerError));
           setStarting(false);
@@ -267,22 +326,38 @@ export function BarcodeScannerModal({
     };
 
     startScannerRef.current = () => {
-      controls?.stop();
+      scanRun += 1;
       stopStream(stream);
+      stream = null;
+      cameraTrackRef.current = null;
       void startScanner();
     };
     void startScanner();
 
     return () => {
       cancelled = true;
+      scanRun += 1;
       startScannerRef.current = null;
-      controls?.stop();
-      controlsRef.current?.stop();
-      controlsRef.current = null;
       stopStream(stream);
+      cameraTrackRef.current = null;
+      setTorchSupported(false);
+      setTorchEnabled(false);
       if (video) video.srcObject = null;
     };
   }, [open]);
+
+  const toggleTorch = async () => {
+    const track = cameraTrackRef.current;
+    if (!track || !torchSupported) return;
+    const nextEnabled = !torchEnabled;
+    try {
+      await track.applyConstraints({ advanced: [{ torch: nextEnabled } as BarcodeTrackConstraintSet] });
+      setTorchEnabled(nextEnabled);
+    } catch {
+      // Torch support is optional and some browsers report it incorrectly.
+      setTorchSupported(false);
+    }
+  };
 
   if (!open) return null;
 
@@ -317,6 +392,17 @@ export function BarcodeScannerModal({
           <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-slate-950">
             <video ref={videoRef} className="h-full w-full object-cover" muted playsInline autoPlay />
             <div className="pointer-events-none absolute inset-[14%_9%] rounded-xl border-2 border-white/90 shadow-[0_0_0_999px_rgba(15,23,42,0.28)]" />
+            {torchSupported && !error && (
+              <button
+                type="button"
+                onClick={() => void toggleTorch()}
+                aria-label={torchEnabled ? 'Tắt đèn hỗ trợ quét mã' : 'Bật đèn hỗ trợ quét mã'}
+                aria-pressed={torchEnabled}
+                className={`absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full border text-white shadow-lg backdrop-blur transition ${torchEnabled ? 'border-amber-300 bg-amber-400/90 text-slate-950' : 'border-white/40 bg-slate-950/60 hover:bg-slate-950/80'}`}
+              >
+                <Flashlight className="h-4 w-4" />
+              </button>
+            )}
             <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center">
               <span className="rounded-full bg-slate-950/70 px-3 py-1 text-[11px] font-medium text-white">
                 {scanStatus === 'starting' ? 'Đang mở camera...' : 'Đang nhận diện mã...'}

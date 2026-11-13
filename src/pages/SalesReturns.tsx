@@ -8,6 +8,7 @@ import { Input } from '../components/ui/Input';
 import AppPageHeader from '../components/layout/AppPageHeader';
 import { cashAccountsApi, invoicesApi, productsApi } from '../lib/api';
 import { formatCurrency, normalizeSearchText } from '../lib/utils';
+import { createProductScanIndex, findProductInScanIndex } from '../lib/productScanIndex';
 import { Invoice, Product, ProductUnit } from '../types';
 
 type ReturnMode = 'invoice' | 'quick';
@@ -35,13 +36,6 @@ const unitForCode = (product: Product, code: string) => {
   return productUnits(product).find((unit) => normalizeSearchText(unit.barcode) === normalizedCode) || productUnits(product)[0];
 };
 
-const productMatchesCode = (product: Product, code: string) => {
-  const normalizedCode = normalizeSearchText(code);
-  return normalizeSearchText(product.sku) === normalizedCode
-    || normalizeSearchText(product.barcode) === normalizedCode
-    || productUnits(product).some((unit) => normalizeSearchText(unit.barcode) === normalizedCode);
-};
-
 export default function SalesReturns() {
   const { invoices, customers, products, refreshInvoices, refreshProducts } = useApp();
   const [searchParams] = useSearchParams();
@@ -61,6 +55,7 @@ export default function SalesReturns() {
   const [scanMessage, setScanMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const scanCodeIndex = useMemo(() => createProductScanIndex(products), [products]);
 
   const customerName = (invoice: Invoice) => invoice.customerId
     ? customers.find((customer) => customer.id === invoice.customerId)?.name || 'Khách hàng'
@@ -151,8 +146,8 @@ export default function SalesReturns() {
   };
 
   const findProductByCode = async (code: string) => {
-    const localMatch = products.find((product) => productMatchesCode(product, code));
-    if (localMatch) return { product: localMatch, unit: unitForCode(localMatch, code) };
+    const localMatch = findProductInScanIndex(scanCodeIndex, code);
+    if (localMatch) return { product: localMatch.product, unit: localMatch.unit };
     try {
       const remoteProduct = await productsApi.lookup(code) as Product;
       return { product: remoteProduct, unit: unitForCode(remoteProduct, code) };

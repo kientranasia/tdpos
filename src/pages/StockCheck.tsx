@@ -7,25 +7,13 @@ import { Input } from '../components/ui/Input';
 import { Product } from '../types';
 import { productsApi, stockMovementsApi } from '../lib/api';
 import { normalizeSearchText } from '../lib/utils';
+import { createProductScanIndex, findProductInScanIndex, productScanFactor } from '../lib/productScanIndex';
 
 type ActualDraft = number | string;
 
 const signedQuantity = (value: number) => {
   if (value === 0) return '0';
   return `${value > 0 ? '+' : ''}${value}`;
-};
-
-const productMatchesCode = (product: Product, code: string) => {
-  const normalizedCode = normalizeSearchText(code);
-  return normalizeSearchText(product.sku) === normalizedCode
-    || normalizeSearchText(product.barcode) === normalizedCode
-    || product.units?.some((unit) => normalizeSearchText(unit.barcode) === normalizedCode);
-};
-
-const productScanFactor = (product: Product, code: string) => {
-  const normalizedCode = normalizeSearchText(code);
-  const matchedUnit = product.units?.find((unit) => normalizeSearchText(unit.barcode) === normalizedCode);
-  return Math.max(1, Number(matchedUnit?.factor) || 1);
 };
 
 export default function StockCheck() {
@@ -39,6 +27,7 @@ export default function StockCheck() {
   const [scanMessage, setScanMessage] = useState('');
   const [lastScannedProductId, setLastScannedProductId] = useState<string | null>(null);
   const [showScanner, setShowScanner] = useState(false);
+  const scanCodeIndex = useMemo(() => createProductScanIndex(products), [products]);
 
   const loadHistory = async () => {
     setLoadingHistory(true);
@@ -92,8 +81,8 @@ export default function StockCheck() {
   };
 
   const findProductByCode = async (code: string) => {
-    const localMatch = products.find((product) => productMatchesCode(product, code));
-    if (localMatch) return { product: localMatch, factor: productScanFactor(localMatch, code) };
+    const localMatch = findProductInScanIndex(scanCodeIndex, code);
+    if (localMatch) return { product: localMatch.product, factor: Math.max(1, Number(localMatch.unit.factor) || 1) };
     try {
       const remoteMatch = await productsApi.lookup(code);
       const product = products.find((item) => item.id === remoteMatch.id) || remoteMatch as Product;

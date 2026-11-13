@@ -1,88 +1,89 @@
-# HKD Smart Online SaaS Architecture
+# HKD Smart deployment profiles
 
-This document describes the online SaaS track. The offline release remains
-on `offline-stable` and is deployed with `docker-compose.offline.yml`.
+HKD Smart dùng một codebase và hai profile triển khai. Giao diện, nghiệp vụ
+bán hàng, hàng hóa, kho, đối tác, công nợ và báo cáo được dùng chung; chỉ
+database provider, bootstrap và hạ tầng runtime thay đổi theo profile.
 
-## Product boundary
+## Profile online SaaS
 
-- Customers cannot register directly on the public website.
-- A platform admin creates each tenant manually.
-- The tenant owner manages users and permissions inside that tenant.
-- The Cloudflare hostname is deployment configuration. The application must
-  not hard-code a single public domain.
+- Compose: docker-compose.yml
+- Environment: .env.saas-postgres.example
+- Database: PostgreSQL 16, shared database, tenant isolation bằng tenant_id
+- OFFLINE_MODE=false
+- DATABASE_PROVIDER=postgres
+- Platform admin tạo tenant và owner thủ công; không có public tenant registration.
+- Cloudflare xử lý HTTPS; Tunnel trỏ tới HTTP gateway tại localhost:WEB_HTTP_PORT.
+- Readiness: /api/ready; liveness: /api/health.
 
-## Target request flow
+Luồng triển khai:
 
 ```text
-Public hostname (Cloudflare configuration)
+Public hostname
   -> Cloudflare Tunnel
-  -> shared HKD Smart application
-  -> platform control database: tenant + user + subscription registry
-  -> tenant database: business data for exactly one tenant
+  -> Caddy gateway (localhost HTTP)
+  -> web container
+  -> API container
+  -> PostgreSQL container
 ```
 
-The login request identifies the tenant through the account registry. The
-server puts the tenant identity in the signed session and resolves the tenant
-database server-side. A browser must never be allowed to select an arbitrary
-tenant by sending a tenant id in the request body.
+Tenant được xác định từ session đã ký ở server. Browser không được tự chọn
+tenant bằng cách gửi tenantId tùy ý. Mọi truy vấn business phải giữ
+tenant_id trong điều kiện truy vấn.
 
-## Current foundation on this branch
+## Profile offline
 
-- Public registration is blocked by the API when `OFFLINE_MODE=false`.
-- `ENABLE_PLATFORM_ADMIN=true` enables the internal platform-admin routes.
-- The first platform admin can be bootstrapped from environment variables;
-  bootstrap runs only when the admin table is empty.
-- `HKDPLUS_PUBLIC_URL`, `HKDPLUS_HOSTNAME`, and `CORS_ORIGINS` are deployment
-  settings, so a Cloudflare hostname can be changed without changing code.
-- The production Compose gateway listens on the host port configured by
-  `WEB_HTTP_PORT` (default `6666`) and expects the Cloudflare Tunnel to use an
-  HTTP origin; public HTTPS remains terminated at Cloudflare.
-- `DATABASE_MODE=per_tenant` enables a request-scoped SQLite database file for
-  each tenant under the data volume. The control database keeps tenant/user
-  registry data and platform-admin records; business routes are routed to the
-  tenant file after JWT validation.
-- Provisioning is idempotent: a tenant database is created from the current
-  schema and only that tenant's rows are copied. Global permission/package
-  definitions are copied; child rows are selected through their tenant-owned
-  parent. The control record stores database key, engine, status, and the last
-  provision time.
-- User changes made by the tenant owner are mirrored to the control registry so
-  the next login can be resolved without allowing a client to choose a tenant.
-- Tenant backups are encrypted with the instance secret and stored in a
-  tenant-specific directory. Restore validates the checksum and SQLite
-  integrity, writes a safety snapshot, and replaces only the active tenant
-  database; it does not overwrite the control database.
-- Platform-admin statistics and audit logs aggregate from tenant databases in
-  per-tenant mode, so newly created products, invoices, debt, and tenant
-  activity are not silently omitted from the SaaS console.
-- Tenant database health can be inspected and provisioning can be retried from
-  the platform-admin API. User creation is enforced against the assigned
-  package seat limit for both platform admins and tenant owners.
-- This first isolation adapter uses SQLite files to keep the online branch
-  deployable with the existing application. PostgreSQL remains the target
-  engine before high-scale production rollout; the provider boundary is kept
-  separate so that migration does not touch the offline branch.
+- Compose: docker-compose.offline.yml
+- Environment: .env.offline.example
+- Database: SQLite trong volume cục bộ
+- OFFLINE_MODE=true
+- DATABASE_PROVIDER=sqlite
+- ENABLE_PLATFORM_ADMIN=false
+- Truy cập qua LAN/HTTPS nội bộ, mặc định `https://hkdsmart.local:6688` bằng
+  mDNS/Bonjour; có thể thay bằng IP hoặc Local DNS theo môi trường khách hàng.
 
-## Database migration plan
+Profile offline không chạy PostgreSQL, không cần Cloudflare và không hiển thị
+Platform Admin SaaS. Đây là gói cài đặt riêng cho từng khách hàng.
 
-1. Replace the SQLite tenant adapter with the PostgreSQL provider for hosted
-   production, while keeping SQLite as the offline provider.
-2. Add a tenant database record with a stable database key and provisioning
-   status; never expose connection credentials to the client.
-3. Extract the existing schema/migrations into a reusable tenant-database
-   migrator and run schema-version checks for existing tenant files.
-4. Migrate the current SQLite data into the first tenant database and verify
-   product, stock, invoice, debt, cashbook, user, and permission counts.
-5. Move the existing SQLite backup/restore and health checks to the final
-   provider abstraction, then add object-storage backup retention, restore
-   drills, and failure recovery before opening tenant creation to production
-   operations.
+## Quy tắc cấu hình
 
-PostgreSQL is the target online engine. SQLite remains the offline engine.
+Không trộn file environment hoặc volume giữa hai profile:
+
+| Nhu cầu | Compose | Environment | Database |
+| --- | --- | --- | --- |
+| Online SaaS | docker-compose.yml | .env từ .env.saas-postgres.example | PostgreSQL |
+| Offline khách hàng | docker-compose.offline.yml | .env từ .env.offline.example | SQLite |
+| Online UAT | docker-compose.yml + docker-compose.uat.yml | .env.uat.example | PostgreSQL |
+
+docker-compose.postgres.yml vẫn được giữ như tên tương thích cho các máy
+đã triển khai bằng tên file cũ; cấu hình chuẩn mới là docker-compose.yml.
+
+## Một repository, hai release profile
+
+Không tạo project riêng cho online và offline. Mọi thay đổi dùng chung phải
+được kiểm tra ở cả hai provider trước khi merge:
+
+1. Type-check và build frontend.
+2. Smoke test nghiệp vụ SQLite/offline.
+3. PostgreSQL migration, readiness và tenant-isolation smoke test.
+4. Kiểm tra compose với đúng environment profile.
+
+Các tính năng chỉ dành cho SaaS phải được bảo vệ bằng cấu hình runtime như
+OFFLINE_MODE và ENABLE_PLATFORM_ADMIN; không được để frontend tự quyết
+quyền truy cập.
+
+## Bảo mật và vận hành
+
+- Secret production không commit và không dùng lại giữa các instance.
+- PostgreSQL không expose port ra host; chỉ API trong Docker network truy cập.
+- Chạy migration bằng npm run pg:migrate trong image PostgreSQL.
+- Backup/restore PostgreSQL dùng npm run backup:postgres và runbook P0.
+- Trước khi mở traffic sau deployment, kiểm tra /api/ready, logs restart,
+  migration status và tenant-isolation smoke test.
 
 ## Release policy
 
-- `offline-stable` / `offline-v1.0.0`: frozen customer-installation baseline.
-- `online-saas-multitenant`: SaaS development and staging.
-- SaaS changes are not merged into the offline branch unless they are
-  explicitly reviewed as portable security or bug fixes.
+- Tag offline có thể giữ baseline ổn định riêng, ví dụ offline-v1.x.
+- Tag SaaS dùng profile PostgreSQL, ví dụ saas-v1.x.
+- Không merge thay đổi hạ tầng PostgreSQL vào profile offline nếu không được
+  kiểm tra portability; nhưng các thay đổi UI/nghiệp vụ dùng chung có thể
+  merge vào cả hai release.

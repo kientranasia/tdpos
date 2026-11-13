@@ -4,7 +4,7 @@ set -eu
 # Run from the repository root. The dump is created by the PostgreSQL
 # container, so the host never needs the database password or pg_dump binary.
 COMPOSE_ENV_FILE=${COMPOSE_ENV_FILE:-.env.saas-postgres.local}
-COMPOSE_FILE=${COMPOSE_FILE:-docker-compose.postgres.yml}
+COMPOSE_FILE=${COMPOSE_FILE:-docker-compose.yml}
 BACKUP_DIR=${BACKUP_DIR:-./backups/postgres}
 
 if [ ! -f "$COMPOSE_ENV_FILE" ]; then

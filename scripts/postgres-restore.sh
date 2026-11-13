@@ -4,7 +4,7 @@ set -eu
 # Restore is intentionally explicit and destructive. Set
 # CONFIRM_RESTORE=YES only after taking a fresh backup and checking the file.
 COMPOSE_ENV_FILE=${COMPOSE_ENV_FILE:-.env.saas-postgres.local}
-COMPOSE_FILE=${COMPOSE_FILE:-docker-compose.postgres.yml}
+COMPOSE_FILE=${COMPOSE_FILE:-docker-compose.yml}
 BACKUP_FILE=${BACKUP_FILE:-}
 
 if [ -z "$BACKUP_FILE" ] || [ ! -f "$BACKUP_FILE" ]; then

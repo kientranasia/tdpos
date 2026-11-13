@@ -23,7 +23,7 @@ The command creates a PostgreSQL custom-format dump and a SHA-256 checksum under
 For the online server, set `COMPOSE_ENV_FILE` and `COMPOSE_FILE` if the production files use different names:
 
 ```sh
-COMPOSE_ENV_FILE=.env.saas-postgres COMPOSE_FILE=docker-compose.postgres.yml npm run backup:postgres
+COMPOSE_ENV_FILE=.env.saas-postgres COMPOSE_FILE=docker-compose.yml npm run backup:postgres
 ```
 
 ## Restore
