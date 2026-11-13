@@ -133,6 +133,7 @@ export default function Inventory() {
   const [customUnits, setCustomUnits] = useState<string[]>([]);
   const [savingProduct, setSavingProduct] = useState(false);
   const [formError, setFormError] = useState('');
+  const [importMessage, setImportMessage] = useState('');
   const [stockMovements, setStockMovements] = useState<any[]>([]);
   const [stockCardProduct, setStockCardProduct] = useState<Product | null>(null);
   const [stockCardRows, setStockCardRows] = useState<any[]>([]);
@@ -358,7 +359,7 @@ export default function Inventory() {
     }
 
     setSavingProduct(true);
-    const productId = editingProduct?.id || uuid();
+    let productId = editingProduct?.id || uuid();
     let currentPriceLists = priceLists;
     if (!currentPriceLists.length) {
       try {
@@ -396,7 +397,9 @@ export default function Inventory() {
         status: 'active',
         ...payload
       };
-      success = await addProduct(product);
+      const createdProduct = await addProduct(product);
+      success = Boolean(createdProduct);
+      if (createdProduct?.id) productId = createdProduct.id;
     }
     if (!success) {
       setSavingProduct(false);
@@ -562,7 +565,8 @@ export default function Inventory() {
 
   const createCategoryForManager = async (name: string) => {
     if (!activeTenant) return false;
-    return addCategory({ id: uuid(), tenantId: activeTenant.id, name });
+    const created = await addCategory({ id: uuid(), tenantId: activeTenant.id, name });
+    return Boolean(created);
   };
 
   const renameCategoryForManager = async (categoryId: string, name: string) => updateCategory(categoryId, name);
@@ -685,12 +689,13 @@ export default function Inventory() {
     }
   };
 
-  const normalizeHeader = (value: unknown) =>
-    String(value || '')
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g, '')
-      .replace(/[^a-z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ_]/g, '');
+  const normalizeHeader = (value: unknown) => String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
 
   const parseNumber = (value: unknown, fallback = 0) => {
     if (value === null || value === undefined || value === '') return fallback;
@@ -704,13 +709,7 @@ export default function Inventory() {
     return ['1', 'true', 'yes', 'y', 'có', 'co'].includes(text);
   };
 
-  const normalizeImportHeader = (value: unknown) => String(value || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/đ/g, 'd')
-    .replace(/Đ/g, 'D')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '');
+  const normalizeImportHeader = normalizeHeader;
 
   const importText = (value: unknown) => String(value ?? '').trim();
 
@@ -760,6 +759,7 @@ export default function Inventory() {
     if (!file || !activeTenant) return;
 
     setFormError('');
+    setImportMessage('');
     setImporting(true);
     try {
       const data = await file.arrayBuffer();
@@ -786,7 +786,7 @@ export default function Inventory() {
         const mapped: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(rawRow)) {
           const k = normalizeHeader(key);
-          if (['sku', 'mãsku', 'masanpham', 'ma'].includes(k)) mapped.sku = value;
+          if (['sku', 'masku', 'mãsku', 'masanpham', 'ma'].includes(k)) mapped.sku = value;
           else if (['name', 'ten', 'tensanpham', 'sanpham'].includes(k)) mapped.name = value;
           else if (['barcode', 'mavach', 'ean', 'upc'].includes(k)) mapped.barcode = value;
           else if (['category', 'danhmuc'].includes(k)) mapped.category = value;
@@ -846,6 +846,7 @@ export default function Inventory() {
   const applyImportPreview = async () => {
     if (!activeTenant) return;
     setFormError('');
+    setImportMessage('');
     setImporting(true);
     let created = 0;
     let updated = 0;
@@ -887,15 +888,15 @@ export default function Inventory() {
           attributes: row.payload.attributes || null,
           status: row.payload.status || 'active',
         };
-        const ok = await addProduct(product);
-        if (ok) created += 1;
+        const createdProduct = await addProduct(product);
+        if (createdProduct) created += 1;
         else skipped += 1;
       }
 
       setShowImportPreviewModal(false);
       setImportPreviewRows([]);
       setSelectedImportRows([]);
-      window.alert(`Import hoàn tất.\nTạo mới: ${created}\nCập nhật: ${updated}\nBỏ qua: ${skipped}`);
+      setImportMessage(`Import hoàn tất · Tạo mới: ${created} · Cập nhật: ${updated} · Bỏ qua: ${skipped}`);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Không thể áp dụng import.');
     } finally {
@@ -921,6 +922,7 @@ export default function Inventory() {
   const applyKiotImport = async () => {
     if (!kiotImportPreview) return;
     setFormError('');
+    setImportMessage('');
     setImporting(true);
     try {
       const result = await productsApi.importBatch({
@@ -933,7 +935,9 @@ export default function Inventory() {
       await loadKiotImportHistory();
       setShowKiotImportModal(false);
       setKiotImportPreview(null);
-      window.alert(`Import dữ liệu hoàn tất.\nTạo mới: ${result.summary?.createdCount || 0}\nCập nhật: ${result.summary?.updatedCount || 0}\nĐơn vị quy đổi: ${result.summary?.unitCount || 0}\nLỗi bị chặn: ${result.summary?.errorCount || 0}`);
+      setImportMessage(result.idempotent
+        ? `File này đã được import trước đó, hệ thống không tạo trùng dữ liệu · Batch: ${result.batchId || 'đã có'}`
+        : `Import dữ liệu hoàn tất · Tạo mới: ${result.summary?.createdCount || 0} · Cập nhật: ${result.summary?.updatedCount || 0} · Đơn vị quy đổi: ${result.summary?.unitCount || 0} · Lỗi bị chặn: ${result.summary?.errorCount || 0}`);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Không thể import lô dữ liệu sản phẩm.');
     } finally {
@@ -2102,6 +2106,21 @@ export default function Inventory() {
           </Button>
         </div>
       </div>
+
+      {(importMessage || (formError && !showProductModal && !showImportPreviewModal && !showKiotImportModal)) && (
+        <div className="shrink-0 px-2 pt-2 lg:px-3">
+          {importMessage && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800" role="status">
+              {importMessage}
+            </div>
+          )}
+          {formError && !showProductModal && !showImportPreviewModal && !showKiotImportModal && (
+            <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700" role="alert">
+              {formError}
+            </div>
+          )}
+        </div>
+      )}
 
         <div className="flex-1 overflow-y-auto p-2 lg:p-3">
         <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-4">

@@ -82,6 +82,7 @@ export default function POS() {
   const [currentInvoice, setCurrentInvoice] = useState<Invoice | null>(null);
   const [currentInvoiceItems, setCurrentInvoiceItems] = useState<InvoiceItem[]>([]);
   const [formError, setFormError] = useState('');
+  const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [lastAddedProductId, setLastAddedProductId] = useState<string | null>(null);
   const [cartPulse, setCartPulse] = useState(false);
   const [showScannerModal, setShowScannerModal] = useState(false);
@@ -567,7 +568,7 @@ export default function POS() {
     setActualPaymentAmount(nextMethod === 'debt' ? 0 : finalAmount);
   };
 
-  const handleCheckout = () => {
+  const handleCheckout = async () => {
     setFormError('');
     if (!activeTenant || !currentUser || cart.length === 0) return;
     if (invoiceDebtAmount > 0 && !selectedCustomer) {
@@ -599,26 +600,36 @@ export default function POS() {
       createdAt: new Date().toISOString()
     };
 
-    addInvoice(newInvoice, cart.map((item) => ({
-      ...item,
-      priceOverride: false,
-      discountPercent: item.discountPercent || 0,
-    })));
+    setIsCheckingOut(true);
+    try {
+      const createdInvoice = await addInvoice(newInvoice, cart.map((item) => ({
+        ...item,
+        priceOverride: false,
+        discountPercent: item.discountPercent || 0,
+      })));
+      if (!createdInvoice) {
+        setFormError('Không thể ghi nhận hóa đơn. Vui lòng thử lại.');
+        return;
+      }
 
-    setLastInvoiceId(newInvoice.id);
-    setCurrentInvoice(newInvoice);
-    const itemsWithInvoiceId = cart.map(item => ({ ...item, invoiceId: newInvoice.id }));
-    setCurrentInvoiceItems(itemsWithInvoiceId);
-    
-    setStep('success');
-    setCart([]);
-    setOrderDiscountValue(0);
-    setActualPaymentAmount(0);
-    setOrderNote('');
-    setShowMobileOrderNote(false);
-    if (activeOrderTab !== 'live') {
-      setDrafts((prev) => prev.filter((d) => d.id !== activeOrderTab));
-      setActiveOrderTab('live');
+      const persistedInvoiceId = createdInvoice.id;
+      setLastInvoiceId(createdInvoice.documentNo || persistedInvoiceId);
+      setCurrentInvoice(createdInvoice);
+      const itemsWithInvoiceId = cart.map(item => ({ ...item, invoiceId: persistedInvoiceId }));
+      setCurrentInvoiceItems(itemsWithInvoiceId);
+
+      setStep('success');
+      setCart([]);
+      setOrderDiscountValue(0);
+      setActualPaymentAmount(0);
+      setOrderNote('');
+      setShowMobileOrderNote(false);
+      if (activeOrderTab !== 'live') {
+        setDrafts((prev) => prev.filter((d) => d.id !== activeOrderTab));
+        setActiveOrderTab('live');
+      }
+    } finally {
+      setIsCheckingOut(false);
     }
   };
 
@@ -662,11 +673,16 @@ export default function POS() {
       type: 'retail'
     };
 
-    addCustomer(customer);
-    setSelectedCustomer(customer);
-    setCustomerSearchTerm(customer.name);
-    setShowAddCustomer(false);
-    setNewCustomer({ name: '', phone: '', address: '' });
+    void addCustomer(customer).then((createdCustomer) => {
+      if (!createdCustomer) {
+        setFormError('Không thể lưu khách hàng. Vui lòng thử lại.');
+        return;
+      }
+      setSelectedCustomer(createdCustomer);
+      setCustomerSearchTerm(createdCustomer.name);
+      setShowAddCustomer(false);
+      setNewCustomer({ name: '', phone: '', address: '' });
+    });
   };
 
   const selectCustomer = (customer: Customer | null) => {
@@ -1089,9 +1105,9 @@ export default function POS() {
             <Button
               className="h-12 w-full rounded-xl bg-sky-600 text-base font-semibold text-white hover:bg-sky-700"
               onClick={handleCheckout}
-              disabled={paymentMethod === 'debt' && !selectedCustomer}
+              disabled={isCheckingOut || (paymentMethod === 'debt' && !selectedCustomer)}
             >
-              Hoàn thành
+              {isCheckingOut ? 'Đang ghi nhận...' : 'Hoàn thành'}
             </Button>
           </div>
         </div>

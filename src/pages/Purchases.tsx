@@ -1,4 +1,4 @@
-import { ChangeEvent, Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Barcode,
@@ -109,6 +109,8 @@ export default function Purchases() {
   const [showNewProductBarcodeScanner, setShowNewProductBarcodeScanner] = useState(false);
   const [newProductVariantBarcodeIndex, setNewProductVariantBarcodeIndex] = useState<number | null>(null);
   const [showCreateProduct, setShowCreateProduct] = useState(false);
+  const [searchedProducts, setSearchedProducts] = useState<Product[]>([]);
+  const [productSearchLoading, setProductSearchLoading] = useState(false);
   const [purchaseView, setPurchaseView] = useState<'history' | 'create'>('history');
   const [purchaseSearch, setPurchaseSearch] = useState('');
   const [expandedPurchaseId, setExpandedPurchaseId] = useState<string | null>(null);
@@ -180,7 +182,12 @@ export default function Purchases() {
     [lines],
   );
   const selectedSupplier = suppliers.find((supplier) => supplier.id === supplierId);
-  const standardProducts = useMemo(() => products.filter((product) => product.productType !== 'combo'), [products]);
+  const availableProducts = useMemo(() => {
+    const byId = new Map<string, Product>();
+    [...products, ...searchedProducts].forEach((product) => byId.set(product.id, product));
+    return Array.from(byId.values());
+  }, [products, searchedProducts]);
+  const standardProducts = useMemo(() => availableProducts.filter((product) => product.productType !== 'combo'), [availableProducts]);
   const productPickerOptions = useMemo(() => {
     const keyword = normalizeSearchText(barcode);
     return standardProducts
@@ -208,6 +215,40 @@ export default function Purchases() {
     payable: purchases.reduce((sum, purchase) => sum + Number(purchase.payableAmount || 0), 0),
     returned: purchases.reduce((sum, purchase) => sum + Number(returnedAmountByPurchase[purchase.id] || 0), 0),
   }), [purchases, returnedAmountByPurchase]);
+
+  useEffect(() => {
+    if (!showProductPicker || !barcode.trim()) {
+      setProductSearchLoading(false);
+      return undefined;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setProductSearchLoading(true);
+      try {
+        const result = await productsApi.listPage(undefined, {
+          search: barcode.trim(),
+          productType: 'standard',
+          status: 'active',
+          limit: 50,
+          offset: 0,
+        });
+        if (!controller.signal.aborted) {
+          setSearchedProducts(result.items as Product[]);
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setSearchedProducts([]);
+          setMessage(err instanceof Error ? err.message : 'Không thể tìm sản phẩm.');
+        }
+      } finally {
+        if (!controller.signal.aborted) setProductSearchLoading(false);
+      }
+    }, 220);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [barcode, showProductPicker]);
 
   const generateNextSku = () => {
     const usedSkus = new Set(products.map((product) => product.sku.trim().toUpperCase()).filter(Boolean));
@@ -259,6 +300,7 @@ export default function Purchases() {
       setMessage('Combo chỉ dùng để bán, không nhập trực tiếp.');
       return;
     }
+    setSearchedProducts((previous) => previous.some((item) => item.id === product.id) ? previous : [product, ...previous]);
     const unit = product.units?.[0] || { name: product.unit, factor: 1, sellingPrice: product.sellingPrice };
     setLines((previous) => {
       const existing = previous.find((line) => line.productId === product.id && !line.isGift);
@@ -301,7 +343,7 @@ export default function Purchases() {
 
   const openPriceSetup = async (lineIndex: number) => {
     const line = lines[lineIndex];
-    const product = line ? products.find((item) => item.id === line.productId) : null;
+    const product = line ? availableProducts.find((item) => item.id === line.productId) : null;
     if (!line || !product) return;
     const units = priceSetupUnits(product);
     setPriceSetup({ lineIndex, product, units, lists: [], values: {} });
@@ -684,7 +726,7 @@ export default function Purchases() {
                         <span className="shrink-0 text-xs font-medium text-slate-600">{formatCurrency(product.purchasePrice || 0)}</span>
                       </button>;
                     })}
-                    {!productPickerOptions.length && <p className="px-2.5 py-4 text-center text-xs text-slate-500">Không tìm thấy sản phẩm phù hợp.</p>}
+                    {productSearchLoading ? <p className="px-2.5 py-4 text-center text-xs text-slate-500">Đang tìm sản phẩm...</p> : !productPickerOptions.length && <p className="px-2.5 py-4 text-center text-xs text-slate-500">Không tìm thấy sản phẩm phù hợp.</p>}
                   </div>
                   <div className="border-t border-slate-100 px-3 py-2 text-[11px] text-slate-500">Quét mã camera hoặc nhấn Enter để tra cứu mã chính xác.</div>
                 </div>
@@ -699,30 +741,29 @@ export default function Purchases() {
               <p className="mt-1 text-xs text-slate-500">Nhập tên, SKU hoặc mã vạch để chọn hàng hóa, hoặc dùng camera để quét mã.</p>
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-lg border border-slate-100">
-              <table className="w-full min-w-[1080px] text-sm">
-                <thead><tr className="border-b border-slate-100 bg-slate-50/70 text-left text-xs text-slate-500"><th className="p-2.5">Sản phẩm</th><th className="p-2.5">Đơn vị nhập</th><th className="p-2.5">SL</th><th className="p-2.5">Đơn giá nhập</th><th className="p-2.5">Giá bán sau nhập</th><th className="p-2.5 text-right">Thành tiền</th><th className="w-24" /></tr></thead>
-                <tbody>
-                  {lines.map((line, index) => {
-                    const product = products.find((item) => item.id === line.productId);
-                    const units = product?.units?.length ? product.units : [{ name: product?.unit || '', factor: 1, sellingPrice: product?.sellingPrice || 0 }];
-                    return (
-                      <Fragment key={`${line.productId}-${index}-group`}>
-                        <tr key={`${line.productId}-${index}`} className="border-b border-slate-100 align-top">
-                          <td className="p-2"><div className="flex min-w-[260px] items-center gap-2"><select className="h-9 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-sm" value={line.productId} onChange={(event) => { const next = products.find((item) => item.id === event.target.value); if (!next) return; const unit = next.units?.[0] || { name: next.unit, factor: 1, sellingPrice: next.sellingPrice }; setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, productId: next.id, price: row.isGift ? 0 : next.purchasePrice, sellingPrice: Number(unit.sellingPrice ?? next.sellingPrice ?? 0), unitName: unit.name, unitFactor: Number(unit.factor) || 1 } : row)); }}>{standardProducts.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}</select></div></td>
-                          <td className="p-2"><select className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm" value={line.unitName} onChange={(event) => { const unit = units.find((item: any) => item.name === event.target.value); setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, unitName: event.target.value, unitFactor: Number(unit?.factor || 1), sellingPrice: Number(unit?.sellingPrice ?? Number(product?.sellingPrice || 0) * Number(unit?.factor || 1)) } : row)); }}>{units.map((unit: any) => <option key={unit.name} value={unit.name}>{unit.name} · ×{unit.factor}</option>)}</select></td>
-                          <td className="p-2"><input aria-label={`Số lượng dòng ${index + 1}`} className="h-9 w-20 rounded-md border border-slate-200 px-2 text-sm" type="number" min="0.01" value={line.quantity} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, quantity: event.target.value } : row))} /></td>
-                          <td className="p-2"><div className="flex items-center gap-2"><input aria-label={`Giá nhập dòng ${index + 1}`} className={`h-9 w-32 rounded-md border border-slate-200 px-2 text-sm ${line.isGift ? 'cursor-not-allowed bg-slate-50 text-slate-400' : 'bg-white'}`} type="number" min="0" value={line.isGift ? 0 : line.price} disabled={line.isGift} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, price: event.target.value } : row))} /><button type="button" className={`rounded-full px-2 py-1 text-[11px] font-medium ${line.isGift ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`} onClick={() => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, isGift: !row.isGift, price: !row.isGift ? 0 : (product?.purchasePrice || 0) } : row))}>{line.isGift ? 'Tặng' : 'Tính tiền'}</button></div></td>
-                          <td className="p-2"><input aria-label={`Giá bán sau nhập dòng ${index + 1}`} className="h-9 w-32 rounded-md border border-sky-200 bg-sky-50/40 px-2 text-sm text-sky-800" type="number" min="0" value={line.sellingPrice} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, sellingPrice: event.target.value } : row))} /></td>
-                          <td className="p-2 text-right font-medium tabular-nums text-slate-700">{formatCurrency(toNumber(line.quantity) * (line.isGift ? 0 : toNumber(line.price)))}</td>
-                          <td className="p-2"><div className="flex items-center justify-end gap-1"><button type="button" className="rounded-md p-2 text-emerald-600 transition hover:bg-emerald-50" aria-label="Thêm dòng tặng kèm" title="Thêm dòng tặng kèm" onClick={() => addGiftLine(index)}><Plus className="h-4 w-4" /></button><button type="button" className="rounded-md p-2 text-sky-600 transition hover:bg-sky-50" aria-label="Thiết lập giá cho mặt hàng" title="Thiết lập giá cho mặt hàng" onClick={() => void openPriceSetup(index)}><Tag className="h-4 w-4" /></button><button type="button" className="rounded-md p-2 text-rose-500 transition hover:bg-rose-50 hover:text-rose-600" aria-label="Xóa dòng hàng" onClick={() => setLines((previous) => previous.filter((_, rowIndex) => rowIndex !== index))}><Trash2 className="h-4 w-4" /></button></div></td>
-                        </tr>
-                        <tr key={`${line.productId}-${index}-note`} className="border-b border-slate-100 bg-slate-50/35 last:border-0"><td colSpan={7} className="px-2 pb-2"><div className="flex items-center gap-2 pl-1"><span className="shrink-0 text-[11px] font-medium text-slate-400">Ghi chú dòng</span><input aria-label={`Ghi chú dòng ${index + 1}`} className="h-8 min-w-0 flex-1 rounded-md border border-dashed border-slate-200 bg-white px-2.5 text-xs text-slate-700 placeholder:text-slate-400" value={line.note} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, note: event.target.value } : row))} placeholder={line.isGift ? 'Ví dụ: Tặng kèm theo chương trình tháng này' : 'Ghi chú riêng cho dòng hàng (không bắt buộc)'} /></div></td></tr>
-                      </Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div className="overflow-hidden rounded-lg border border-slate-100">
+              <div className="hidden grid-cols-[minmax(210px,2.2fr)_78px_64px_116px_116px_100px_96px] gap-2 border-b border-slate-100 bg-slate-50/70 px-2.5 py-2 text-[11px] font-medium text-slate-500 lg:grid">
+                <span>Sản phẩm</span><span>Đơn vị</span><span>SL</span><span>Giá nhập</span><span>Giá bán</span><span className="text-right">Thành tiền</span><span />
+              </div>
+              <div className="divide-y divide-slate-100">
+                {lines.map((line, index) => {
+                  const product = availableProducts.find((item) => item.id === line.productId);
+                  const units = product?.units?.length ? product.units : [{ name: product?.unit || '', factor: 1, sellingPrice: product?.sellingPrice || 0 }];
+                  const fieldLabel = 'mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-400 lg:hidden';
+                  return (
+                    <div key={`${line.productId}-${index}`} className="grid min-w-0 grid-cols-1 gap-2 bg-white p-2.5 lg:grid-cols-[minmax(210px,2.2fr)_78px_64px_116px_116px_100px_96px] lg:items-start">
+                      <div className="min-w-0"><label className={fieldLabel}>Sản phẩm</label><select className="h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-xs" value={line.productId} onChange={(event) => { const next = availableProducts.find((item) => item.id === event.target.value); if (!next) return; const unit = next.units?.[0] || { name: next.unit, factor: 1, sellingPrice: next.sellingPrice }; setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, productId: next.id, price: row.isGift ? 0 : next.purchasePrice, sellingPrice: Number(unit.sellingPrice ?? next.sellingPrice ?? 0), unitName: unit.name, unitFactor: Number(unit.factor) || 1 } : row)); }}>{standardProducts.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}</select></div>
+                      <div><label className={fieldLabel}>Đơn vị</label><select className="h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-1.5 text-xs" value={line.unitName} onChange={(event) => { const unit = units.find((item: any) => item.name === event.target.value); setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, unitName: event.target.value, unitFactor: Number(unit?.factor || 1), sellingPrice: Number(unit?.sellingPrice ?? Number(product?.sellingPrice || 0) * Number(unit?.factor || 1)) } : row)); }}>{units.map((unit: any) => <option key={unit.name} value={unit.name}>{unit.name} · ×{unit.factor}</option>)}</select></div>
+                      <div><label className={fieldLabel}>SL</label><input aria-label={`Số lượng dòng ${index + 1}`} className="h-8 w-full min-w-0 rounded-md border border-slate-200 px-2 text-xs" type="number" min="0.01" value={line.quantity} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, quantity: event.target.value } : row))} /></div>
+                      <div><label className={fieldLabel}>Giá nhập</label><div className="flex min-w-0 items-center gap-1"><input aria-label={`Giá nhập dòng ${index + 1}`} className={`h-8 w-full min-w-0 rounded-md border border-slate-200 px-2 text-xs ${line.isGift ? 'cursor-not-allowed bg-slate-50 text-slate-400' : 'bg-white'}`} type="number" min="0" value={line.isGift ? 0 : line.price} disabled={line.isGift} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, price: event.target.value } : row))} /><button type="button" className={`shrink-0 rounded-full px-1.5 py-1 text-[10px] font-medium ${line.isGift ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`} onClick={() => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, isGift: !row.isGift, price: !row.isGift ? 0 : (product?.purchasePrice || 0) } : row))}>{line.isGift ? 'Tặng' : 'Tính'}</button></div></div>
+                      <div><label className={fieldLabel}>Giá bán sau nhập</label><input aria-label={`Giá bán sau nhập dòng ${index + 1}`} className="h-8 w-full min-w-0 rounded-md border border-sky-200 bg-sky-50/40 px-2 text-xs text-sky-800" type="number" min="0" value={line.sellingPrice} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, sellingPrice: event.target.value } : row))} /></div>
+                      <div className="flex items-center justify-between lg:block lg:text-right"><label className={fieldLabel}>Thành tiền</label><p className="text-xs font-semibold tabular-nums text-slate-700">{formatCurrency(toNumber(line.quantity) * (line.isGift ? 0 : toNumber(line.price)))}</p></div>
+                      <div className="flex items-center justify-end gap-0.5 lg:pt-5"><button type="button" className="rounded-md p-1.5 text-emerald-600 transition hover:bg-emerald-50" aria-label="Thêm dòng tặng kèm" title="Thêm dòng tặng kèm" onClick={() => addGiftLine(index)}><Plus className="h-4 w-4" /></button><button type="button" className="rounded-md p-1.5 text-sky-600 transition hover:bg-sky-50" aria-label="Thiết lập giá cho mặt hàng" title="Thiết lập giá cho mặt hàng" onClick={() => void openPriceSetup(index)}><Tag className="h-4 w-4" /></button><button type="button" className="rounded-md p-1.5 text-rose-500 transition hover:bg-rose-50 hover:text-rose-600" aria-label="Xóa dòng hàng" onClick={() => setLines((previous) => previous.filter((_, rowIndex) => rowIndex !== index))}><Trash2 className="h-4 w-4" /></button></div>
+                      <div className="min-w-0 border-t border-dashed border-slate-100 pt-2 lg:col-span-7 lg:flex lg:items-center lg:gap-2 lg:pt-0"><span className="mb-1 block shrink-0 text-[10px] font-medium uppercase tracking-wide text-slate-400 lg:mb-0">Ghi chú dòng</span><input aria-label={`Ghi chú dòng ${index + 1}`} className="h-8 min-w-0 w-full rounded-md border border-dashed border-slate-200 bg-slate-50/40 px-2.5 text-xs text-slate-700 placeholder:text-slate-400" value={line.note} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, note: event.target.value } : row))} placeholder={line.isGift ? 'Ví dụ: Tặng kèm theo chương trình tháng này' : 'Ghi chú riêng cho dòng (không bắt buộc)'} /></div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 

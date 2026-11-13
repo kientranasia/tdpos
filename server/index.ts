@@ -2575,7 +2575,7 @@ app.post('/api/products/import', async (req, res) => {
       const existingCategories = await tx.select().from(schema.categories).where(eq(schema.categories.tenantId, req.user.tenantId)).all();
       const categoryByName = new Map(existingCategories.map((category) => [category.name.trim().toLowerCase(), category]));
       for (const name of categoryNames) {
-        if (categoryByName.has(name.trim().toLowerCase())) return;
+        if (categoryByName.has(name.trim().toLowerCase())) continue;
         const category = { id: uuid(), tenantId: req.user.tenantId, name, description: 'Import dữ liệu' };
         await tx.insert(schema.categories).values(category).run();
         categoryByName.set(name.trim().toLowerCase(), category);
@@ -2588,7 +2588,7 @@ app.post('/api/products/import', async (req, res) => {
       const existingUnits = await tx.select().from(schema.units).where(eq(schema.units.tenantId, req.user.tenantId)).all();
       const unitByName = new Set(existingUnits.map((unit) => unit.name.trim().toLowerCase()));
       for (const name of unitNames) {
-        if (unitByName.has(name.toLowerCase())) return;
+        if (unitByName.has(name.toLowerCase())) continue;
         await tx.insert(schema.units).values({ id: uuid(), tenantId: req.user.tenantId, name, createdAt: now }).run();
         unitByName.add(name.toLowerCase());
       }

@@ -102,7 +102,7 @@ export default function Customers() {
 
     try {
       setIsSubmitting(true);
-      await addCustomer({
+      const saved = await addCustomer({
         id: uuid(),
         tenantId: activeTenant.id,
         name: createForm.name.trim(),
@@ -111,6 +111,7 @@ export default function Customers() {
         totalDebt: 0,
         type: createForm.type,
       });
+      if (!saved) throw new Error('Không thể lưu khách hàng.');
       setCreateForm({ name: '', phone: '', address: '', type: 'retail' });
       setIsOpenCreateModal(false);
     } catch (error) {
