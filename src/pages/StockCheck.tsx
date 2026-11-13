@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type UIEvent } from 'react';
 import { ClipboardCheck, History, Package, QrCode, RefreshCw, Search, Save, ScanLine, UserRound } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { BarcodeScannerModal } from '../components/barcode/BarcodeScannerModal';
@@ -11,13 +11,22 @@ import { createProductScanIndex, findProductInScanIndex, productScanFactor } fro
 
 type ActualDraft = number | string;
 
+const STOCK_CHECK_PAGE_SIZE = 500;
+
 const signedQuantity = (value: number) => {
   if (value === 0) return '0';
   return `${value > 0 ? '+' : ''}${value}`;
 };
 
 export default function StockCheck() {
-  const { products, refreshProducts } = useApp();
+  const { products: loadedProducts, refreshProducts, activeTenant } = useApp();
+  const [checkProducts, setCheckProducts] = useState<Product[]>([]);
+  const [checkProductsTotal, setCheckProductsTotal] = useState(0);
+  const [checkProductsLoading, setCheckProductsLoading] = useState(false);
+  const [checkProductsError, setCheckProductsError] = useState('');
+  const [remoteProductResults, setRemoteProductResults] = useState<Product[]>([]);
+  const checkProductsOffsetRef = useRef(0);
+  const checkProductsLoadingRef = useRef(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [actuals, setActuals] = useState<Record<string, ActualDraft>>({});
   const [history, setHistory] = useState<any[]>([]);
@@ -27,7 +36,117 @@ export default function StockCheck() {
   const [scanMessage, setScanMessage] = useState('');
   const [lastScannedProductId, setLastScannedProductId] = useState<string | null>(null);
   const [showScanner, setShowScanner] = useState(false);
+  const products = useMemo(() => {
+    const byId = new Map<string, Product>();
+    [...loadedProducts, ...checkProducts, ...remoteProductResults].forEach((product) => byId.set(product.id, product));
+    return Array.from(byId.values());
+  }, [loadedProducts, checkProducts, remoteProductResults]);
   const scanCodeIndex = useMemo(() => createProductScanIndex(products), [products]);
+
+  useEffect(() => {
+    let active = true;
+    checkProductsOffsetRef.current = 0;
+    checkProductsLoadingRef.current = true;
+    setCheckProducts([]);
+    setCheckProductsTotal(0);
+    setCheckProductsError('');
+    setCheckProductsLoading(true);
+
+    if (!activeTenant?.id) {
+      checkProductsLoadingRef.current = false;
+      setCheckProductsLoading(false);
+      return () => { active = false; };
+    }
+
+    productsApi.listPage(activeTenant.id, {
+      productType: 'all',
+      status: 'all',
+      limit: STOCK_CHECK_PAGE_SIZE,
+      offset: 0,
+    }).then((result) => {
+      if (!active) return;
+      const items = result.items as Product[];
+      setCheckProducts(items);
+      setCheckProductsTotal(Number(result.total) || items.length);
+      checkProductsOffsetRef.current = items.length;
+    }).catch(() => {
+      if (!active) return;
+      setCheckProducts([]);
+      setCheckProductsTotal(0);
+      setCheckProductsError('Không tải được đầy đủ danh sách hàng hóa. Bạn vẫn có thể quét mã để tìm nhanh.');
+    }).finally(() => {
+      if (!active) return;
+      checkProductsLoadingRef.current = false;
+      setCheckProductsLoading(false);
+    });
+
+    return () => {
+      active = false;
+      checkProductsLoadingRef.current = false;
+    };
+  }, [activeTenant?.id]);
+
+  const loadMoreCheckProducts = async () => {
+    if (!activeTenant?.id || checkProductsLoadingRef.current || checkProductsOffsetRef.current >= checkProductsTotal) return;
+    checkProductsLoadingRef.current = true;
+    setCheckProductsLoading(true);
+    try {
+      const result = await productsApi.listPage(activeTenant.id, {
+        productType: 'all',
+        status: 'all',
+        limit: STOCK_CHECK_PAGE_SIZE,
+        offset: checkProductsOffsetRef.current,
+      });
+      const items = result.items as Product[];
+      setCheckProducts((previous) => {
+        const byId = new Map(previous.map((product) => [product.id, product]));
+        items.forEach((product) => byId.set(product.id, product));
+        return Array.from(byId.values());
+      });
+      checkProductsOffsetRef.current += items.length;
+      setCheckProductsTotal(Number(result.total) || checkProductsOffsetRef.current);
+      setCheckProductsError('');
+    } catch {
+      setCheckProductsError('Không tải thêm được danh sách hàng hóa. Hãy thử cuộn lại sau ít giây.');
+    } finally {
+      checkProductsLoadingRef.current = false;
+      setCheckProductsLoading(false);
+    }
+  };
+
+  const handleProductListScroll = (event: UIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
+    if (element.scrollHeight - element.scrollTop - element.clientHeight < 360) {
+      void loadMoreCheckProducts();
+    }
+  };
+
+  useEffect(() => {
+    const query = searchTerm.trim();
+    if (query.length < 2) {
+      setRemoteProductResults([]);
+      return;
+    }
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await productsApi.listPage(activeTenant?.id, {
+          search: query,
+          productType: 'all',
+          status: 'all',
+          limit: STOCK_CHECK_PAGE_SIZE,
+          offset: 0,
+        });
+        if (active) setRemoteProductResults(result.items as Product[]);
+      } catch {
+        if (active) setRemoteProductResults([]);
+      }
+    }, 180);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [activeTenant?.id, searchTerm]);
 
   const loadHistory = async () => {
     setLoadingHistory(true);
@@ -86,6 +205,7 @@ export default function StockCheck() {
     try {
       const remoteMatch = await productsApi.lookup(code);
       const product = products.find((item) => item.id === remoteMatch.id) || remoteMatch as Product;
+      setCheckProducts((previous) => previous.some((item) => item.id === product.id) ? previous : [...previous, product]);
       return { product, factor: productScanFactor(product, code) };
     } catch {
       return null;
@@ -162,7 +282,7 @@ export default function StockCheck() {
         </Button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-2.5 sm:p-3 lg:p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto p-2.5 sm:p-3 lg:p-4" onScroll={handleProductListScroll}>
         <div className="mx-auto max-w-[1500px] space-y-3">
           <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
             <div className="rounded-lg border border-slate-200 bg-white p-3">
@@ -188,6 +308,11 @@ export default function StockCheck() {
               <div>
                 <h2 className="text-sm font-semibold text-slate-900">Số lượng thực tế</h2>
                 <p className="mt-0.5 text-[11px] text-slate-500">Nhập số đếm thực tế hoặc dùng QR để cộng nhanh theo từng mã hàng.</p>
+                <p className="mt-1 text-[11px] text-slate-400">
+                  {checkProductsTotal > 0
+                    ? `Đã tải ${products.length.toLocaleString('vi-VN')} / ${checkProductsTotal.toLocaleString('vi-VN')} hàng hóa · Cuộn để tải thêm`
+                    : checkProductsLoading ? 'Đang tải danh sách hàng hóa…' : 'Chưa có dữ liệu hàng hóa'}
+                </p>
               </div>
               <div className="flex w-full gap-2 sm:w-auto">
                 <div className="relative min-w-0 flex-1 sm:w-64">
@@ -208,6 +333,7 @@ export default function StockCheck() {
 
             {scanMessage && <div className="border-b border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-800 sm:px-4">{scanMessage}</div>}
             {error && <div className="border-b border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-700 sm:px-4">{error}</div>}
+            {checkProductsError && <div className="border-b border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800 sm:px-4">{checkProductsError}</div>}
 
             <div className="hidden overflow-x-auto lg:block">
               <table className="w-full min-w-[760px] text-left text-xs">
@@ -306,7 +432,10 @@ export default function StockCheck() {
               })}
             </div>
 
-            {!filteredProducts.length && <div className="p-8 text-center text-sm text-slate-500">Không tìm thấy hàng hóa phù hợp.</div>}
+            {!filteredProducts.length && <div className="p-8 text-center text-sm text-slate-500">{checkProductsLoading ? 'Đang tải danh sách hàng hóa...' : 'Không tìm thấy hàng hóa phù hợp.'}</div>}
+            {checkProductsLoading && checkProducts.length > 0 && (
+              <div className="border-t border-slate-100 px-3 py-2 text-center text-[11px] text-slate-500">Đang tải thêm hàng hóa...</div>
+            )}
             <div className="flex flex-col gap-2 border-t border-slate-100 bg-slate-50/70 px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4">
               <p className="text-xs text-slate-500">Đã chọn <span className="font-semibold text-slate-700">{changedProducts.length}</span> hàng hóa có chênh lệch.</p>
               <Button type="button" onClick={() => void saveAdjustments()} disabled={saving || !changedProducts.length} className="h-9 gap-1.5 text-xs">

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { useApp } from '../context/AppContext';
-import { Search, Wallet, ArrowDownCircle, ArrowUpCircle, AlertCircle, CheckCircle, ChevronRight, TrendingUp, X, MessageCircleMore, Copy, ExternalLink, Tags, Download } from 'lucide-react';
+import { Search, Wallet, ArrowDownCircle, ArrowUpCircle, AlertCircle, CheckCircle, ChevronRight, TrendingUp, X, Tags, Download } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { formatCurrency, normalizeSearchText } from '../lib/utils';
-import { customerCareApi, debtLedgerApi, customersApi, invoiceItemsApi, payableLedgerApi, supplierCreditsApi, suppliersApi } from '../lib/api';
-import { CustomerCareLog, DebtLedger } from '../types';
+import { debtLedgerApi, customersApi, invoiceItemsApi, payableLedgerApi, supplierCreditsApi, suppliersApi } from '../lib/api';
+import { DebtLedger } from '../types';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 export default function Debt() {
@@ -28,13 +28,6 @@ export default function Debt() {
   const [expandedLedgerId, setExpandedLedgerId] = useState('');
   const [ledgerItems, setLedgerItems] = useState<Record<string, any[]>>({});
   const [formError, setFormError] = useState('');
-  const [showZaloReminderModal, setShowZaloReminderModal] = useState(false);
-  const [zaloMessage, setZaloMessage] = useState('');
-  const [zaloDueDate, setZaloDueDate] = useState('');
-  const [zaloTargetCustomerId, setZaloTargetCustomerId] = useState('');
-  const [zaloTemplateType, setZaloTemplateType] = useState<'pre_due' | 'due_today' | 'overdue' | 'thanks_after_payment' | 'repurchase_invite' | 'new_arrival'>('due_today');
-  const [careLogs, setCareLogs] = useState<CustomerCareLog[]>([]);
-  const [loadingCareLogs, setLoadingCareLogs] = useState(false);
   const [careFilter, setCareFilter] = useState<'all' | 'debt' | 'due_soon' | 'inactive_7' | 'inactive_30'>('all');
   const [debtTab, setDebtTab] = useState<'customer' | 'supplier'>(() => searchParams.get('type') === 'supplier' ? 'supplier' : 'customer');
   const [suppliers, setSuppliers] = useState<any[]>([]);
@@ -351,20 +344,6 @@ export default function Debt() {
     }, 0);
   }, [activeTenant?.settings?.debtPolicy?.maxDebtDays, debtCustomers, ledgers]);
 
-  const selectedZaloCustomer = useMemo(
-    () => customers.find((customer) => customer.id === zaloTargetCustomerId) || null,
-    [customers, zaloTargetCustomerId]
-  );
-
-  const messageTemplates = useMemo(() => ({
-    pre_due: 'Dạ em chào anh/chị {ten_khach}. Em gửi nhắc nhẹ công nợ hiện tại của mình là {so_tien}, hạn thanh toán {ngay_han}. Khi tiện anh/chị hỗ trợ giúp em nhé. Em cảm ơn ạ.',
-    due_today: 'Dạ em chào anh/chị {ten_khach}. Hôm nay là hạn thanh toán công nợ {so_tien}. Anh/chị sắp xếp hỗ trợ giúp em trong hôm nay nhé. Em cảm ơn ạ.',
-    overdue: 'Dạ em chào anh/chị {ten_khach}. Công nợ {so_tien} đã quá hạn từ {ngay_han}. Anh/chị hỗ trợ thanh toán sớm giúp em để em đối soát ạ. Em cảm ơn.',
-    thanks_after_payment: 'Em cảm ơn anh/chị {ten_khach} đã thanh toán công nợ. Cửa hàng rất trân trọng sự đồng hành của anh/chị ạ.',
-    repurchase_invite: 'Dạ chào anh/chị {ten_khach}. Cửa hàng có chương trình ưu đãi cho khách thân thiết, em mời anh/chị ghé lại mua hàng nhé.',
-    new_arrival: 'Dạ chào anh/chị {ten_khach}. Bên em vừa có hàng mới phù hợp nhu cầu của anh/chị, em gửi thông tin để anh/chị tham khảo ạ.',
-  }), []);
-
   const lastPurchaseByCustomer = useMemo(() => {
     const map = new Map<string, string>();
     invoices.forEach((invoice) => {
@@ -381,10 +360,9 @@ export default function Debt() {
     return customers.map((customer) => {
       const dueDate = estimateDueDateForCustomer(customer.id);
       const lastPurchase = lastPurchaseByCustomer.get(customer.id) || null;
-      const latestCare = careLogs.find((log) => log.customerId === customer.id) || null;
-      return { customer, dueDate, lastPurchase, latestCare };
+      return { customer, dueDate, lastPurchase };
     });
-  }, [customers, careLogs, lastPurchaseByCustomer]);
+  }, [customers, lastPurchaseByCustomer]);
 
   const filteredDebtCustomers = withDerivedFields
     .filter(({ customer, dueDate, lastPurchase }) => {
@@ -421,95 +399,6 @@ export default function Debt() {
     const due = new Date(base.getTime() + maxDebtDays * 24 * 60 * 60 * 1000);
     return due.toISOString().slice(0, 10);
   }
-
-  const buildZaloReminderMessage = (
-    customerName: string,
-    debtAmount: number,
-    dueDateIso: string,
-    templateType: 'pre_due' | 'due_today' | 'overdue' | 'thanks_after_payment' | 'repurchase_invite' | 'new_arrival'
-  ) => {
-    const dueDate = new Date(dueDateIso).toLocaleDateString('vi-VN');
-    const template = messageTemplates[templateType];
-    return template
-      .replaceAll('{ten_khach}', customerName)
-      .replaceAll('{so_tien}', formatCurrency(debtAmount))
-      .replaceAll('{ngay_han}', dueDate);
-  };
-
-  const openZaloReminder = (customerId: string) => {
-    const customer = customers.find((c) => c.id === customerId);
-    if (!customer) return;
-    const dueDate = estimateDueDateForCustomer(customerId);
-    setZaloTargetCustomerId(customerId);
-    setZaloDueDate(dueDate);
-    setZaloTemplateType('due_today');
-    setZaloMessage(buildZaloReminderMessage(customer.name, customer.totalDebt, dueDate, 'due_today'));
-    setShowZaloReminderModal(true);
-  };
-
-  const normalizePhoneForZalo = (rawPhone: string) => {
-    const digits = String(rawPhone || '').replace(/\D/g, '');
-    if (!digits) return '';
-    if (digits.startsWith('84')) return digits;
-    if (digits.startsWith('0')) return `84${digits.slice(1)}`;
-    return digits;
-  };
-
-  const handleCopyZaloMessage = async () => {
-    try {
-      await navigator.clipboard.writeText(zaloMessage);
-      setFormError('');
-    } catch {
-      setFormError('Không thể copy nội dung. Vui lòng copy thủ công.');
-    }
-  };
-
-  const createCareLog = async (status: CustomerCareLog['status']) => {
-    if (!selectedZaloCustomer) return;
-    try {
-      const created = await customerCareApi.create({
-        customerId: selectedZaloCustomer.id,
-        channel: 'zalo',
-        templateType: zaloTemplateType,
-        message: zaloMessage,
-        dueDate: zaloDueDate || null,
-        status,
-        responded: false,
-        note: '',
-      });
-      setCareLogs((prev) => [created, ...prev]);
-    } catch (err) {
-      console.error('Failed to create care log', err);
-    }
-  };
-
-  const handleOpenZalo = () => {
-    if (!selectedZaloCustomer) return;
-    const phone = normalizePhoneForZalo(selectedZaloCustomer.phone);
-    if (!phone) {
-      setFormError('Số điện thoại khách hàng không hợp lệ để mở Zalo.');
-      return;
-    }
-    const deepLink = `zalo://conversation?phone=${phone}`;
-    const webFallback = `https://zalo.me/${phone}`;
-    void createCareLog('sent');
-    window.location.href = deepLink;
-    window.setTimeout(() => {
-      window.open(webFallback, '_blank', 'noopener,noreferrer');
-    }, 500);
-  };
-
-  const updateCareStatus = async (logId: string, status: CustomerCareLog['status']) => {
-    try {
-      const updated = await customerCareApi.update(logId, {
-        status,
-        responded: status === 'promised' || status === 'paid',
-      });
-      setCareLogs((prev) => prev.map((log) => (log.id === logId ? updated : log)));
-    } catch (err) {
-      console.error('Failed to update care status', err);
-    }
-  };
 
   const saveCustomerTags = async (customerId: string) => {
     if (!tagInput.trim()) return;
@@ -649,21 +538,6 @@ export default function Debt() {
     void loadSupplierDebt();
   }, []);
 
-  useEffect(() => {
-    const loadCareLogs = async () => {
-      setLoadingCareLogs(true);
-      try {
-        const data = await customerCareApi.list();
-        setCareLogs(data);
-      } catch (err) {
-        console.error('Failed to load customer care logs:', err);
-      } finally {
-        setLoadingCareLogs(false);
-      }
-    };
-    loadCareLogs();
-  }, []);
-
   return (
     <div className="erp-compact flex h-full flex-col overflow-hidden bg-slate-50 animate-in fade-in duration-500">
       {showDebtExportModal && (
@@ -798,80 +672,6 @@ export default function Debt() {
         </div>
       )}
 
-      {showZaloReminderModal && selectedZaloCustomer && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-          <div className="max-h-[calc(100dvh-1rem)] w-full max-w-lg space-y-4 overflow-y-auto rounded-lg border border-white bg-white p-4 shadow-2xl sm:p-6">
-            <div className="flex items-center justify-between">
-              <h3 className="text-section-title">Nhắc nợ qua Zalo</h3>
-              <button
-                onClick={() => setShowZaloReminderModal(false)}
-                aria-label="Đóng popup"
-                className="h-8 w-8 rounded-lg bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700 flex items-center justify-center transition-colors"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2 text-sm">
-              <p><span className="text-slate-500">Khách hàng:</span> <span className="font-semibold text-slate-900">{selectedZaloCustomer.name}</span></p>
-              <p><span className="text-slate-500">Số điện thoại:</span> <span className="font-semibold text-slate-900">{selectedZaloCustomer.phone}</span></p>
-              <p><span className="text-slate-500">Công nợ:</span> <span className="font-semibold text-orange-600">{formatCurrency(selectedZaloCustomer.totalDebt)}</span></p>
-              <div className="space-y-1">
-                <label className="text-xs text-slate-600">Hạn thanh toán</label>
-                <Input
-                  type="date"
-                  value={zaloDueDate}
-                  onChange={(e) => {
-                    const dueDate = e.target.value;
-                    setZaloDueDate(dueDate);
-                    setZaloMessage(buildZaloReminderMessage(selectedZaloCustomer.name, selectedZaloCustomer.totalDebt, dueDate, zaloTemplateType));
-                  }}
-                  className="h-10 rounded-lg bg-white border border-slate-200"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm text-slate-700">Mẫu tin nhắn</label>
-              <select
-                value={zaloTemplateType}
-                onChange={(e) => {
-                  const nextType = e.target.value as typeof zaloTemplateType;
-                  setZaloTemplateType(nextType);
-                  setZaloMessage(buildZaloReminderMessage(selectedZaloCustomer.name, selectedZaloCustomer.totalDebt, zaloDueDate, nextType));
-                }}
-                className="w-full h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm"
-              >
-                <option value="pre_due">Nhắc trước hạn</option>
-                <option value="due_today">Nhắc đến hạn</option>
-                <option value="overdue">Nhắc quá hạn</option>
-                <option value="thanks_after_payment">Cảm ơn sau thanh toán</option>
-                <option value="repurchase_invite">Mời mua lại</option>
-                <option value="new_arrival">Báo hàng mới</option>
-              </select>
-              <label className="text-sm text-slate-700">Nội dung nhắc nợ</label>
-              <textarea
-                value={zaloMessage}
-                onChange={(e) => setZaloMessage(e.target.value)}
-                className="w-full min-h-32 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
-              />
-              <p className="text-xs text-slate-500">Khuyến nghị: bấm Copy trước, sau đó mở Zalo để dán và gửi.</p>
-            </div>
-
-            {formError && <p className="text-sm text-rose-600">{formError}</p>}
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <Button variant="outline" className="h-11 rounded-lg text-sm font-semibold" onClick={handleCopyZaloMessage}>
-                <Copy className="h-4 w-4 mr-2" /> Copy nội dung
-              </Button>
-              <Button className="h-11 rounded-lg text-sm font-semibold bg-emerald-600 hover:bg-emerald-700" onClick={handleOpenZalo}>
-                <ExternalLink className="h-4 w-4 mr-2" /> Mở Zalo
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {tagEditorCustomerId && (
         <div className="fixed inset-0 z-[109] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
           <div className="max-h-[calc(100dvh-1rem)] w-full max-w-md space-y-4 overflow-y-auto rounded-lg border border-white bg-white p-4 shadow-2xl sm:p-6">
@@ -956,7 +756,7 @@ export default function Debt() {
             </div>
 
             <div className="divide-y divide-slate-50">
-                {filteredDebtCustomers.map(({ customer, dueDate, lastPurchase, latestCare }) => (
+                {filteredDebtCustomers.map(({ customer, dueDate, lastPurchase }) => (
                   <div
                     key={customer.id}
                     className="erp-debt-row cursor-pointer p-2.5 transition-all group hover:bg-orange-50/30"
@@ -976,7 +776,6 @@ export default function Debt() {
                           <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-slate-500">
                             <span>Hạn: {new Date(dueDate).toLocaleDateString('vi-VN')}</span>
                             <span>Mua: {lastPurchase ? new Date(lastPurchase).toLocaleDateString('vi-VN') : 'Chưa có'}</span>
-                            <span>CSKH: {latestCare?.status === 'paid' ? 'Đã trả' : latestCare?.status === 'promised' ? 'Hứa trả' : latestCare?.status === 'sent' ? 'Đã nhắc' : 'Chưa nhắc'}</span>
                           </div>
                           {!!customer.tags?.length && (
                             <div className="flex flex-wrap gap-1 pt-0.5">
@@ -995,16 +794,6 @@ export default function Debt() {
                     </div>
 
                     <div className="mt-2 flex items-center gap-1.5">
-                      <Button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openZaloReminder(customer.id);
-                        }}
-                        variant="outline"
-                        className="h-8 rounded-md border-emerald-200 px-2.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50"
-                      >
-                        <MessageCircleMore className="h-3.5 w-3.5 mr-1" /> Nhắc
-                      </Button>
                       <Button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -1083,49 +872,6 @@ export default function Debt() {
           </div>
         </div>
 
-        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-100 bg-slate-50/60 px-3 py-2.5"><h3 className="text-sm font-semibold text-slate-900">Lịch sử chăm sóc khách (Zalo)</h3></div>
-          <div className="divide-y divide-slate-50">
-            {loadingCareLogs && <div className="p-6 text-sm text-slate-500">Đang tải lịch sử chăm sóc...</div>}
-            {!loadingCareLogs && careLogs.slice(0, 20).map((log) => {
-              const customer = customers.find((c) => c.id === log.customerId);
-              return (
-                <div key={log.id} className="flex flex-col justify-between gap-2 px-3 py-2.5 lg:flex-row lg:items-center">
-                  <div className="min-w-0 space-y-0.5">
-                    <button type="button" className="text-left text-xs font-semibold text-slate-900 hover:text-sky-700 hover:underline" onClick={() => navigate(`/app/customers/${log.customerId}`)}>{customer?.name || log.customerId}</button>
-                    <p className="truncate text-[11px] text-slate-500">
-                      {new Date(log.createdAt).toLocaleString('vi-VN')} · {log.createdByName || log.createdBy} · {log.templateType}
-                    </p>
-                    <p className="line-clamp-2 text-[11px] text-slate-600">{log.message}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={log.status}
-                      onChange={(e) => updateCareStatus(log.id, e.target.value as CustomerCareLog['status'])}
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs"
-                    >
-                      <option value="not_sent">Chưa nhắc</option>
-                      <option value="sent">Đã nhắc</option>
-                      <option value="promised">Hứa trả</option>
-                      <option value="paid">Đã trả</option>
-                    </select>
-                    <span className={`text-xs px-2 py-1 rounded-md ${
-                      log.status === 'paid' ? 'bg-emerald-50 text-emerald-700' :
-                      log.status === 'promised' ? 'bg-sky-50 text-sky-700' :
-                      log.status === 'sent' ? 'bg-amber-50 text-amber-700' :
-                      'bg-slate-100 text-slate-600'
-                    }`}>
-                      {log.responded ? 'Đã phản hồi' : 'Chưa phản hồi'}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-            {!loadingCareLogs && careLogs.length === 0 && (
-              <div className="p-6 text-sm text-slate-500">Chưa có lịch sử nhắc nợ/Zalo.</div>
-            )}
-          </div>
-        </div>
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto space-y-3 p-3 lg:p-4">

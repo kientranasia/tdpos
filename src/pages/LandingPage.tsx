@@ -62,40 +62,40 @@ export default function LandingPage() {
         </div>
       </header>
 
-      <main className="landing-main relative z-10 mx-auto flex min-h-0 w-full max-w-7xl flex-1 overflow-y-auto px-4 pb-10 pt-10 sm:px-6 lg:overflow-hidden lg:pb-4 lg:pt-4">
+      <main className="landing-main relative z-10 mx-auto flex min-h-0 w-full max-w-7xl flex-1 overflow-y-auto px-4 pb-8 pt-6 sm:px-6 lg:overflow-hidden lg:px-4 lg:pb-1 lg:pt-2">
         <div className="relative h-full w-full">
-        <section className="mb-6 flex flex-col justify-between gap-3 sm:flex-row sm:items-end lg:mb-4 lg:gap-2">
+        <section className="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-end lg:mb-2 lg:gap-2">
           <div>
             <p className="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-sky-700">Trung Tâm Điều Khiển</p>
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Bạn muốn làm gì hôm nay?</h1>
-            <p className="mt-1 text-sm text-slate-500">Mở nhanh nghiệp vụ thường dùng từ một màn hình trung tâm.</p>
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-900 lg:text-xl">Bạn muốn làm gì hôm nay?</h1>
+            <p className="mt-0.5 text-sm text-slate-500 lg:text-xs">Mở nhanh nghiệp vụ thường dùng từ một màn hình trung tâm.</p>
           </div>
-          <button type="button" onClick={() => navigate('/login')} className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-sky-600 px-4 text-xs font-semibold text-white hover:bg-sky-700">
+          <button type="button" onClick={() => navigate('/login')} className="inline-flex h-8 items-center justify-center gap-2 rounded-md bg-sky-600 px-3 text-xs font-semibold text-white hover:bg-sky-700">
             Mở hệ thống <ShoppingCart className="h-3.5 w-3.5" />
           </button>
         </section>
 
-        <section aria-labelledby="quick-actions" className="mb-8 lg:mb-4">
-          <div className="mb-3 flex items-center gap-2 lg:mb-2"><Plus className="h-4 w-4 text-sky-600" /><h2 id="quick-actions" className="text-sm font-semibold text-slate-800">Thao tác nhanh</h2></div>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-2">
+        <section aria-labelledby="quick-actions" className="mb-6 lg:mb-2">
+          <div className="mb-2 flex items-center gap-2 lg:mb-1.5"><Plus className="h-4 w-4 text-sky-600" /><h2 id="quick-actions" className="text-sm font-semibold text-slate-800">Thao tác nhanh</h2></div>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-1.5">
             {quickActions.map((item) => {
               const Icon = item.icon;
-              return <button type="button" key={item.path} onClick={() => navigate(item.path)} className={`group flex min-h-[128px] flex-col items-center justify-center gap-3 rounded-lg border border-white/70 p-4 text-center shadow-sm backdrop-blur-md transition duration-300 hover:-translate-y-1 hover:scale-[1.01] hover:border-sky-300 hover:bg-white/70 hover:shadow-lg lg:min-h-[100px] lg:gap-2 lg:p-2 ${item.surface === 'bg-white' ? 'bg-white/38' : item.surface}`}>
-                <span className={`flex h-12 w-12 items-center justify-center rounded-lg border lg:h-9 lg:w-9 ${item.tone}`}><Icon className="h-6 w-6 lg:h-5 lg:w-5" /></span>
-                <span className="w-full"><span className="block text-sm font-semibold text-slate-900">{item.label}</span><span className="mt-0.5 block text-xs text-slate-500">{item.description}</span></span>
+              return <button type="button" key={item.path} onClick={() => navigate(item.path)} className={`group flex min-h-[128px] flex-col items-center justify-center gap-3 rounded-lg border border-white/70 p-4 text-center shadow-sm backdrop-blur-md transition duration-300 hover:-translate-y-1 hover:scale-[1.01] hover:border-sky-300 hover:bg-white/70 hover:shadow-lg lg:min-h-[78px] lg:gap-1 lg:p-1.5 ${item.surface === 'bg-white' ? 'bg-white/38' : item.surface}`}>
+                <span className={`flex h-12 w-12 items-center justify-center rounded-lg border lg:h-8 lg:w-8 ${item.tone}`}><Icon className="h-6 w-6 lg:h-4 lg:w-4" /></span>
+                <span className="w-full"><span className="block text-sm font-semibold text-slate-900 lg:text-xs">{item.label}</span><span className="mt-0.5 block text-xs text-slate-500 lg:text-[10px]">{item.description}</span></span>
               </button>;
             })}
           </div>
         </section>
 
         <section aria-labelledby="modules">
-          <div className="mb-3 flex items-center gap-2 lg:mb-2"><Package className="h-4 w-4 text-slate-500" /><h2 id="modules" className="text-sm font-semibold text-slate-800">Phân hệ quản lý</h2></div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 lg:gap-2">
+          <div className="mb-2 flex items-center gap-2 lg:mb-1.5"><Package className="h-4 w-4 text-slate-500" /><h2 id="modules" className="text-sm font-semibold text-slate-800">Phân hệ quản lý</h2></div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 lg:gap-1.5">
             {modules.map((item) => {
               const Icon = item.icon;
-              return <button type="button" key={item.path} onClick={() => navigate(item.path)} className={`group flex min-h-[132px] flex-col items-center justify-center gap-3 rounded-lg border border-white/70 p-4 text-center shadow-sm backdrop-blur-md transition duration-300 hover:-translate-y-1 hover:scale-[1.01] hover:border-sky-300 hover:shadow-lg lg:min-h-[104px] lg:gap-2 lg:p-2 ${item.surface}`}>
-                <span className={`flex h-10 w-10 items-center justify-center rounded-md border lg:h-8 lg:w-8 ${item.tone}`}><Icon className="h-5 w-5 lg:h-4 lg:w-4" /></span>
-                <span className="w-full min-w-0"><span className="block text-sm font-semibold leading-5 text-slate-900">{item.label}</span><span className="mt-1 block text-xs leading-4 text-slate-500">{item.description}</span></span>
+              return <button type="button" key={item.path} onClick={() => navigate(item.path)} className={`group flex min-h-[132px] flex-col items-center justify-center gap-3 rounded-lg border border-white/70 p-4 text-center shadow-sm backdrop-blur-md transition duration-300 hover:-translate-y-1 hover:scale-[1.01] hover:border-sky-300 hover:shadow-lg lg:min-h-[80px] lg:gap-1 lg:p-1.5 ${item.surface}`}>
+                <span className={`flex h-10 w-10 items-center justify-center rounded-md border lg:h-7 lg:w-7 ${item.tone}`}><Icon className="h-5 w-5 lg:h-3.5 lg:w-3.5" /></span>
+                <span className="w-full min-w-0"><span className="block text-sm font-semibold leading-5 text-slate-900 lg:text-xs lg:leading-4">{item.label}</span><span className="mt-1 block text-xs leading-4 text-slate-500 lg:mt-0.5 lg:text-[10px] lg:leading-3">{item.description}</span></span>
               </button>;
             })}
           </div>
