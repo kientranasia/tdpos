@@ -10,5 +10,6 @@ coverage/
 !.env.uat.example
 !.env.prod.example
 !.env.saas.example
+!.env.print-bridge.example
 data/
 backups/

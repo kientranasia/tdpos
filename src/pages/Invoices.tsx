@@ -11,6 +11,13 @@ import { DebtLedger, Invoice, InvoiceItem } from '../types';
 import { POSInvoiceModal } from '../components/pos/POSInvoiceModal';
 import { toPng } from 'html-to-image';
 import download from 'downloadjs';
+import { printViaBridge } from '../lib/printBridge';
+
+const invoiceDisplayNo = (invoice: Pick<Invoice, 'id' | 'documentNo'>) => {
+  const documentNo = invoice.documentNo?.trim();
+  if (documentNo) return documentNo;
+  return `HD-${invoice.id.replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+};
 
 export default function Invoices() {
   const { invoices, customers, products, activeTenant, currentUser, refreshInvoices } = useApp();
@@ -86,7 +93,7 @@ export default function Invoices() {
       .filter((inv) => {
         if (!keyword) return true;
         const customerName = inv.customerId ? customerNameById.get(inv.customerId) || '' : 'khách vãng lai';
-        return normalizeSearchText(inv.id).includes(keyword) || normalizeSearchText(customerName).includes(keyword);
+        return normalizeSearchText(`${invoiceDisplayNo(inv)} ${inv.id}`).includes(keyword) || normalizeSearchText(customerName).includes(keyword);
       })
       .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
   }, [customerNameById, invoices, searchTerm, timeFilter]);
@@ -306,10 +313,16 @@ export default function Invoices() {
     setReceiptInvoiceId(invoiceId);
   };
 
-  const printReceipt = () => {
+  const openInvoiceDetail = (invoiceId: string) => {
+    setShowInvoiceActions(false);
+    setSelectedInvoiceId(invoiceId);
+  };
+
+  const printReceipt = async () => {
     const invoice = receiptInvoice;
     const receiptNode = receiptRef.current;
     if (!invoice || !receiptNode) return;
+    if (await printViaBridge({ text: receiptNode.innerText, documentNo: invoice.documentNo || invoice.id })) return;
     const printFrame = document.createElement('iframe');
     printFrame.setAttribute('title', 'Bản in hóa đơn');
     printFrame.style.position = 'fixed';
@@ -433,13 +446,13 @@ export default function Invoices() {
                       {dayLabel(inv.createdAt)}
                     </div>
                   )}
-                  <button onClick={() => setSelectedInvoiceId(inv.id)} className="w-full px-4 py-3 text-left">
+                  <button type="button" aria-label={`Mở ${invoiceDisplayNo(inv)}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); openInvoiceDetail(inv.id); }} className="w-full touch-manipulation px-4 py-3 text-left transition-colors active:bg-sky-50">
                     <div className="flex justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-[18px] leading-tight font-semibold text-slate-900">{customerName}</p>
-                        <p className="text-[13px] text-slate-500 mt-1">{new Date(inv.createdAt).toLocaleString('vi-VN')} · {inv.id}</p>
+                        <p className="truncate text-[18px] font-semibold leading-tight text-slate-900">{invoiceDisplayNo(inv)}</p>
+                        <p className="mt-1 text-[13px] text-slate-500">{customerName} · {new Date(inv.createdAt).toLocaleString('vi-VN')}</p>
                         <p className="text-[14px] text-slate-600 mt-1 truncate">
-                          {inv.customerId ? 'Khách hàng có hồ sơ' : 'Khách vãng lai'}
+                          {inv.customerId ? 'Khách hàng có hồ sơ' : 'Khách vãng lai'} · Chạm để xem chi tiết
                         </p>
                         {returnSummary && <p className="mt-1 text-[12px] font-medium text-orange-700">Đã trả {formatCurrency(returnSummary.total)} · {returnSummary.count} phiếu</p>}
                       </div>
@@ -579,7 +592,7 @@ export default function Invoices() {
               <div key={inv.id}>
               <div className="p-3 md:grid md:grid-cols-[1.2fr_1fr_1fr_1fr_auto] md:items-center md:gap-3">
                 <div className="mb-2 md:mb-0">
-                  <button type="button" className="text-left text-sm font-semibold text-sky-700 hover:underline" onClick={() => setSelectedInvoiceId(inv.id)}>#{inv.documentNo || inv.id}</button>
+                  <button type="button" className="text-left text-sm font-semibold text-sky-700 hover:underline" onClick={() => openInvoiceDetail(inv.id)}>#{invoiceDisplayNo(inv)}</button>
                   <span className={`status-chip mt-1 ${meta.tone}`}>{meta.label}</span>
                   {returnSummary && <p className="mt-1 text-xs font-medium text-orange-700">Đã trả {formatCurrency(returnSummary.total)} · {returnSummary.count} phiếu</p>}
                 </div>
@@ -597,7 +610,7 @@ export default function Invoices() {
                   <Button variant="ghost" size="icon" onClick={() => openReceiptModal(inv.id)}>
                     <Printer className="h-4 w-4" />
                   </Button>
-                  <Button variant="ghost" size="icon" onClick={() => setSelectedInvoiceId(inv.id)}>
+                  <Button variant="ghost" size="icon" onClick={() => openInvoiceDetail(inv.id)}>
                     <ChevronRight className="h-4 w-4" />
                   </Button>
                 </div>
@@ -743,7 +756,7 @@ export default function Invoices() {
           >
             <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-100 p-4">
               <div>
-                <h3 id="invoice-detail-title" className="text-base font-semibold text-slate-900">Chi tiết hóa đơn #{selectedInvoice.documentNo || selectedInvoice.id}</h3>
+                <h3 id="invoice-detail-title" className="text-base font-semibold text-slate-900">Chi tiết hóa đơn #{invoiceDisplayNo(selectedInvoice)}</h3>
                 <p className="mt-1 text-sm text-slate-500">{new Date(selectedInvoice.createdAt).toLocaleString('vi-VN')}</p>
               </div>
               <button
@@ -899,7 +912,7 @@ export default function Invoices() {
                 <ArrowLeft className="h-5 w-5" />
               </button>
               <div className="min-w-0 flex-1 px-3">
-                <p id="invoice-detail-mobile-title" className="truncate text-base font-semibold text-slate-900">#{selectedInvoice.documentNo || selectedInvoice.id}</p>
+                <p id="invoice-detail-mobile-title" className="truncate text-base font-semibold text-slate-900">#{invoiceDisplayNo(selectedInvoice)}</p>
                 <p className="text-xs text-slate-500">{new Date(selectedInvoice.createdAt).toLocaleString('vi-VN')} · {statusMeta(effectiveStatusOf(selectedInvoice)).label}</p>
               </div>
               <div className="flex items-center gap-1">
@@ -974,7 +987,7 @@ export default function Invoices() {
           ref={receiptRef}
           isOpen
           onClose={() => setReceiptInvoiceId(null)}
-          lastInvoiceId={receiptInvoice.documentNo || receiptInvoice.id}
+          lastInvoiceId={invoiceDisplayNo(receiptInvoice)}
           activeTenant={activeTenant}
           selectedCustomer={receiptCustomer}
           paymentMethod={receiptInvoice.paymentMethod}

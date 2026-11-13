@@ -1,4 +1,4 @@
-import React, { ForwardedRef, forwardRef } from 'react';
+import React, { ForwardedRef, forwardRef, useEffect } from 'react';
 import { Invoice, InvoiceItem, Customer, Tenant } from '../../types';
 import { formatCurrency } from '../../lib/utils';
 import { getInvoiceReceiptSummary } from '../../lib/invoiceReceipt';
@@ -17,7 +17,7 @@ interface POSInvoiceModalProps {
   currentInvoice: Invoice | null;
   currentUserName?: string | null;
   onExportImage: () => void;
-  onPrint: () => void;
+  onPrint: () => void | Promise<void>;
 }
 
 const InvoiceContent = forwardRef(({ 
@@ -29,7 +29,7 @@ const InvoiceContent = forwardRef(({
   currentInvoice,
   currentUserName
 }: Omit<POSInvoiceModalProps, 'isOpen' | 'onClose' | 'onExportImage' | 'onPrint'>, ref: ForwardedRef<HTMLDivElement>) => (
-  <div id="printable-invoice" ref={ref} className={`bg-white rounded-lg border border-slate-100 shadow-sm print:border-none print:shadow-none min-h-fit ${activeTenant?.settings?.invoice?.printSize === 'receipt_80mm' ? 'mx-auto w-[302px] p-4' : 'p-8'}`}>
+  <div id="printable-invoice" ref={ref} className={`mx-auto min-h-fit max-w-full rounded-lg border border-slate-100 bg-white shadow-sm print:border-none print:shadow-none ${activeTenant?.settings?.invoice?.printSize === 'receipt_80mm' ? 'w-[302px] p-4' : 'p-8'}`}>
     {(() => {
       const receipt = getInvoiceReceiptSummary(currentInvoice || { totalAmount: 0, discount: 0, finalAmount: 0, paidAmount: 0, debtAmount: 0 });
       const invoiceSettings = activeTenant?.settings?.invoice;
@@ -164,24 +164,39 @@ export const POSInvoiceModal = forwardRef(({
   onExportImage,
   onPrint
 }: POSInvoiceModalProps, ref: ForwardedRef<HTMLDivElement>) => {
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-200 sm:p-4">
-      <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-lg flex-col overflow-hidden rounded-lg bg-white shadow-2xl sm:max-h-[90vh]">
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white p-3 sm:p-6">
-          <div className="flex items-center gap-3">
-             <div className="h-10 w-10 rounded-lg bg-sky-50 text-sky-600 flex items-center justify-center">
+    <div className="fixed inset-0 z-[200] flex items-stretch justify-center bg-slate-900/60 p-0 backdrop-blur-md animate-in fade-in duration-200 sm:items-center sm:p-4">
+      <div className="flex h-[100dvh] w-full max-w-lg flex-col overflow-hidden rounded-none bg-white shadow-2xl sm:h-auto sm:max-h-[90vh] sm:rounded-lg">
+        <div className="sticky top-0 z-20 flex shrink-0 items-center justify-between border-b border-slate-100 bg-white px-3 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:p-6">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sky-50 text-sky-600 sm:h-10 sm:w-10">
                <Printer className="h-5 w-5" />
              </div>
-             <h3 className="font-black text-slate-900 text-lg uppercase tracking-tight">Hóa đơn số {lastInvoiceId}</h3>
+             <h3 className="min-w-0 truncate text-sm font-black uppercase tracking-tight text-slate-900 sm:text-lg">Hóa đơn số {lastInvoiceId}</h3>
           </div>
-          <button onClick={onClose} className="h-10 w-10 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 transition-colors">
+          <button type="button" aria-label="Đóng hóa đơn" title="Đóng hóa đơn (Esc)" onClick={onClose} className="flex h-10 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900">
             <X className="h-5 w-5" />
+            <span className="text-xs font-semibold sm:hidden">Đóng</span>
           </button>
         </div>
         
-        <div className="flex-1 overflow-y-auto p-4 sm:p-10" id="printable-invoice">
+        <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-10">
           <InvoiceContent 
             ref={ref}
             lastInvoiceId={lastInvoiceId}
@@ -194,11 +209,11 @@ export const POSInvoiceModal = forwardRef(({
           />
         </div>
 
-        <div className="flex gap-2 border-t border-slate-100 bg-white p-3 sm:gap-4 sm:p-6">
-          <Button variant="outline" className="h-12 flex-1 rounded-lg bg-slate-50 text-xs font-black uppercase tracking-widest text-slate-600 transition-all hover:bg-slate-100 sm:h-14 sm:text-sm" onClick={onExportImage}>
+        <div className="sticky bottom-0 z-20 flex shrink-0 gap-2 border-t border-slate-100 bg-white p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:gap-4 sm:p-6">
+          <Button variant="outline" className="h-12 min-w-0 flex-1 rounded-lg bg-slate-50 px-2 text-[10px] font-black uppercase tracking-widest text-slate-600 transition-all hover:bg-slate-100 sm:h-14 sm:px-4 sm:text-sm" onClick={onExportImage}>
             <Download className="mr-2 h-4 w-4 sm:h-5 sm:w-5" /> Lưu ảnh
           </Button>
-          <Button className="h-12 flex-1 rounded-lg bg-sky-600 text-xs font-black uppercase tracking-widest shadow-xl shadow-sky-900/20 hover:bg-sky-700 sm:h-14 sm:text-sm" onClick={onPrint}>
+          <Button className="h-12 min-w-0 flex-1 rounded-lg bg-sky-600 px-2 text-[10px] font-black uppercase tracking-widest shadow-xl shadow-sky-900/20 hover:bg-sky-700 sm:h-14 sm:px-4 sm:text-sm" onClick={onPrint}>
             <Printer className="mr-2 h-4 w-4 sm:h-5 sm:w-5" /> In phiếu
           </Button>
         </div>

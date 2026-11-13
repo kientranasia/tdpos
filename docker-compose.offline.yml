@@ -36,6 +36,8 @@ services:
       dockerfile: Dockerfile.web
       args:
         VITE_API_URL: /api
+        VITE_PRINT_BRIDGE_URL: ${VITE_PRINT_BRIDGE_URL:-/print-bridge}
+        VITE_PRINT_BRIDGE_TOKEN: ${VITE_PRINT_BRIDGE_TOKEN:-}
     restart: unless-stopped
     depends_on:
       api:
@@ -49,6 +51,8 @@ services:
     environment:
       HKDPLUS_HOSTNAME: ${HKDPLUS_HOSTNAME:-hkdsmart.local}
       HKDPLUS_HTTPS_PORT: ${WEB_HTTPS_PORT:-6688}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Replace the online gateway bindings when this file is layered on top of
     # docker-compose.yml; otherwise Compose keeps both port lists and Docker
     # tries to bind the same host port twice.

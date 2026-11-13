@@ -13,6 +13,7 @@
     "backup:postgres": "sh scripts/postgres-backup.sh",
     "restore:postgres": "sh scripts/postgres-restore.sh",
     "dev:all": "npm run server & npm run dev",
+    "print-bridge": "node print-bridge/server.mjs",
     "build": "vite build",
     "test:smoke": "node scripts/hkdplus-smoke.mjs",
     "test:flow": "node scripts/hkdplus-flow-smoke.mjs",

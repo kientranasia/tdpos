@@ -11,6 +11,7 @@ import { v4 as uuid } from 'uuid';
 import { cashAccountsApi, priceListsApi, productsApi } from '../lib/api';
 import { applyPriceListAdjustment } from '../lib/priceLists';
 import { createProductScanIndex, findProductInScanIndex } from '../lib/productScanIndex';
+import { printViaBridge } from '../lib/printBridge';
 
 // Components
 import { POSCartItem } from '../components/pos/POSCartItem';
@@ -901,9 +902,11 @@ export default function POS() {
       });
   };
 
-  const handlePrint = () => {
+  const handlePrint = async () => {
     const invoiceNode = invoiceRef.current;
     if (invoiceNode === null) return;
+
+    if (await printViaBridge({ text: invoiceNode.innerText, documentNo: lastInvoiceId })) return;
 
     const printFrame = document.createElement('iframe');
     printFrame.setAttribute('title', 'Bản in hóa đơn');

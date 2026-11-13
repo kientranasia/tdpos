@@ -15,5 +15,10 @@
 https://{$HKDPLUS_HOSTNAME:hkdsmart.local}, https://localhost, https://127.0.0.1 {
   tls internal
   encode gzip zstd
-  reverse_proxy web:80
+  handle_path /print-bridge/* {
+    reverse_proxy host.docker.internal:17650
+  }
+  handle {
+    reverse_proxy web:80
+  }
 }
