@@ -279,6 +279,24 @@ export default function Invoices() {
   }, [selectedInvoiceId]);
 
   useEffect(() => {
+    if (!selectedInvoiceId) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setShowInvoiceActions(false);
+      setSelectedInvoiceId(null);
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [selectedInvoiceId]);
+
+  useEffect(() => {
     if (showFilterSheet) setPendingStatusFilter(statusFilter);
   }, [showFilterSheet, statusFilter]);
 
@@ -709,17 +727,37 @@ export default function Invoices() {
       )}
 
       {selectedInvoice && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
-          <div className="hidden lg:block w-full max-w-lg rounded-xl border border-slate-200 bg-white p-5">
-            <div className="flex items-start justify-between">
+        <div
+          className="fixed inset-0 z-[220] flex items-stretch justify-center bg-black/45 p-0 lg:items-center lg:p-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setSelectedInvoiceId(null);
+          }}
+        >
+          <div
+            className="hidden max-h-[calc(100dvh-2rem)] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl lg:flex"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="invoice-detail-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-100 p-4">
               <div>
-                <h3 className="text-base font-semibold text-slate-900">Chi tiết hóa đơn #{selectedInvoice.id}</h3>
+                <h3 id="invoice-detail-title" className="text-base font-semibold text-slate-900">Chi tiết hóa đơn #{selectedInvoice.documentNo || selectedInvoice.id}</h3>
                 <p className="mt-1 text-sm text-slate-500">{new Date(selectedInvoice.createdAt).toLocaleString('vi-VN')}</p>
               </div>
-              <Button variant="ghost" size="sm" onClick={() => setSelectedInvoiceId(null)}>Đóng</Button>
+              <button
+                type="button"
+                aria-label="Đóng chi tiết hóa đơn"
+                onClick={() => setSelectedInvoiceId(null)}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              >
+                <X className="h-5 w-5" />
+              </button>
             </div>
 
-            <div className="mt-4 space-y-3 rounded-lg border border-slate-100 p-4 text-sm">
+            <div className="min-h-0 flex-1 overflow-y-auto p-4 text-sm">
+              <div className="space-y-3 rounded-lg border border-slate-100 p-4">
               <div>
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-slate-500">Hàng hóa trong đơn</span>
@@ -831,9 +869,10 @@ export default function Invoices() {
                   <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{selectedInvoice.note.trim()}</p>
                 </div>
               )}
+              </div>
             </div>
 
-            <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-slate-100 p-4">
               {selectedInvoice.customerId && (
                 <Button variant="outline" className="h-10 text-sm" onClick={() => navigate(`/app/customers/${selectedInvoice.customerId}`)}>
                   <User className="mr-2 h-4 w-4" />
@@ -848,16 +887,27 @@ export default function Invoices() {
             </div>
           </div>
 
-          <div className="lg:hidden absolute inset-0 bg-slate-100 overflow-y-auto pb-mobile-nav">
-            <div className="h-14 px-4 bg-white border-b border-slate-200 flex items-center justify-between sticky top-0 z-20">
-              <button onClick={() => setSelectedInvoiceId(null)} className="text-slate-500"><ArrowLeft className="h-5 w-5" /></button>
-              <div className="min-w-0">
-                <p className="text-base font-semibold text-slate-900">{selectedInvoice.id}</p>
+          <div
+            className="flex min-h-0 flex-1 flex-col overflow-hidden bg-slate-100 lg:hidden"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="invoice-detail-mobile-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="flex h-14 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 shadow-sm">
+              <button type="button" onClick={() => setSelectedInvoiceId(null)} className="flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100" aria-label="Đóng chi tiết hóa đơn">
+                <ArrowLeft className="h-5 w-5" />
+              </button>
+              <div className="min-w-0 flex-1 px-3">
+                <p id="invoice-detail-mobile-title" className="truncate text-base font-semibold text-slate-900">#{selectedInvoice.documentNo || selectedInvoice.id}</p>
                 <p className="text-xs text-slate-500">{new Date(selectedInvoice.createdAt).toLocaleString('vi-VN')} · {statusMeta(effectiveStatusOf(selectedInvoice)).label}</p>
               </div>
-              <button onClick={() => setShowInvoiceActions(true)} className="text-slate-500 px-2 text-xl leading-none">•••</button>
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => setShowInvoiceActions(true)} className="flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 text-xl leading-none hover:bg-slate-100" aria-label="Thao tác hóa đơn">•••</button>
+                <button type="button" onClick={() => setSelectedInvoiceId(null)} className="flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100" aria-label="Đóng chi tiết hóa đơn"><X className="h-5 w-5" /></button>
+              </div>
             </div>
-            <div className="p-3 space-y-3">
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 pb-mobile-nav">
               <button
                 onClick={() => selectedInvoice.customerId && navigate(`/app/customers/${selectedInvoice.customerId}`)}
                 className="w-full rounded-lg border border-slate-200 bg-white p-4 text-left flex items-center justify-between"
@@ -914,9 +964,6 @@ export default function Invoices() {
                   <p className="text-slate-500">Người tạo</p>
                   <p className="font-medium text-slate-900">{selectedInvoice.createdByName || 'Chưa xác định'}</p>
                 </div>
-              </div>
-              <div className="pt-2 pb-2">
-                <Button className="h-12 w-full text-base">Cập nhật</Button>
               </div>
             </div>
           </div>
@@ -991,7 +1038,7 @@ export default function Invoices() {
         </div>
       )}
       {selectedInvoice && showInvoiceActions && (
-        <div className="lg:hidden fixed inset-0 z-[170] bg-black/45" onClick={() => setShowInvoiceActions(false)}>
+        <div className="lg:hidden fixed inset-0 z-[230] bg-black/45" onClick={() => setShowInvoiceActions(false)}>
           <div className="absolute inset-x-0 bottom-0 rounded-t-3xl bg-white p-4" onClick={(e) => e.stopPropagation()}>
             <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-slate-300" />
             <div className="space-y-1 text-base">

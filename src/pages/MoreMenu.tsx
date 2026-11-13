@@ -1,5 +1,4 @@
 import {
-  ArrowLeftRight,
   BarChart3,
   BookText,
   ChevronRight,
@@ -46,7 +45,6 @@ const sections: Array<{ title: string; items: MenuItem[] }> = [
       { label: 'Nhập hàng', desc: 'Tạo phiếu nhập từ nhà cung cấp', path: '/app/purchases', icon: ClipboardList, status: 'ready' },
       { label: 'Trả hàng nhập', desc: 'Trả lại hàng đã nhập cho nhà cung cấp', path: '/app/purchase-returns', icon: RotateCcw, status: 'ready' },
       { label: 'Xuất hủy', desc: 'Ghi nhận hàng hỏng, mất hoặc hết hạn', path: '/app/inventory-operations?mode=dispose', icon: PackageX, status: 'ready' },
-      { label: 'Chuyển hàng', desc: 'Chuẩn bị luồng chuyển giữa các kho', path: '/app/inventory-operations?mode=transfer', icon: ArrowLeftRight, status: 'new' },
       { label: 'Xuất dùng nội bộ', desc: 'Ghi nhận hàng lấy dùng trong cửa hàng', path: '/app/inventory-operations?mode=internal', icon: HandCoins, status: 'ready' },
     ],
   },

@@ -1116,7 +1116,7 @@ export default function POS() {
   }
 
   return (
-    <div className="erp-compact pos-page flex min-h-0 flex-col h-full lg:flex-row lg:items-stretch bg-slate-50 overflow-y-auto lg:overflow-hidden font-sans relative">
+    <div className="erp-compact pos-page flex min-h-0 min-w-0 flex-col h-full lg:flex-row lg:items-stretch bg-slate-50 overflow-y-auto lg:overflow-hidden font-sans relative">
       <BarcodeScannerModal
         open={showScannerModal}
         title="Quét mã để thêm vào giỏ"
@@ -1161,7 +1161,7 @@ export default function POS() {
       )}
 
       {/* Product List Section */}
-      <div className="w-full flex-1 lg:flex-1 lg:self-stretch flex flex-col min-h-0 border-b lg:border-b-0 lg:border-r border-slate-200/50 bg-white relative">
+      <div className="w-full min-w-0 flex-1 basis-0 lg:self-stretch flex flex-col min-h-0 border-b lg:border-b-0 lg:border-r border-slate-200/50 bg-white relative">
         <div className="p-3 sm:p-4 lg:p-2 space-y-3 lg:space-y-1.5 bg-white sticky top-0 z-40 border-b border-slate-200 shadow-sm shrink-0">
           <div className="hidden lg:flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
@@ -1480,7 +1480,7 @@ export default function POS() {
       </div>
 
       {/* Cart Section */}
-      <div className="hidden w-full lg:flex lg:self-stretch lg:w-[350px] xl:w-[380px] 2xl:w-[420px] flex-col min-h-0 bg-white relative lg:shadow-[-20px_0_60px_rgba(0,0,0,0.03)] z-40 shrink-0">
+      <div className="hidden min-w-0 w-full flex-none lg:flex lg:self-stretch lg:w-[320px] xl:w-[360px] 2xl:w-[400px] flex-col min-h-0 bg-white relative lg:shadow-[-20px_0_60px_rgba(0,0,0,0.03)] z-40 shrink-0">
         <div className="p-3 lg:p-2 border-b border-slate-100 flex justify-between items-center bg-white lg:sticky lg:top-0 z-40 shrink-0">
           <div className="flex items-center gap-3 sm:gap-4 lg:gap-2">
             <div className={`h-8 w-8 lg:h-7 lg:w-7 rounded-md bg-sky-600 text-white flex items-center justify-center transition-transform duration-300 ${cartPulse ? 'scale-110' : 'scale-100'}`}>

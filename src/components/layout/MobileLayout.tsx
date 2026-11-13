@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, ShoppingCart, Package, Users, Truck, Wallet, LogOut, Receipt, Settings, PanelLeftClose, PanelLeftOpen, Bell, UserRound, BookText, Menu, ClipboardList, ClipboardCheck, BarChart3, RotateCcw, PackageX, ArrowLeftRight, HandCoins } from 'lucide-react';
+import { Home, ShoppingCart, Package, Users, Truck, Wallet, LogOut, Receipt, Settings, PanelLeftClose, PanelLeftOpen, Bell, UserRound, BookText, Menu, ClipboardList, ClipboardCheck, BarChart3, RotateCcw, PackageX, HandCoins } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { useState } from 'react';
 import { authApi } from '../../lib/api';
@@ -67,7 +67,6 @@ export default function MobileLayout() {
         { icon: ClipboardList, label: 'Nhập hàng', shortLabel: 'Nhập hàng', path: '/app/purchases' },
         { icon: RotateCcw, label: 'Trả hàng nhập', shortLabel: 'Trả nhập', path: '/app/purchase-returns' },
         { icon: PackageX, label: 'Xuất hủy', shortLabel: 'Xuất hủy', path: '/app/inventory-operations?mode=dispose' },
-        { icon: ArrowLeftRight, label: 'Chuyển hàng', shortLabel: 'Chuyển hàng', path: '/app/inventory-operations?mode=transfer' },
         { icon: HandCoins, label: 'Xuất dùng nội bộ', shortLabel: 'Xuất nội bộ', path: '/app/inventory-operations?mode=internal' },
       ],
     },

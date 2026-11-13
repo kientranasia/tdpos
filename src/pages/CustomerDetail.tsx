@@ -409,7 +409,7 @@ export default function CustomerDetail() {
                                             <div className="space-y-0.5">
                                                 <div className="flex items-center gap-2">
                                                     {event.kind === 'invoice' ? (
-                                                      <button type="button" className="text-xs font-semibold tracking-tight text-sky-700 hover:underline" onClick={() => navigate(`/app/invoices?invoiceId=${encodeURIComponent(event.invoice.id)}`)}>#{event.invoice.id}</button>
+                                                      <button type="button" className="text-xs font-semibold tracking-tight text-sky-700 hover:underline" onClick={() => navigate(`/app/invoices?invoiceId=${encodeURIComponent(event.invoice.id)}`)}>#{event.invoice.documentNo || event.invoice.id}</button>
                                                     ) : <p className="text-xs font-semibold tracking-tight text-slate-900">Thanh toán công nợ</p>}
                                                     <span className={`status-chip ${
                                                         event.kind === 'invoice'
