@@ -402,6 +402,66 @@
       font-size: 16px !important;
       line-height: 20px !important;
     }
+
+    /* Inventory mobile cards keep the hierarchy readable without letting
+       long product names and filter controls dominate the viewport. */
+    html body .erp-compact .inventory-page .inventory-mobile-filter-heading {
+      font-size: 11px !important;
+      line-height: 15px !important;
+    }
+
+    html body .erp-compact .inventory-page .inventory-mobile-filter-control {
+      font-size: 13px !important;
+      line-height: 17px !important;
+    }
+
+    html body .erp-compact .inventory-page .inventory-mobile-card .inventory-mobile-sku {
+      font-size: 10px !important;
+      line-height: 13px !important;
+    }
+
+    html body .erp-compact .inventory-page .inventory-mobile-card .inventory-mobile-name {
+      font-size: 14px !important;
+      line-height: 18px !important;
+    }
+
+    html body .erp-compact .inventory-page .inventory-mobile-card .inventory-mobile-tag,
+    html body .erp-compact .inventory-page .inventory-mobile-card .inventory-mobile-meta {
+      font-size: 10px !important;
+      line-height: 14px !important;
+    }
+
+    html body .erp-compact .inventory-page .inventory-mobile-card .inventory-mobile-value {
+      font-size: 12px !important;
+      line-height: 16px !important;
+    }
+
+    /* The picker is a selection surface, so keep the row copy compact and
+       make the return action easy to find at the top of the list. */
+    html body .erp-compact.pos-page .pos-mobile-filter-control {
+      font-size: 12px !important;
+      line-height: 16px !important;
+    }
+
+    html body .erp-compact.pos-page .pos-mobile-back-to-cart {
+      font-size: 12px !important;
+      line-height: 16px !important;
+    }
+
+    html body .erp-compact.pos-page .pos-mobile-product-name {
+      font-size: 13px !important;
+      line-height: 17px !important;
+    }
+
+    html body .erp-compact.pos-page .pos-mobile-product-meta {
+      font-size: 10px !important;
+      line-height: 14px !important;
+    }
+
+    html body .erp-compact.pos-page .pos-mobile-product-price {
+      font-size: 14px !important;
+      line-height: 18px !important;
+    }
   }
 
   .pb-safe {

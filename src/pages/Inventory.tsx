@@ -1156,7 +1156,7 @@ export default function Inventory() {
   }, [stockCardRows, stockCardTransactionFilter]);
 
   return (
-    <div className="flex h-full flex-col bg-slate-50 animate-in fade-in duration-500 overflow-hidden relative">
+    <div className="inventory-page flex h-full flex-col bg-slate-50 animate-in fade-in duration-500 overflow-hidden relative">
       <BarcodeScannerModal
         open={showBarcodeScannerModal}
         title="Quét mã sản phẩm"
@@ -2144,8 +2144,8 @@ export default function Inventory() {
           </div>
         </div>
 
-        <div className="mb-3 rounded-lg border border-slate-200 bg-white p-2.5">
-          <div className="mb-2 flex items-center gap-2 text-[11px] font-medium text-slate-600">
+        <div className="inventory-mobile-filter-panel mb-3 rounded-lg border border-slate-200 bg-white p-2.5">
+          <div className="inventory-mobile-filter-heading mb-2 flex items-center gap-2 text-[11px] font-medium text-slate-600">
             <SlidersHorizontal className="h-3.5 w-3.5 text-slate-500" />
             Bộ lọc & sắp xếp hàng hóa
           </div>
@@ -2153,7 +2153,7 @@ export default function Inventory() {
             <select
               value={categoryFilter}
               onChange={(e) => setCategoryFilter(e.target.value)}
-              className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
+              className="inventory-mobile-filter-control h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
             >
               <option value="all">Tất cả danh mục</option>
               {uniqueCategories.map((cat) => (
@@ -2163,7 +2163,7 @@ export default function Inventory() {
             <select
               value={productTypeFilter}
               onChange={(e) => setProductTypeFilter(e.target.value as 'all' | 'standard' | 'combo')}
-              className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
+              className="inventory-mobile-filter-control h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
               aria-label="Lọc loại hàng hóa"
             >
               <option value="all">Tất cả loại hàng</option>
@@ -2173,7 +2173,7 @@ export default function Inventory() {
             <select
               value={stockStatusFilter}
               onChange={(e) => setStockStatusFilter(e.target.value as any)}
-              className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
+              className="inventory-mobile-filter-control h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
             >
               <option value="all">Tất cả tồn kho</option>
               <option value="in_stock">Còn hàng</option>
@@ -2183,7 +2183,7 @@ export default function Inventory() {
             <select
               value={productStatusFilter}
               onChange={(e) => setProductStatusFilter(e.target.value as 'active' | 'inactive' | 'all')}
-              className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
+              className="inventory-mobile-filter-control h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
             >
               <option value="active">Đang kinh doanh</option>
               <option value="inactive">Đã ngừng kinh doanh</option>
@@ -2192,7 +2192,7 @@ export default function Inventory() {
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as any)}
-              className="h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
+              className="inventory-mobile-filter-control h-9 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"
             >
               <option value="updated_desc">Mới cập nhật</option>
               <option value="name_asc">Tên A → Z</option>
@@ -2202,7 +2202,7 @@ export default function Inventory() {
             </select>
             <Button
               variant="outline"
-              className="h-9 justify-start gap-2 px-2.5 text-xs"
+              className="inventory-mobile-filter-control h-9 justify-start gap-2 px-2.5 text-xs"
               onClick={() => {
                 setCategoryFilter('all');
                 setProductTypeFilter('all');
@@ -2227,13 +2227,13 @@ export default function Inventory() {
           {/* Mobile View: High-polish Cards */}
           <div className="grid grid-cols-1 gap-px bg-slate-100 lg:hidden">
             {visibleProducts.map(product => (
-              <div key={product.id} className="p-3 bg-white space-y-2 relative group active:bg-slate-50 transition-colors">
+              <div key={product.id} className="inventory-mobile-card p-3 bg-white space-y-2 relative group active:bg-slate-50 transition-colors">
                 <div className="flex justify-between items-start">
                   <div className="space-y-1">
-                    <button type="button" className="block text-left text-xs font-semibold text-slate-500 font-mono leading-none hover:text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); void openEditProduct(product); }}>{product.sku}</button>
+                    <button type="button" className="inventory-mobile-sku block text-left text-xs font-semibold text-slate-500 font-mono leading-none hover:text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); void openEditProduct(product); }}>{product.sku}</button>
                     <div className="flex items-center gap-1.5">
-                      <button type="button" className="block min-w-0 text-left font-semibold text-slate-900 text-base leading-tight tracking-tight hover:text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); void openEditProduct(product); }}>{product.name}</button>
-                      {product.productType === 'combo' && <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${product.components?.length ? 'bg-violet-50 text-violet-700' : 'bg-amber-50 text-amber-700'}`}>{product.components?.length ? 'Combo' : 'Thiếu thành phần'}</span>}
+                      <button type="button" className="inventory-mobile-name block min-w-0 text-left font-semibold text-slate-900 text-sm leading-tight tracking-tight hover:text-sky-700 hover:underline" onClick={(event) => { event.stopPropagation(); void openEditProduct(product); }}>{product.name}</button>
+                      {product.productType === 'combo' && <span className={`inventory-mobile-tag shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${product.components?.length ? 'bg-violet-50 text-violet-700' : 'bg-amber-50 text-amber-700'}`}>{product.components?.length ? 'Combo' : 'Thiếu thành phần'}</span>}
                     </div>
                   </div>
                     <div className="flex items-center gap-2">
@@ -2272,32 +2272,32 @@ export default function Inventory() {
                 </div>
                 
                 <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-medium text-slate-600 bg-slate-100 px-2 py-1 rounded-md leading-none ring-1 ring-slate-200/50">{product.category}</span>
-                  <span className="text-[11px] font-medium text-slate-600 bg-slate-100 px-2 py-1 rounded-md leading-none ring-1 ring-slate-200/50">{product.unit}</span>
+                  <span className="inventory-mobile-tag text-[10px] font-medium text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-md leading-none ring-1 ring-slate-200/50">{product.category}</span>
+                  <span className="inventory-mobile-tag text-[10px] font-medium text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-md leading-none ring-1 ring-slate-200/50">{product.unit}</span>
                 </div>
                 {product.units && product.units.filter((unit: any) => unit.name !== product.unit || Number(unit.factor) !== 1).length > 0 && (
-                  <p className="truncate text-[10px] text-slate-500" title={product.units.filter((unit: any) => unit.name !== product.unit || Number(unit.factor) !== 1).map((unit: any) => `${unit.sku || '—'} · ${unit.name} ×${unit.factor} · vốn ${formatCompactCurrency(unit.purchasePrice)} · bán ${formatCompactCurrency(unit.sellingPrice)}`).join(' | ')}>
+                  <p className="inventory-mobile-meta truncate text-[10px] text-slate-500" title={product.units.filter((unit: any) => unit.name !== product.unit || Number(unit.factor) !== 1).map((unit: any) => `${unit.sku || '—'} · ${unit.name} ×${unit.factor} · vốn ${formatCompactCurrency(unit.purchasePrice)} · bán ${formatCompactCurrency(unit.sellingPrice)}`).join(' | ')}>
                     Đơn vị phụ: {product.units.filter((unit: any) => unit.name !== product.unit || Number(unit.factor) !== 1).slice(0, 2).map((unit: any) => `${unit.sku || '—'} · ${unit.name} ×${unit.factor} · ${formatCompactCurrency(unit.sellingPrice)}`).join(' | ')}
                   </p>
                 )}
 
                 <div className="grid grid-cols-3 gap-2 pt-3 border-t border-slate-100">
                   <div className="space-y-1">
-                    <div className="text-[11px] font-medium text-slate-500">Tồn kho</div>
-                      <div className={`text-sm font-medium tabular-nums leading-none ${
+                    <div className="inventory-mobile-meta text-[10px] font-medium text-slate-500">Tồn kho</div>
+                      <div className={`inventory-mobile-value text-xs font-medium tabular-nums leading-none ${
                       Number(product.availableStock ?? product.stock) <= product.lowStockThreshold ? 'text-amber-700' : 'text-slate-700'
                     }`}>
-                      {Number(product.availableStock ?? product.stock)} <span className="text-[11px] text-slate-400 font-medium ml-0.5">{product.unit}</span>
+                      {Number(product.availableStock ?? product.stock)} <span className="inventory-mobile-meta text-[10px] text-slate-400 font-medium ml-0.5">{product.unit}</span>
                     </div>
                     {Number(product.maxStockThreshold || 0) > 0 && <div className="text-[10px] text-slate-400">Tối đa {Number(product.maxStockThreshold)}</div>}
                   </div>
                   <div className="text-right space-y-1">
-                    <div className="text-xs font-medium text-slate-500">Giá nhập</div>
-                    <div className="text-sm font-semibold text-slate-600 tabular-nums leading-none">{formatCompactCurrency(product.purchasePrice)}</div>
+                    <div className="inventory-mobile-meta text-[10px] font-medium text-slate-500">Giá nhập</div>
+                    <div className="inventory-mobile-value text-xs font-semibold text-slate-600 tabular-nums leading-none">{formatCompactCurrency(product.purchasePrice)}</div>
                   </div>
                   <div className="text-right space-y-1">
-                    <div className="text-xs font-medium text-slate-500">Giá bán</div>
-                    <div className="text-sm font-semibold text-sky-700 tabular-nums leading-none">{formatCompactCurrency(product.sellingPrice)}</div>
+                    <div className="inventory-mobile-meta text-[10px] font-medium text-slate-500">Giá bán</div>
+                    <div className="inventory-mobile-value text-xs font-semibold text-sky-700 tabular-nums leading-none">{formatCompactCurrency(product.sellingPrice)}</div>
                   </div>
                 </div>
               </div>

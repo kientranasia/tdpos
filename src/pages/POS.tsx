@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect, type UIEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import { Product, Customer, PaymentMethod, InvoiceItem, Invoice } from '../types';
 import { formatCurrency, normalizeSearchText } from '../lib/utils';
-import { Search, X, CheckCircle, ShoppingCart, Wallet, TrendingUp, Package, Printer, ChevronRight, AlertCircle, MapPin, Phone, User, UserPlus, ScanLine, Camera, SlidersHorizontal, MessageSquare, Tag, Plus, ClipboardList } from 'lucide-react';
+import { Search, X, CheckCircle, ShoppingCart, Wallet, TrendingUp, Package, Printer, ChevronLeft, ChevronRight, AlertCircle, MapPin, Phone, User, UserPlus, ScanLine, Camera, SlidersHorizontal, MessageSquare, Tag, Plus, ClipboardList } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { toPng } from 'html-to-image';
@@ -1467,11 +1467,10 @@ export default function POS() {
                 <h2 className="text-sm font-semibold text-slate-900">Chọn hàng</h2>
                 <p className="text-[11px] text-slate-500">Chọn xong sẽ quay về giỏ hàng</p>
               </div>
-              {cart.length > 0 && (
-                <button type="button" onClick={() => { setMobileProductPickerOpen(false); setSearchTerm(''); }} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700">
-                  ← Về giỏ hàng
-                </button>
-              )}
+              <button type="button" aria-label="Về giỏ hàng" onClick={() => { setMobileProductPickerOpen(false); setSearchTerm(''); }} className="pos-mobile-back-to-cart inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-medium text-slate-700">
+                <ChevronLeft className="h-3.5 w-3.5" />
+                Về giỏ hàng
+              </button>
             </div>
             <div className="space-y-0 rounded-lg border border-slate-200 bg-white overflow-hidden">
             {mobileVisibleProducts.map((product) => {
@@ -1482,7 +1481,7 @@ export default function POS() {
               const isOutOfStock = available <= 0;
               const isLowStock = available > 0 && available <= product.lowStockThreshold;
               return (
-                <div key={product.id} className={`px-3 py-2.5 border-b border-slate-100 last:border-b-0 ${isOutOfStock ? 'opacity-60' : ''}`}>
+                <div key={product.id} className={`pos-mobile-product-row px-3 py-2.5 border-b border-slate-100 last:border-b-0 ${isOutOfStock ? 'opacity-60' : ''}`}>
                   <div className="flex items-start gap-3">
                     <div className="h-11 w-11 shrink-0 overflow-hidden rounded-md bg-slate-100">
                       {product.imageUrl ? (
@@ -1492,12 +1491,12 @@ export default function POS() {
                       )}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="line-clamp-1 text-sm font-medium text-slate-900">{product.name}</p>
-                      <p className="mt-0.5 text-[11px] text-slate-500">{units.length > 1 ? `${units.length} quy cách · chọn khi thêm` : `Bán theo ${product.unit}`}</p>
+                      <p className="pos-mobile-product-name line-clamp-1 text-sm font-medium text-slate-900">{product.name}</p>
+                      <p className="pos-mobile-product-meta mt-0.5 text-[11px] text-slate-500">{units.length > 1 ? `${units.length} quy cách · chọn khi thêm` : `Bán theo ${product.unit}`}</p>
                       <div className="mt-1 flex items-center gap-1.5">
-                        <span className="text-base leading-none font-semibold text-sky-700 tabular-nums">{formatCompactCurrency(price)}</span>
-                        <span className="text-[11px] text-slate-400">/{product.unit}</span>
-                        <span className={`text-[11px] ${isOutOfStock ? 'text-rose-600' : isLowStock ? 'text-amber-600' : 'text-slate-500'}`}>
+                        <span className="pos-mobile-product-price text-base leading-none font-semibold text-sky-700 tabular-nums">{formatCompactCurrency(price)}</span>
+                        <span className="pos-mobile-product-meta text-[11px] text-slate-400">/{product.unit}</span>
+                        <span className={`pos-mobile-product-meta ${isOutOfStock ? 'text-rose-600' : isLowStock ? 'text-amber-600' : 'text-slate-500'}`}>
                           {isOutOfStock ? 'Hết hàng' : `Tồn: ${available}`}
                         </span>
                       </div>
