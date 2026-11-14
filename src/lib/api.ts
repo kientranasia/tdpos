@@ -190,8 +190,19 @@ export const suppliersApi = {
           .map(([key, value]) => [key, String(value)]),
       ]),
     }),
+  debtStatement: (id: string, filters?: { from?: string; to?: string }) =>
+    request<any>(`/suppliers/${id}/debt-statement`, { params: filters as any }),
   create: (data: any) => request<any>('/suppliers', { method: 'POST', body: data }),
   update: (id: string, data: any) => request<any>(`/suppliers/${id}`, { method: 'PATCH', body: data }),
+};
+
+export const partnerImportApi = {
+  preview: (data: { sourceSystem: string; fileName?: string; entityType: string; rows: any[]; partnerCode?: string; meta?: Record<string, unknown> }) =>
+    request<any>('/partners/import/preview', { method: 'POST', body: data }),
+  importBatch: (data: { sourceSystem: string; fileName?: string; entityType: string; rows: any[]; partnerCode?: string; meta?: Record<string, unknown> }) =>
+    request<any>('/partners/import', { method: 'POST', body: data }),
+  history: () => request<any[]>('/partners/import-history'),
+  issues: (batchId: string) => request<{ batch: any; issues: any[] }>(`/partners/import-history/${encodeURIComponent(batchId)}/issues`),
 };
 
 export const purchasesApi = {

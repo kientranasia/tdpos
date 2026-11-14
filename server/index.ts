@@ -2271,7 +2271,22 @@ const importText = (value: unknown) => String(value ?? '').trim();
 const importCode = (value: unknown) => importText(value).toLowerCase();
 const importNumber = (value: unknown, fallback = 0) => {
   if (value === null || value === undefined || value === '') return fallback;
-  const parsed = Number(String(value).replace(/,/g, '').trim());
+  if (typeof value === 'number') return Number.isFinite(value) ? value : fallback;
+  const raw = importText(value).replace(/\s/g, '');
+  if (!raw) return fallback;
+  // Kiot Viet exports can contain either numeric cells or localized text such
+  // as "5.884.600", "5,884,600" and decimal values such as "1,5".
+  let normalized = raw;
+  if (raw.includes('.') && raw.includes(',')) {
+    normalized = raw.lastIndexOf(',') > raw.lastIndexOf('.')
+      ? raw.replace(/\./g, '').replace(',', '.')
+      : raw.replace(/,/g, '');
+  } else if (/^-?\d{1,3}(?:[.,]\d{3})+$/.test(raw)) {
+    normalized = raw.replace(/[.,]/g, '');
+  } else if (raw.includes(',')) {
+    normalized = raw.replace(',', '.');
+  }
+  const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 const importBoolean = (value: unknown, fallback = true) => {
@@ -3141,6 +3156,279 @@ app.post('/api/cashbook/categories', async (req, res) => {
   }
 });
 
+type PartnerImportEntity = 'customer' | 'supplier' | 'customer_debt' | 'supplier_debt';
+
+const normalizeImportHeader = (value: unknown) => normalizeSearchText(value).replace(/[^a-z0-9]/g, '');
+const importValue = (row: Record<string, unknown>, labels: string[]) => {
+  const entries = Object.entries(row || {}).map(([key, value]) => [normalizeImportHeader(key), value] as const);
+  for (const label of labels) {
+    const key = normalizeImportHeader(label);
+    const found = entries.find(([candidate]) => candidate === key || candidate.includes(key) || key.includes(candidate));
+    if (found && found[1] !== undefined && found[1] !== null && String(found[1]).trim() !== '') return found[1];
+  }
+  return '';
+};
+
+const importDate = (value: unknown, fallback = new Date().toISOString()) => {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
+  const raw = importText(value);
+  if (!raw) return fallback;
+  const match = raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (match) {
+    const [, day, month, year, hour = '00', minute = '00', second = '00'] = match;
+    const date = new Date(`${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${hour.padStart(2, '0')}:${minute}:${second}+07:00`);
+    if (!Number.isNaN(date.getTime())) return date.toISOString();
+  }
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? fallback : date.toISOString();
+};
+
+const sourceStatus = (value: unknown) => ['0', 'false', 'inactive', 'ngung'].includes(normalizeSearchText(value)) ? 'inactive' : 'active';
+const partnerImportHash = (sourceSystem: string, entityType: PartnerImportEntity, rows: unknown[], meta?: unknown) => crypto.createHash('sha256').update(JSON.stringify({ sourceSystem, entityType, rows, meta: meta || null })).digest('hex');
+
+const normalizeCustomerImportRow = (row: Record<string, unknown>) => ({
+  code: importText(importValue(row, ['Mã khách hàng'])),
+  name: importText(importValue(row, ['Tên khách hàng'])),
+  phone: importText(importValue(row, ['Điện thoại'])),
+  address: importText(importValue(row, ['Địa chỉ'])),
+  taxCode: importText(importValue(row, ['MST (xuất HĐ)', 'Mã số thuế'])),
+  customerTypeRaw: importText(importValue(row, ['Loại khách'])),
+  sourceBranch: importText(importValue(row, ['Chi nhánh tạo'])),
+  deliveryArea: importText(importValue(row, ['Khu vực giao hàng'])),
+  ward: importText(importValue(row, ['Phường/Xã'])),
+  birthDate: importText(importValue(row, ['Ngày sinh'])),
+  gender: importText(importValue(row, ['Giới tính'])),
+  email: importText(importValue(row, ['Email'])),
+  facebook: importText(importValue(row, ['Facebook'])),
+  groupName: importText(importValue(row, ['Nhóm khách hàng'])),
+  note: importText(importValue(row, ['Ghi chú'])),
+  buyerName: importText(importValue(row, ['Tên người mua (xuất HĐ)'])),
+  companyName: importText(importValue(row, ['Tên công ty (xuất HĐ)'])),
+  invoiceAddress: importText(importValue(row, ['Địa chỉ chi tiết (xuất HĐ)'])),
+  invoiceProvince: importText(importValue(row, ['Tỉnh/Thành phố (xuất HĐ)'])),
+  invoiceWard: importText(importValue(row, ['Phường/Xã (xuất HĐ)'])),
+  invoiceCitizenId: importText(importValue(row, ['Số CCCD/CMND (xuất HĐ)'])),
+  invoicePassportNumber: importText(importValue(row, ['Số hộ chiếu (xuất HĐ)'])),
+  invoiceGovernmentId: importText(importValue(row, ['MSĐVCQHVNS (xuất HĐ)'])),
+  invoiceEmail: importText(importValue(row, ['Email (xuất HĐ)'])),
+  invoicePhone: importText(importValue(row, ['SĐT (xuất HĐ)'])),
+  bankName: importText(importValue(row, ['Ngân hàng (xuất HĐ)'])),
+  bankAccount: importText(importValue(row, ['Số TK ngân hàng (xuất HĐ)'])),
+  sourceCreatedBy: importText(importValue(row, ['Người tạo'])),
+  sourceCreatedAt: importText(importValue(row, ['Ngày tạo'])),
+  lastTransactionAt: importText(importValue(row, ['Ngày giao dịch cuối'])),
+  totalDebt: importNumber(importValue(row, ['Nợ cần thu hiện tại'])),
+  totalSales: importNumber(importValue(row, ['Tổng bán'])),
+  totalSalesAfterReturns: importNumber(importValue(row, ['Tổng bán trừ trả hàng'])),
+  sourceStatus: sourceStatus(importValue(row, ['Trạng thái'])),
+  raw: row,
+});
+
+const normalizeSupplierImportRow = (row: Record<string, unknown>) => ({
+  code: importText(importValue(row, ['Mã nhà cung cấp'])),
+  name: importText(importValue(row, ['Tên nhà cung cấp'])),
+  email: importText(importValue(row, ['Email'])),
+  phone: importText(importValue(row, ['Điện thoại'])),
+  address: importText(importValue(row, ['Địa chỉ'])),
+  region: importText(importValue(row, ['Khu vực'])),
+  ward: importText(importValue(row, ['Phường/Xã'])),
+  totalPurchases: importNumber(importValue(row, ['Tổng mua'])),
+  currentPayable: importNumber(importValue(row, ['Nợ cần trả hiện tại'])),
+  taxCode: importText(importValue(row, ['Mã số thuế'])),
+  idNumber: importText(importValue(row, ['Số CMND/CCCD'])),
+  note: importText(importValue(row, ['Ghi chú'])),
+  groupName: importText(importValue(row, ['Nhóm nhà cung cấp'])),
+  sourceStatus: sourceStatus(importValue(row, ['Trạng thái'])),
+  totalPurchasesAfterReturns: importNumber(importValue(row, ['Tổng mua trừ trả hàng'])),
+  companyName: importText(importValue(row, ['Công ty'])),
+  sourceCreatedBy: importText(importValue(row, ['Người tạo'])),
+  sourceCreatedAt: importText(importValue(row, ['Ngày tạo'])),
+  raw: row,
+});
+
+const normalizeDebtImportRows = (rows: Record<string, unknown>[], entityType: PartnerImportEntity) => {
+  const documents: Array<any> = [];
+  let current: any = null;
+  rows.forEach((row, index) => {
+    const occurredAt = importValue(row, ['Thời gian']);
+    const documentNo = importText(importValue(row, ['Mã']));
+    const description = importText(importValue(row, ['Diễn giải']));
+    if (occurredAt && documentNo) {
+      current = {
+        documentNo,
+        occurredAt: importDate(occurredAt),
+        description,
+        amount: importNumber(importValue(row, ['Thành tiền', 'Giá trị'])),
+        debit: importNumber(importValue(row, ['Ghi nợ'])),
+        credit: importNumber(importValue(row, ['Ghi có'])),
+        note: '',
+        sourceRowNumber: index + 2,
+        raw: row,
+        details: [],
+      };
+      documents.push(current);
+      return;
+    }
+    if (!current) return;
+    const unit = importText(importValue(row, ['ĐVT']));
+    const quantity = importNumber(importValue(row, ['SL']));
+    const unitPrice = importNumber(importValue(row, ['Đơn giá']));
+    const amount = importNumber(importValue(row, ['Thành tiền', 'Giá trị']));
+    if (documentNo || unit || quantity || unitPrice || amount) {
+      current.details.push({ code: documentNo, description, unit, quantity, unitPrice, amount, discount: importNumber(importValue(row, ['Giảm giá'])), vat: importNumber(importValue(row, ['VAT'])), purchasePrice: importNumber(importValue(row, ['Giá nhập/trả'])), raw: row });
+    } else {
+      const note = importText(importValue(row, ['Diễn giải'])) || Object.values(row).map(importText).filter(Boolean).join(' · ');
+      if (note) current.note = [current.note, note].filter(Boolean).join('\n');
+    }
+  });
+  return documents.map((document) => ({ ...document, entityType, detailsJson: JSON.stringify(document.details) }));
+};
+
+const partnerImportPreview = async (req: Request, res: Response) => {
+  try {
+    if (!ensurePermission(req, res, 'partners.create')) return;
+    const sourceSystem = importText(req.body?.sourceSystem || 'kiot-viet').toLowerCase();
+    const entityType = req.body?.entityType as PartnerImportEntity;
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows as Record<string, unknown>[] : [];
+    if (!['customer', 'supplier', 'customer_debt', 'supplier_debt'].includes(entityType) || !rows.length) return res.status(400).json({ error: 'Thiếu loại dữ liệu hoặc danh sách dòng import.' });
+    if (rows.length > 20000) return res.status(413).json({ error: 'File vượt quá 20.000 dòng cho một lần import.' });
+    const sourceHash = partnerImportHash(sourceSystem, entityType, rows, req.body?.meta);
+    const issues: Array<{ rowNumber: number; code: string; message: string; sourceCode: string; sourceName: string }> = [];
+    let normalizedRows: any[] = [];
+    let stats = { totalRows: rows.length, createdCount: 0, updatedCount: 0, debtAdjustedCount: 0, detailCount: 0, errorCount: 0 };
+    if (entityType === 'customer' || entityType === 'supplier') {
+      normalizedRows = rows.map((row) => entityType === 'customer' ? normalizeCustomerImportRow(row) : normalizeSupplierImportRow(row));
+      const existingRows = entityType === 'customer'
+        ? await db.select({ id: schema.customers.id, code: schema.customers.code, totalDebt: schema.customers.totalDebt }).from(schema.customers).where(eq(schema.customers.tenantId, req.user.tenantId)).all()
+        : await db.select({ id: schema.suppliers.id, code: schema.suppliers.code, currentPayable: schema.suppliers.currentPayable }).from(schema.suppliers).where(eq(schema.suppliers.tenantId, req.user.tenantId)).all();
+      const existingByCode = new Map(existingRows.map((row: any) => [normalizeSearchText(row.code), row]));
+      const seen = new Set<string>();
+      normalizedRows.forEach((row, index) => {
+        if (!row.code) issues.push({ rowNumber: index + 2, code: 'MISSING_CODE', message: 'Thiếu mã đối tác.', sourceCode: '', sourceName: row.name });
+        if (!row.name) issues.push({ rowNumber: index + 2, code: 'MISSING_NAME', message: 'Thiếu tên đối tác.', sourceCode: row.code, sourceName: '' });
+        if (row.code && seen.has(normalizeSearchText(row.code))) issues.push({ rowNumber: index + 2, code: 'DUPLICATE_SOURCE_CODE', message: 'Mã đối tác bị trùng trong file.', sourceCode: row.code, sourceName: row.name });
+        if (row.code) seen.add(normalizeSearchText(row.code));
+        const existing: any = row.code ? existingByCode.get(normalizeSearchText(row.code)) : null;
+        if (existing) {
+          stats.updatedCount += 1;
+          const importedBalance = entityType === 'customer' ? row.totalDebt : row.currentPayable;
+          const currentBalance = entityType === 'customer' ? Number(existing.totalDebt || 0) : Number(existing.currentPayable || 0);
+          if (Math.abs(importedBalance - currentBalance) > 0.01) stats.debtAdjustedCount += 1;
+        } else if (row.code && row.name) stats.createdCount += 1;
+      });
+    } else {
+      normalizedRows = normalizeDebtImportRows(rows, entityType);
+      stats.detailCount = normalizedRows.length;
+      const partnerCode = importText(req.body?.partnerCode || req.body?.meta?.partnerCode);
+      if (!partnerCode) issues.push({ rowNumber: 1, code: 'MISSING_PARTNER_CODE', message: 'Chưa xác định mã khách hàng/nhà cung cấp của báo cáo công nợ.', sourceCode: '', sourceName: '' });
+      else {
+        const partner = entityType === 'customer_debt'
+          ? await db.select({ id: schema.customers.id }).from(schema.customers).where(and(eq(schema.customers.tenantId, req.user.tenantId), eq(schema.customers.code, partnerCode))).get()
+          : await db.select({ id: schema.suppliers.id }).from(schema.suppliers).where(and(eq(schema.suppliers.tenantId, req.user.tenantId), eq(schema.suppliers.code, partnerCode))).get();
+        if (!partner) issues.push({ rowNumber: 1, code: 'PARTNER_NOT_FOUND', message: `Không tìm thấy đối tác có mã ${partnerCode}. Hãy import danh sách đối tác trước.`, sourceCode: partnerCode, sourceName: '' });
+      }
+    }
+    stats.errorCount = issues.length;
+    res.json({ sourceSystem, entityType, sourceHash, stats, issues, sample: normalizedRows.slice(0, 20).map(({ raw, ...row }) => row), fieldCount: rows[0] ? Object.keys(rows[0]).length : 0 });
+  } catch (err) {
+    console.error('POST /api/partners/import/preview error:', err);
+    res.status(500).json({ error: 'Không thể xem trước dữ liệu đối tác.' });
+  }
+};
+
+app.post('/api/partners/import/preview', partnerImportPreview);
+
+app.get('/api/partners/import-history', async (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'partners.view')) return;
+    const rows = await db.select().from(schema.partnerImportBatches).where(eq(schema.partnerImportBatches.tenantId, req.user.tenantId)).orderBy(desc(schema.partnerImportBatches.createdAt)).limit(50).all();
+    res.json(rows);
+  } catch (err) { console.error('GET /api/partners/import-history error:', err); res.status(500).json({ error: 'Không thể tải lịch sử import đối tác.' }); }
+});
+
+app.get('/api/partners/import-history/:batchId/issues', async (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'partners.view')) return;
+    const batch = await db.select().from(schema.partnerImportBatches).where(and(eq(schema.partnerImportBatches.id, req.params.batchId), eq(schema.partnerImportBatches.tenantId, req.user.tenantId))).get();
+    if (!batch) return res.status(404).json({ error: 'Không tìm thấy batch import.' });
+    const issues = await db.select().from(schema.partnerImportIssues).where(and(eq(schema.partnerImportIssues.batchId, batch.id), eq(schema.partnerImportIssues.tenantId, req.user.tenantId))).all();
+    res.json({ batch, issues });
+  } catch (err) { console.error('GET /api/partners/import-history/:batchId/issues error:', err); res.status(500).json({ error: 'Không thể tải lỗi import đối tác.' }); }
+});
+
+app.post('/api/partners/import', async (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'partners.create')) return;
+    const sourceSystem = importText(req.body?.sourceSystem || 'kiot-viet').toLowerCase();
+    const entityType = req.body?.entityType as PartnerImportEntity;
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows as Record<string, unknown>[] : [];
+    if (!['customer', 'supplier', 'customer_debt', 'supplier_debt'].includes(entityType) || !rows.length) return res.status(400).json({ error: 'Thiếu loại dữ liệu hoặc danh sách dòng import.' });
+    const sourceHash = partnerImportHash(sourceSystem, entityType, rows, req.body?.meta);
+    const previous = await db.select().from(schema.partnerImportBatches).where(and(eq(schema.partnerImportBatches.tenantId, req.user.tenantId), eq(schema.partnerImportBatches.sourceSystem, sourceSystem), eq(schema.partnerImportBatches.entityType, entityType), eq(schema.partnerImportBatches.sourceHash, sourceHash))).get();
+    if (previous?.status === 'completed') return res.json({ batch: previous, idempotent: true });
+
+    const previewResponse = await new Promise<any>((resolve, reject) => {
+      const fakeRes: any = { status: (code: number) => ({ json: (payload: any) => code >= 400 ? reject(Object.assign(new Error(payload.error), { statusCode: code })) : resolve(payload) }), json: (payload: any) => resolve(payload) };
+      partnerImportPreview(req, fakeRes).catch(reject);
+    });
+    if (previewResponse.stats.errorCount) return res.status(422).json({ error: 'File còn lỗi, chưa thể import.', preview: previewResponse });
+
+    const now = new Date().toISOString();
+    const batch: any = { id: uuid(), tenantId: req.user.tenantId, sourceSystem, entityType, fileName: importText(req.body?.fileName), sourceHash, status: 'completed', totalRows: rows.length, createdCount: 0, updatedCount: 0, debtAdjustedCount: 0, detailCount: 0, errorCount: 0, createdBy: req.user.id, createdAt: now, completedAt: now };
+    const normalizedRows = entityType === 'customer' ? rows.map(normalizeCustomerImportRow) : entityType === 'supplier' ? rows.map(normalizeSupplierImportRow) : normalizeDebtImportRows(rows, entityType);
+    await db.transaction(async (tx) => {
+      await tx.insert(schema.partnerImportBatches).values(batch).run();
+      if (entityType === 'customer' || entityType === 'supplier') {
+        const existingRows: any[] = entityType === 'customer'
+          ? await tx.select().from(schema.customers).where(eq(schema.customers.tenantId, req.user.tenantId)).all()
+          : await tx.select().from(schema.suppliers).where(eq(schema.suppliers.tenantId, req.user.tenantId)).all();
+        const existingByCode = new Map(existingRows.map((row: any) => [normalizeSearchText(row.code), row]));
+        for (const row of normalizedRows as any[]) {
+          const existing = existingByCode.get(normalizeSearchText(row.code));
+          const importedAt = now;
+          if (entityType === 'customer') {
+            const values: any = { name: row.name, phone: row.phone, address: row.address, taxCode: row.taxCode || null, companyName: row.companyName || null, invoiceAddress: row.invoiceAddress || null, shippingAddress: row.address || null, note: row.note, type: /vip|thân thiết|than thiet/i.test(row.groupName) ? 'loyal' : 'retail', sourceSystem, sourceCode: row.code, sourceBranch: row.sourceBranch, sourceImportedAt: importedAt, sourceRawData: JSON.stringify(row.raw), customerTypeRaw: row.customerTypeRaw, deliveryArea: row.deliveryArea, ward: row.ward, birthDate: row.birthDate, gender: row.gender, email: row.email, facebook: row.facebook, groupName: row.groupName, buyerName: row.buyerName, invoiceProvince: row.invoiceProvince, invoiceWard: row.invoiceWard, invoiceCitizenId: row.invoiceCitizenId, invoicePassportNumber: row.invoicePassportNumber, invoiceGovernmentId: row.invoiceGovernmentId, invoiceEmail: row.invoiceEmail, invoicePhone: row.invoicePhone, bankName: row.bankName, bankAccount: row.bankAccount, sourceCreatedBy: row.sourceCreatedBy, sourceCreatedAt: row.sourceCreatedAt, lastTransactionAt: row.lastTransactionAt, totalSales: row.totalSales, totalSalesAfterReturns: row.totalSalesAfterReturns, sourceStatus: row.sourceStatus };
+            if (existing) {
+              const delta = row.totalDebt - Number(existing.totalDebt || 0);
+              await tx.update(schema.customers).set({ ...values, totalDebt: row.totalDebt }).where(and(eq(schema.customers.id, existing.id), eq(schema.customers.tenantId, req.user.tenantId))).run();
+              batch.updatedCount += 1;
+              if (Math.abs(delta) > 0.01) { await tx.insert(schema.debtLedger).values({ id: uuid(), tenantId: req.user.tenantId, customerId: existing.id, invoiceId: null, amount: Math.abs(delta), type: delta > 0 ? 'increase' : 'decrease', note: `Import ${sourceSystem} · ${batch.id}`, createdAt: now, createdBy: req.user.id }).run(); batch.debtAdjustedCount += 1; }
+            } else {
+              await tx.insert(schema.customers).values({ id: uuid(), tenantId: req.user.tenantId, createdBy: req.user.id, code: row.code, totalDebt: row.totalDebt, active: row.sourceStatus !== 'inactive', allowDebt: true, creditLimit: 0, paymentDays: 0, tags: '[]', ...values }).run(); batch.createdCount += 1;
+            }
+          } else {
+            const values: any = { name: row.name, phone: row.phone, address: row.address, taxCode: row.taxCode || null, note: row.note, email: row.email || null, region: row.region || null, ward: row.ward || null, idNumber: row.idNumber || null, groupName: row.groupName || null, companyName: row.companyName || null, totalPurchases: row.totalPurchases, totalPurchasesAfterReturns: row.totalPurchasesAfterReturns, sourceSystem, sourceCode: row.code, sourceImportedAt: importedAt, sourceRawData: JSON.stringify(row.raw), sourceCreatedBy: row.sourceCreatedBy, sourceCreatedAt: row.sourceCreatedAt, sourceStatus: row.sourceStatus };
+            if (existing) {
+              const delta = row.currentPayable - Number(existing.currentPayable || 0);
+              await tx.update(schema.suppliers).set({ ...values, currentPayable: row.currentPayable }).where(and(eq(schema.suppliers.id, existing.id), eq(schema.suppliers.tenantId, req.user.tenantId))).run();
+              batch.updatedCount += 1;
+              if (Math.abs(delta) > 0.01) { await tx.insert(schema.payableLedger).values({ id: uuid(), tenantId: req.user.tenantId, supplierId: existing.id, purchaseId: null, amount: Math.abs(delta), type: delta > 0 ? 'increase' : 'decrease', note: `Import ${sourceSystem} · ${batch.id}`, createdAt: now, createdBy: req.user.id }).run(); batch.debtAdjustedCount += 1; }
+            } else {
+              await tx.insert(schema.suppliers).values({ id: uuid(), tenantId: req.user.tenantId, code: row.code, currentPayable: row.currentPayable, active: row.sourceStatus !== 'inactive', ...values }).run(); batch.createdCount += 1;
+            }
+          }
+        }
+      } else {
+        const partnerCode = importText(req.body?.partnerCode || req.body?.meta?.partnerCode);
+        const partner = entityType === 'customer_debt'
+          ? await tx.select({ id: schema.customers.id }).from(schema.customers).where(and(eq(schema.customers.tenantId, req.user.tenantId), eq(schema.customers.code, partnerCode))).get()
+          : await tx.select({ id: schema.suppliers.id }).from(schema.suppliers).where(and(eq(schema.suppliers.tenantId, req.user.tenantId), eq(schema.suppliers.code, partnerCode))).get();
+        if (!partner) throw new BusinessError(422, `Không tìm thấy đối tác có mã ${partnerCode}.`);
+        for (const row of normalizedRows as any[]) {
+          await tx.insert(schema.partnerDebtImportRows).values({ id: uuid(), batchId: batch.id, tenantId: req.user.tenantId, entityType, partnerId: partner.id, documentNo: row.documentNo, occurredAt: row.occurredAt, description: row.description, unit: '', quantity: null, unitPrice: null, discount: null, vat: null, purchasePrice: null, amount: row.amount || row.debit || row.credit || 0, debit: row.debit || 0, credit: row.credit || 0, note: row.note || '', detailsJson: row.detailsJson || '[]', sourceRowNumber: row.sourceRowNumber || 0, sourceRawData: JSON.stringify(row.raw), createdBy: req.user.id, createdAt: now }).run();
+          batch.detailCount += 1;
+        }
+      }
+      await tx.update(schema.partnerImportBatches).set({ createdCount: batch.createdCount, updatedCount: batch.updatedCount, debtAdjustedCount: batch.debtAdjustedCount, detailCount: batch.detailCount, completedAt: now }).where(eq(schema.partnerImportBatches.id, batch.id)).run();
+    });
+    const saved = await db.select().from(schema.partnerImportBatches).where(eq(schema.partnerImportBatches.id, batch.id)).get();
+    res.status(201).json({ batch: saved, idempotent: false });
+  } catch (err: any) {
+    console.error('POST /api/partners/import error:', err);
+    res.status(err?.statusCode || 500).json({ error: err?.message || 'Không thể import dữ liệu đối tác.' });
+  }
+});
+
 app.get('/api/suppliers', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'partners.view')) return;
@@ -3155,6 +3443,8 @@ app.get('/api/suppliers', async (req, res) => {
         sql`lower(${schema.suppliers.code}) like ${term}`,
         sql`lower(${schema.suppliers.name}) like ${term}`,
         sql`lower(${schema.suppliers.phone}) like ${term}`,
+        sql`lower(coalesce(${schema.suppliers.email}, '')) like ${term}`,
+        sql`lower(coalesce(${schema.suppliers.sourceCode}, '')) like ${term}`,
       ) as any);
     }
     const whereClause = and(...conditions);
@@ -3527,6 +3817,163 @@ app.post('/api/payable-ledger', async (req, res) => {
   }
 });
 
+app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'debt.view')) return;
+    const supplier = await db.select().from(schema.suppliers)
+      .where(and(eq(schema.suppliers.id, req.params.id), eq(schema.suppliers.tenantId, req.user.tenantId))).get();
+    if (!supplier) return res.status(404).json({ error: 'Không tìm thấy nhà cung cấp' });
+
+    const parseBoundary = (value: unknown, endOfDay: boolean) => {
+      if (!value) return endOfDay ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+      const raw = String(value).trim();
+      const parsed = new Date(`${raw}T${endOfDay ? '23:59:59.999' : '00:00:00'}`).getTime();
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const fromMs = parseBoundary(req.query.from, false);
+    const toMs = parseBoundary(req.query.to, true);
+    if (fromMs === null || toMs === null || fromMs > toMs) {
+      return res.status(400).json({ error: 'Khoảng thời gian không hợp lệ' });
+    }
+
+    const [tenant, users, payableEntries, creditEntries, purchases, importedDebtRows] = await Promise.all([
+      db.select().from(schema.tenants).where(eq(schema.tenants.id, req.user.tenantId)).get(),
+      db.select().from(schema.users).where(eq(schema.users.tenantId, req.user.tenantId)).all(),
+      db.select().from(schema.payableLedger).where(and(eq(schema.payableLedger.tenantId, req.user.tenantId), eq(schema.payableLedger.supplierId, supplier.id))).all(),
+      db.select().from(schema.supplierCreditLedger).where(and(eq(schema.supplierCreditLedger.tenantId, req.user.tenantId), eq(schema.supplierCreditLedger.supplierId, supplier.id))).all(),
+      db.select().from(schema.purchases).where(and(eq(schema.purchases.tenantId, req.user.tenantId), eq(schema.purchases.supplierId, supplier.id))).all(),
+      db.select().from(schema.partnerDebtImportRows).where(and(eq(schema.partnerDebtImportRows.tenantId, req.user.tenantId), eq(schema.partnerDebtImportRows.partnerId, supplier.id), eq(schema.partnerDebtImportRows.entityType, 'supplier_debt'))).all(),
+    ]);
+    const userNameById = new Map(users.map((user) => [user.id, user.name]));
+    const purchaseById = new Map<string, any>((purchases as any[]).map((purchase) => [purchase.id, purchase]));
+
+    const ledgerRows = payableEntries.map((entry: any) => {
+      const purchase = entry.purchaseId ? purchaseById.get(entry.purchaseId) : null;
+      const increase = entry.type === 'increase';
+      return {
+        id: `payable:${entry.id}`,
+        rowType: 'payable_ledger',
+        createdAt: entry.createdAt,
+        documentNo: purchase?.documentNo || `CN-${entry.id.slice(0, 8).toUpperCase()}`,
+        description: increase ? 'Nhập hàng / tăng công nợ' : 'Thanh toán nhà cung cấp',
+        unitName: '',
+        quantity: null,
+        unitPrice: null,
+        total: Number(entry.amount || 0),
+        debit: increase ? Number(entry.amount || 0) : 0,
+        credit: increase ? 0 : Number(entry.amount || 0),
+        note: entry.note || '',
+        createdBy: entry.createdBy,
+        createdByName: userNameById.get(entry.createdBy) || entry.createdBy || null,
+        items: [],
+      };
+    });
+
+    const creditRows = creditEntries.map((entry: any) => {
+      let debit = 0;
+      let credit = 0;
+      // Supplier credit created by a return reduces payable; settling that
+      // credit is shown as a separate debit-side movement.
+      if (entry.type === 'increase') credit = Number(entry.amount || 0);
+      else debit = Number(entry.amount || 0);
+      return {
+        id: `supplier-credit:${entry.id}`,
+        rowType: 'supplier_credit',
+        createdAt: entry.createdAt,
+        documentNo: `CN-${entry.id.slice(0, 8).toUpperCase()}`,
+        description: entry.type === 'increase' ? 'Trả hàng / được nhận lại từ nhà cung cấp' : 'Đã nhận tiền hoàn từ nhà cung cấp',
+        unitName: '',
+        quantity: null,
+        unitPrice: null,
+        total: Number(entry.amount || 0),
+        debit,
+        credit,
+        note: entry.note || '',
+        createdBy: entry.createdBy,
+        createdByName: userNameById.get(entry.createdBy) || entry.createdBy || null,
+        items: [],
+      };
+    });
+
+    const importedRows = importedDebtRows.map((entry: any) => {
+      let items: any[] = [];
+      try { items = JSON.parse(entry.detailsJson || '[]'); } catch { items = []; }
+      return {
+        id: `imported:${entry.id}`,
+        rowType: 'imported_debt',
+        createdAt: entry.occurredAt || entry.createdAt,
+        documentNo: entry.documentNo || `CN-${entry.id.slice(0, 8).toUpperCase()}`,
+        description: entry.description || 'Công nợ import',
+        unitName: entry.unit || '',
+        quantity: entry.quantity,
+        unitPrice: entry.unitPrice,
+        total: Number(entry.amount || 0),
+        debit: Number(entry.debit || 0),
+        credit: Number(entry.credit || 0),
+        note: entry.note || '',
+        createdBy: entry.createdBy,
+        createdByName: userNameById.get(entry.createdBy) || entry.createdBy || null,
+        items,
+      };
+    });
+
+    const movementRows = [...ledgerRows, ...creditRows, ...importedRows];
+    const currentPayable = Number(supplier.currentPayable || 0);
+    const movementPayable = movementRows.reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0);
+    const reconciliationAdjustment = currentPayable - movementPayable;
+    if (Math.abs(reconciliationAdjustment) > 0.01) {
+      movementRows.push({
+        id: `opening:${supplier.id}`,
+        rowType: 'opening',
+        createdAt: tenant?.createdAt || new Date().toISOString(),
+        documentNo: `DC-${supplier.id}`,
+        description: 'Số dư chuyển đổi',
+        unitName: '',
+        quantity: null,
+        unitPrice: null,
+        total: Math.abs(reconciliationAdjustment),
+        debit: reconciliationAdjustment > 0 ? reconciliationAdjustment : 0,
+        credit: reconciliationAdjustment < 0 ? Math.abs(reconciliationAdjustment) : 0,
+        note: 'Điều chỉnh đối soát để khớp số dư công nợ hiện tại của hệ thống',
+        createdBy: null,
+        createdByName: 'Hệ thống',
+        items: [],
+      });
+    }
+
+    const allRows = movementRows.sort((a, b) => {
+      const timeDiff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      if (timeDiff !== 0) return timeDiff;
+      return a.rowType === 'opening' ? -1 : 1;
+    });
+    const inRange = (row: any) => {
+      const timestamp = new Date(row.createdAt).getTime();
+      return timestamp >= (fromMs as number) && timestamp <= (toMs as number);
+    };
+    const signed = (row: any) => Number(row.debit || 0) - Number(row.credit || 0);
+    const openingPayable = Math.max(0, allRows.filter((row) => new Date(row.createdAt).getTime() < (fromMs as number)).reduce((sum, row) => sum + signed(row), 0));
+    const rows = allRows.filter(inRange);
+    const periodDebit = rows.reduce((sum, row) => sum + Number(row.debit || 0), 0);
+    const periodCredit = rows.reduce((sum, row) => sum + Number(row.credit || 0), 0);
+
+    res.json({
+      from: req.query.from || null,
+      to: req.query.to || null,
+      tenant: tenant ? { name: tenant.name, legalName: tenant.legalName || '', address: tenant.address, phone: tenant.phone, taxInfo: tenant.taxInfo || '' } : null,
+      supplier,
+      openingPayable,
+      periodDebit,
+      periodCredit,
+      closingPayable: Math.max(0, openingPayable + periodDebit - periodCredit),
+      currentPayable,
+      rows,
+    });
+  } catch (err) {
+    console.error('GET /api/suppliers/:id/debt-statement error:', err);
+    res.status(500).json({ error: 'Không thể tải chi tiết công nợ nhà cung cấp' });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════
 // CUSTOMERS
 // ═══════════════════════════════════════════════════════════
@@ -3550,6 +3997,8 @@ app.get('/api/customers', async (req, res) => {
         sql`lower(${schema.customers.name}) like ${term}`,
         sql`lower(${schema.customers.phone}) like ${term}`,
         sql`lower(${schema.customers.address}) like ${term}`,
+        sql`lower(coalesce(${schema.customers.email}, '')) like ${term}`,
+        sql`lower(coalesce(${schema.customers.sourceCode}, '')) like ${term}`,
       ) as any);
     }
     const whereClause = and(...conditions);
@@ -3651,6 +4100,9 @@ app.get('/api/customers/:id/debt-statement', async (req, res) => {
     const ledgerEntries = await db.select().from(schema.debtLedger)
       .where(and(eq(schema.debtLedger.tenantId, req.user.tenantId), eq(schema.debtLedger.customerId, customer.id)))
       .all();
+    const importedDebtRows = await db.select().from(schema.partnerDebtImportRows)
+      .where(and(eq(schema.partnerDebtImportRows.tenantId, req.user.tenantId), eq(schema.partnerDebtImportRows.partnerId, customer.id), eq(schema.partnerDebtImportRows.entityType, 'customer_debt')))
+      .all();
     const increaseByInvoice = new Map<string, number>();
     ledgerEntries.forEach((entry) => {
       if (entry.invoiceId && entry.type === 'increase') {
@@ -3710,7 +4162,30 @@ app.get('/api/customers/:id/debt-statement', async (req, res) => {
         };
       });
 
-    const movementRows = [...invoiceRows, ...ledgerRows];
+    const importedRows = importedDebtRows.map((entry: any) => {
+      let items: any[] = [];
+      try { items = JSON.parse(entry.detailsJson || '[]'); } catch { items = []; }
+      return {
+        id: `imported:${entry.id}`,
+        rowType: 'imported_debt',
+        createdAt: entry.occurredAt || entry.createdAt,
+        documentNo: entry.documentNo || `CN-${entry.id.slice(0, 8).toUpperCase()}`,
+        description: entry.description || 'Công nợ import',
+        unitName: entry.unit || '',
+        quantity: entry.quantity,
+        unitPrice: entry.unitPrice,
+        total: Number(entry.amount || 0),
+        debit: Number(entry.debit || 0),
+        credit: Number(entry.credit || 0),
+        note: entry.note || '',
+        invoiceNote: '',
+        createdBy: entry.createdBy,
+        createdByName: userNameById.get(entry.createdBy) || entry.createdBy || null,
+        items,
+      };
+    });
+
+    const movementRows = [...invoiceRows, ...ledgerRows, ...importedRows];
     const currentDebt = Number(customer.totalDebt || 0);
     const movementDebt = movementRows.reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0);
     const reconciliationAdjustment = currentDebt - movementDebt;
@@ -4915,6 +5390,9 @@ app.post('/api/payments/:id/allocations', async (req, res) => {
 app.get('/api/reports/staff', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'reports.view')) return;
+    // Reports are derived from live operational records. Avoid browser or proxy
+    // caches returning a stale summary alongside current detail rows.
+    res.setHeader('Cache-Control', 'no-store');
     const from = req.query.from ? new Date(`${String(req.query.from)}T00:00:00`).getTime() : Number.NEGATIVE_INFINITY;
     const to = req.query.to ? new Date(`${String(req.query.to)}T23:59:59.999`).getTime() : Number.POSITIVE_INFINITY;
     const inRange = (value: string) => {
@@ -4925,6 +5403,22 @@ app.get('/api/reports/staff', async (req, res) => {
     const users = await db.select().from(schema.users).where(eq(schema.users.tenantId, req.user.tenantId)).all();
     const rows = new Map<string, any>();
     const details: any[] = [];
+    const summary = {
+      invoiceCount: 0,
+      revenue: 0,
+      collected: 0,
+      receivable: 0,
+      salesReturnAmount: 0,
+      refundAmount: 0,
+      cashIncome: 0,
+      cashExpense: 0,
+      currentCustomerDebt: null as number | null,
+    };
+    const effectiveInvoiceDebt = (invoice: any) => Math.max(
+      0,
+      Number(invoice.debtAmount) || 0,
+      (Number(invoice.finalAmount) || 0) - (Number(invoice.paidAmount) || 0),
+    );
     for (const user of users) rows.set(user.id, { userId: user.id, userName: user.name, salesCount: 0, salesAmount: 0, salesReturnAmount: 0, purchaseAmount: 0, purchaseReturnAmount: 0, cashIncome: 0, cashExpense: 0, netCash: 0, netSales: 0 });
     const ensureRow = (id: string) => {
       if (!rows.has(id)) rows.set(id, { userId: id, userName: id, salesCount: 0, salesAmount: 0, salesReturnAmount: 0, purchaseAmount: 0, purchaseReturnAmount: 0, cashIncome: 0, cashExpense: 0, netCash: 0, netSales: 0 });
@@ -4934,13 +5428,38 @@ app.get('/api/reports/staff', async (req, res) => {
       if (userId && invoice.createdBy !== userId) return;
       const row = ensureRow(invoice.createdBy);
       row.salesCount += 1;
-      row.salesAmount += Number(invoice.finalAmount) || 0;
-      details.push({ type: 'sale', id: invoice.id, documentNo: invoice.documentNo, userId: invoice.createdBy, userName: row.userName, amount: Number(invoice.finalAmount) || 0, createdAt: invoice.createdAt });
+      const finalAmount = Number(invoice.finalAmount) || 0;
+      const paidAmount = Number(invoice.paidAmount) || 0;
+      const debtAmount = effectiveInvoiceDebt(invoice);
+      row.salesAmount += finalAmount;
+      row.salesPaidAmount = (row.salesPaidAmount || 0) + paidAmount;
+      row.salesDebtAmount = (row.salesDebtAmount || 0) + debtAmount;
+      summary.invoiceCount += 1;
+      summary.revenue += finalAmount;
+      summary.collected += paidAmount;
+      summary.receivable += debtAmount;
+      details.push({
+        type: 'sale',
+        id: invoice.id,
+        documentNo: invoice.documentNo,
+        userId: invoice.createdBy,
+        userName: row.userName,
+        amount: finalAmount,
+        finalAmount,
+        paidAmount,
+        debtAmount,
+        paymentMethod: invoice.paymentMethod,
+        customerId: invoice.customerId,
+        note: invoice.note || null,
+        createdAt: invoice.createdAt,
+      });
     });
     const salesReturns = (await db.select().from(schema.salesReturns).where(eq(schema.salesReturns.tenantId, req.user.tenantId)).all()).filter((item) => inRange(item.createdAt));
     for (const item of salesReturns) {
       if (userId && item.createdBy !== userId) continue;
       ensureRow(item.createdBy).salesReturnAmount += Number(item.totalAmount) || 0;
+      summary.salesReturnAmount += Number(item.totalAmount) || 0;
+      summary.refundAmount += Number(item.refundAmount) || 0;
       details.push({ type: 'sales_return', id: item.id, documentNo: item.documentNo, userId: item.createdBy, userName: ensureRow(item.createdBy).userName, amount: Number(item.totalAmount) || 0, createdAt: item.createdAt });
     }
     const purchases = (await db.select().from(schema.purchases).where(eq(schema.purchases.tenantId, req.user.tenantId)).all()).filter((item) => inRange(item.createdAt));
@@ -4962,10 +5481,31 @@ app.get('/api/reports/staff', async (req, res) => {
       const row = ensureRow(item.createdBy);
       if (item.type === 'income') row.cashIncome += Number(item.amount) || 0;
       else row.cashExpense += Number(item.amount) || 0;
+      if (item.type === 'income') summary.cashIncome += Number(item.amount) || 0;
+      else summary.cashExpense += Number(item.amount) || 0;
       details.push({ type: item.type === 'income' ? 'cash_income' : 'cash_expense', id: item.id, userId: item.createdBy, userName: row.userName, amount: Number(item.amount) || 0, category: item.category, referenceId: item.referenceId, accountId: item.accountId, createdAt: item.createdAt });
     }
+    if (!userId) {
+      const customers = await db.select({ totalDebt: schema.customers.totalDebt })
+        .from(schema.customers)
+        .where(eq(schema.customers.tenantId, req.user.tenantId))
+        .all();
+      summary.currentCustomerDebt = customers.reduce((sum, customer) => sum + Math.max(0, Number(customer.totalDebt) || 0), 0);
+    }
+    // Derive the headline values from the same filtered detail rows returned
+    // to the report. This keeps summary and drill-down on one source of truth.
+    const sumDetails = (type: string, field = 'amount') => details
+      .filter((item) => item.type === type)
+      .reduce((sum, item) => sum + (Number(item[field]) || 0), 0);
+    const saleDetails = details.filter((item) => item.type === 'sale');
+    summary.invoiceCount = saleDetails.length;
+    summary.revenue = saleDetails.reduce((sum, item) => sum + (Number(item.finalAmount) || 0), 0) - sumDetails('sales_return');
+    summary.collected = saleDetails.reduce((sum, item) => sum + (Number(item.paidAmount) || 0), 0) - summary.refundAmount;
+    summary.receivable = saleDetails.reduce((sum, item) => sum + (Number(item.debtAmount) || 0), 0);
+    summary.cashIncome = sumDetails('cash_income');
+    summary.cashExpense = sumDetails('cash_expense');
     const result = Array.from(rows.values()).map((row) => ({ ...row, netCash: row.cashIncome - row.cashExpense, netSales: row.salesAmount - row.salesReturnAmount })).filter((row) => !userId || row.userId === userId);
-    res.json({ from: req.query.from || null, to: req.query.to || null, rows: result, details: details.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt)) });
+    res.json({ from: req.query.from || null, to: req.query.to || null, rows: result, summary, details: details.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt)) });
   } catch (err) {
     console.error('GET /api/reports/staff error:', err);
     res.status(500).json({ error: 'Không thể tải báo cáo theo nhân viên' });

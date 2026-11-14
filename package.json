@@ -22,6 +22,7 @@
     "test:tenant-isolation": "node scripts/hkdplus-tenant-isolation-smoke.mjs",
     "test:tenant-isolation-postgres": "node scripts/hkdplus-postgres-tenant-isolation-smoke.mjs",
     "test:postgres-p0": "node scripts/hkdplus-postgres-p0-smoke.mjs",
+    "test:reconciliation": "node scripts/hkdplus-reconciliation-review.mjs",
     "test:lifecycle": "node scripts/hkdcare-lifecycle-smoke.mjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",

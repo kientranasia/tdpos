@@ -305,6 +305,43 @@ export const productImportIssues = pgTable('product_import_issues', {
   tenantCreatedAtIdx: index('product_import_issues_tenant_created_at_idx').on(table.tenantId, table.createdAt),
 }));
 
+export const partnerImportBatches = pgTable('partner_import_batches', {
+  id: text('id').primaryKey(), tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  sourceSystem: text('source_system').notNull(), entityType: text('entity_type').notNull(),
+  fileName: text('file_name').notNull().default(''), sourceHash: text('source_hash').notNull(),
+  status: text('status').notNull().default('previewed'), totalRows: integer('total_rows').notNull().default(0),
+  createdCount: integer('created_count').notNull().default(0), updatedCount: integer('updated_count').notNull().default(0),
+  debtAdjustedCount: integer('debt_adjusted_count').notNull().default(0), detailCount: integer('detail_count').notNull().default(0),
+  errorCount: integer('error_count').notNull().default(0), createdBy: text('created_by').notNull(),
+  createdAt: text('created_at').notNull(), completedAt: text('completed_at'),
+}, (table) => ({
+  tenantSourceHashUnique: uniqueIndex('partner_import_batches_tenant_source_hash_uidx').on(table.tenantId, table.sourceSystem, table.entityType, table.sourceHash),
+  tenantCreatedAtIdx: index('partner_import_batches_tenant_created_at_idx').on(table.tenantId, table.createdAt),
+}));
+
+export const partnerImportIssues = pgTable('partner_import_issues', {
+  id: text('id').primaryKey(), batchId: text('batch_id').notNull().references(() => partnerImportBatches.id),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id), rowNumber: integer('row_number').notNull(),
+  entityType: text('entity_type').notNull(), code: text('code').notNull(), message: text('message').notNull(),
+  sourceCode: text('source_code').notNull().default(''), sourceName: text('source_name').notNull().default(''), createdAt: text('created_at').notNull(),
+}, (table) => ({
+  batchRowIdx: index('partner_import_issues_batch_row_idx').on(table.batchId, table.rowNumber),
+  tenantCreatedAtIdx: index('partner_import_issues_tenant_created_at_idx').on(table.tenantId, table.createdAt),
+}));
+
+export const partnerDebtImportRows = pgTable('partner_debt_import_rows', {
+  id: text('id').primaryKey(), batchId: text('batch_id').notNull().references(() => partnerImportBatches.id),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id), entityType: text('entity_type').notNull(), partnerId: text('partner_id').notNull(),
+  documentNo: text('document_no').notNull().default(''), occurredAt: text('occurred_at').notNull(), description: text('description').notNull().default(''), unit: text('unit').notNull().default(''),
+  quantity: real('quantity'), unitPrice: real('unit_price'), discount: real('discount'), vat: real('vat'), purchasePrice: real('purchase_price'),
+  amount: real('amount').notNull().default(0), debit: real('debit').notNull().default(0), credit: real('credit').notNull().default(0), note: text('note').notNull().default(''),
+  detailsJson: text('details_json').notNull().default('[]'), sourceRowNumber: integer('source_row_number').notNull().default(0), sourceRawData: text('source_raw_data').notNull().default('{}'),
+  createdBy: text('created_by').notNull(), createdAt: text('created_at').notNull(),
+}, (table) => ({
+  tenantPartnerCreatedAtIdx: index('partner_debt_rows_tenant_partner_created_at_idx').on(table.tenantId, table.partnerId, table.createdAt),
+  batchDocumentIdx: index('partner_debt_rows_batch_document_idx').on(table.batchId, table.documentNo),
+}));
+
 // ─── Customers ─────────────────────────────────────────────
 export const customers = pgTable('customers', {
   id: text('id').primaryKey(),
@@ -327,6 +364,13 @@ export const customers = pgTable('customers', {
   totalDebt: real('total_debt').notNull().default(0),
   type: text('type', { enum: ['retail', 'loyal'] }).notNull().default('retail'),
   tags: text('tags').notNull().default('[]'),
+  sourceSystem: text('source_system'), sourceCode: text('source_code'), sourceBranch: text('source_branch'),
+  sourceImportedAt: text('source_imported_at'), sourceRawData: text('source_raw_data'), customerTypeRaw: text('customer_type_raw'),
+  deliveryArea: text('delivery_area'), ward: text('ward'), birthDate: text('birth_date'), gender: text('gender'), email: text('email'), facebook: text('facebook'), groupName: text('group_name'),
+  buyerName: text('buyer_name'), invoiceProvince: text('invoice_province'), invoiceWard: text('invoice_ward'), invoiceCitizenId: text('invoice_citizen_id'), invoicePassportNumber: text('invoice_passport_number'),
+  invoiceGovernmentId: text('invoice_government_id'), invoiceEmail: text('invoice_email'), invoicePhone: text('invoice_phone'), bankName: text('bank_name'), bankAccount: text('bank_account'),
+  sourceCreatedBy: text('source_created_by'), sourceCreatedAt: text('source_created_at'), lastTransactionAt: text('last_transaction_at'), totalSales: real('total_sales').notNull().default(0),
+  totalSalesAfterReturns: real('total_sales_after_returns').notNull().default(0), sourceStatus: text('source_status'),
 }, (table) => ({
   tenantCodeIdx: index('customers_tenant_code_idx').on(table.tenantId, table.code),
   tenantNameIdx: index('customers_tenant_name_idx').on(table.tenantId, table.name),
@@ -345,6 +389,10 @@ export const suppliers = pgTable('suppliers', {
   currentPayable: real('current_payable').notNull().default(0),
   note: text('note').notNull().default(''),
   active: integer('active').notNull().default(1),
+  email: text('email'), region: text('region'), ward: text('ward'), idNumber: text('id_number'), groupName: text('group_name'), companyName: text('company_name'),
+  totalPurchases: real('total_purchases').notNull().default(0), totalPurchasesAfterReturns: real('total_purchases_after_returns').notNull().default(0),
+  sourceSystem: text('source_system'), sourceCode: text('source_code'), sourceImportedAt: text('source_imported_at'), sourceRawData: text('source_raw_data'),
+  sourceCreatedBy: text('source_created_by'), sourceCreatedAt: text('source_created_at'), sourceStatus: text('source_status'),
 }, (table) => ({
   tenantCodeIdx: index('suppliers_tenant_code_idx').on(table.tenantId, table.code),
   tenantNameIdx: index('suppliers_tenant_name_idx').on(table.tenantId, table.name),

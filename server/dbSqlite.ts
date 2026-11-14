@@ -151,6 +151,19 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
   addColumnIfMissing('customers', 'contact_name', 'contact_name TEXT');
   addColumnIfMissing('customers', 'note', "note TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing('customers', 'active', 'active INTEGER NOT NULL DEFAULT 1');
+  for (const [column, definition] of Object.entries({
+    source_system: 'source_system TEXT', source_code: 'source_code TEXT', source_branch: 'source_branch TEXT', source_imported_at: 'source_imported_at TEXT', source_raw_data: 'source_raw_data TEXT',
+    customer_type_raw: 'customer_type_raw TEXT', delivery_area: 'delivery_area TEXT', ward: 'ward TEXT', birth_date: 'birth_date TEXT', gender: 'gender TEXT', email: 'email TEXT', facebook: 'facebook TEXT', group_name: 'group_name TEXT',
+    buyer_name: 'buyer_name TEXT', invoice_province: 'invoice_province TEXT', invoice_ward: 'invoice_ward TEXT', invoice_citizen_id: 'invoice_citizen_id TEXT', invoice_passport_number: 'invoice_passport_number TEXT', invoice_government_id: 'invoice_government_id TEXT', invoice_email: 'invoice_email TEXT', invoice_phone: 'invoice_phone TEXT', bank_name: 'bank_name TEXT', bank_account: 'bank_account TEXT',
+    source_created_by: 'source_created_by TEXT', source_created_at: 'source_created_at TEXT', last_transaction_at: 'last_transaction_at TEXT', total_sales: 'total_sales REAL NOT NULL DEFAULT 0', total_sales_after_returns: 'total_sales_after_returns REAL NOT NULL DEFAULT 0', source_status: 'source_status TEXT',
+  })) addColumnIfMissing('customers', column, definition);
+}
+
+if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'suppliers'").get()) {
+  for (const [column, definition] of Object.entries({
+    email: 'email TEXT', region: 'region TEXT', ward: 'ward TEXT', id_number: 'id_number TEXT', group_name: 'group_name TEXT', company_name: 'company_name TEXT',
+    total_purchases: 'total_purchases REAL NOT NULL DEFAULT 0', total_purchases_after_returns: 'total_purchases_after_returns REAL NOT NULL DEFAULT 0', source_system: 'source_system TEXT', source_code: 'source_code TEXT', source_imported_at: 'source_imported_at TEXT', source_raw_data: 'source_raw_data TEXT', source_created_by: 'source_created_by TEXT', source_created_at: 'source_created_at TEXT', source_status: 'source_status TEXT',
+  })) addColumnIfMissing('suppliers', column, definition);
 }
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'price_lists'").get()) {
@@ -647,6 +660,69 @@ sqlite.exec(`
     barcode TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS partner_import_batches (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    source_system TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    file_name TEXT NOT NULL DEFAULT '',
+    source_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'previewed',
+    total_rows INTEGER NOT NULL DEFAULT 0,
+    created_count INTEGER NOT NULL DEFAULT 0,
+    updated_count INTEGER NOT NULL DEFAULT 0,
+    debt_adjusted_count INTEGER NOT NULL DEFAULT 0,
+    detail_count INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE(tenant_id, source_system, entity_type, source_hash)
+  );
+  CREATE INDEX IF NOT EXISTS partner_import_batches_tenant_created_at_idx ON partner_import_batches(tenant_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS partner_import_issues (
+    id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL REFERENCES partner_import_batches(id),
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    row_number INTEGER NOT NULL,
+    entity_type TEXT NOT NULL,
+    code TEXT NOT NULL,
+    message TEXT NOT NULL,
+    source_code TEXT NOT NULL DEFAULT '',
+    source_name TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS partner_import_issues_batch_row_idx ON partner_import_issues(batch_id, row_number);
+
+  CREATE TABLE IF NOT EXISTS partner_debt_import_rows (
+    id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL REFERENCES partner_import_batches(id),
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    entity_type TEXT NOT NULL,
+    partner_id TEXT NOT NULL,
+    document_no TEXT NOT NULL DEFAULT '',
+    occurred_at TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    unit TEXT NOT NULL DEFAULT '',
+    quantity REAL,
+    unit_price REAL,
+    discount REAL,
+    vat REAL,
+    purchase_price REAL,
+    amount REAL NOT NULL DEFAULT 0,
+    debit REAL NOT NULL DEFAULT 0,
+    credit REAL NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    details_json TEXT NOT NULL DEFAULT '[]',
+    source_row_number INTEGER NOT NULL DEFAULT 0,
+    source_raw_data TEXT NOT NULL DEFAULT '{}',
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS partner_debt_rows_tenant_partner_created_at_idx ON partner_debt_import_rows(tenant_id, partner_id, created_at);
+  CREATE INDEX IF NOT EXISTS partner_debt_rows_batch_document_idx ON partner_debt_import_rows(batch_id, document_no);
 
   CREATE TABLE IF NOT EXISTS purchase_returns (
     id TEXT PRIMARY KEY,
