@@ -15,6 +15,13 @@
       "when": 1794463802512,
       "tag": "0001_fluffy_leper_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794640613515,
+      "tag": "0002_free_salo",
+      "breakpoints": true
     }
   ]
 }

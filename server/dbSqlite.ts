@@ -224,6 +224,11 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
 
 if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cashbook_entries'").get()) {
   addColumnIfMissing('cashbook_entries', 'account_id', 'account_id TEXT');
+  addColumnIfMissing('cashbook_entries', 'actor_id', 'actor_id TEXT');
+  addColumnIfMissing('cashbook_entries', 'actor_name', "actor_name TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing('cashbook_entries', 'counterparty_type', 'counterparty_type TEXT');
+  addColumnIfMissing('cashbook_entries', 'counterparty_id', 'counterparty_id TEXT');
+  addColumnIfMissing('cashbook_entries', 'counterparty_name', "counterparty_name TEXT NOT NULL DEFAULT ''");
 }
 
 sqlite.exec(`

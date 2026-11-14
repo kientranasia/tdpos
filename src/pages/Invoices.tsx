@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowUpDown, Calendar, ChevronDown, ChevronRight, Printer, Receipt, RotateCcw, Search, ShoppingCart, SlidersHorizontal, User, Wallet, X } from 'lucide-react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
@@ -26,7 +26,8 @@ export default function Invoices() {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'partial' | 'unpaid'>('all');
   const [pendingStatusFilter, setPendingStatusFilter] = useState<'all' | 'completed' | 'partial' | 'unpaid'>('all');
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(() => new URLSearchParams(window.location.search).get('invoiceId'));
+  const [deepLinkedInvoice, setDeepLinkedInvoice] = useState<Invoice | null>(null);
   const [debtPayments, setDebtPayments] = useState<DebtLedger[]>([]);
   const [selectedInvoiceItems, setSelectedInvoiceItems] = useState<InvoiceItem[]>([]);
   const [loadingInvoiceItems, setLoadingInvoiceItems] = useState(false);
@@ -47,6 +48,8 @@ export default function Invoices() {
   const [salesReturns, setSalesReturns] = useState<any[]>([]);
   const [loadingSalesReturns, setLoadingSalesReturns] = useState(false);
   const receiptRef = useRef<HTMLDivElement | null>(null);
+  const routeInvoiceId = searchParams.get('invoiceId');
+  const activeInvoiceId = routeInvoiceId || selectedInvoiceId;
 
   const customerNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -122,8 +125,10 @@ export default function Invoices() {
   }, [customers, invoices, returnLookupTerm]);
 
   const selectedInvoice = useMemo(
-    () => invoices.find((inv) => inv.id === selectedInvoiceId) || filteredInvoices.find((inv) => inv.id === selectedInvoiceId) || null,
-    [filteredInvoices, invoices, selectedInvoiceId]
+    () => invoices.find((inv) => inv.id === activeInvoiceId)
+      || filteredInvoices.find((inv) => inv.id === activeInvoiceId)
+      || (deepLinkedInvoice?.id === activeInvoiceId ? deepLinkedInvoice : null),
+    [activeInvoiceId, deepLinkedInvoice, filteredInvoices, invoices]
   );
 
   const receiptInvoice = useMemo(
@@ -152,8 +157,8 @@ export default function Invoices() {
   }, [salesReturns]);
 
   const selectedInvoiceReturns = useMemo(
-    () => salesReturns.filter((item) => item.invoiceId === selectedInvoiceId),
-    [salesReturns, selectedInvoiceId]
+    () => salesReturns.filter((item) => item.invoiceId === activeInvoiceId),
+    [activeInvoiceId, salesReturns]
   );
 
   const statusCounts = useMemo(() => {
@@ -238,11 +243,31 @@ export default function Invoices() {
   }[statusFilter];
 
   useEffect(() => {
-    const invoiceId = searchParams.get('invoiceId');
-    if (invoiceId && invoices.some((invoice) => invoice.id === invoiceId)) {
-      setSelectedInvoiceId(invoiceId);
+    if (!routeInvoiceId) {
+      setSelectedInvoiceId(null);
+      setDeepLinkedInvoice(null);
+      return;
     }
-  }, [invoices, searchParams]);
+
+    setSelectedInvoiceId((current) => current === routeInvoiceId ? current : routeInvoiceId);
+    const cachedInvoice = invoices.find((invoice) => invoice.id === routeInvoiceId);
+    if (cachedInvoice) {
+      setDeepLinkedInvoice(null);
+      return;
+    }
+
+    let cancelled = false;
+    setDeepLinkedInvoice(null);
+    invoicesApi.get(routeInvoiceId)
+      .then((invoice) => {
+        if (!cancelled && invoice?.id === routeInvoiceId) setDeepLinkedInvoice(invoice as Invoice);
+      })
+      .catch(() => {
+        if (!cancelled) setDeepLinkedInvoice(null);
+      });
+
+    return () => { cancelled = true; };
+  }, [invoices, routeInvoiceId]);
 
   useEffect(() => {
     const loadDebtPayments = async () => {
@@ -262,13 +287,13 @@ export default function Invoices() {
 
   useEffect(() => {
     const loadInvoiceItems = async () => {
-      if (!selectedInvoiceId) {
+      if (!activeInvoiceId) {
         setSelectedInvoiceItems([]);
         return;
       }
       setLoadingInvoiceItems(true);
       try {
-        const items = await invoiceItemsApi.list(selectedInvoiceId);
+        const items = await invoiceItemsApi.list(activeInvoiceId);
         setSelectedInvoiceItems(items || []);
       } catch {
         setSelectedInvoiceItems([]);
@@ -277,7 +302,7 @@ export default function Invoices() {
       }
     };
     loadInvoiceItems();
-  }, [selectedInvoiceId]);
+  }, [activeInvoiceId]);
 
   useEffect(() => {
     if (!selectedInvoiceId) {
@@ -286,12 +311,12 @@ export default function Invoices() {
   }, [selectedInvoiceId]);
 
   useEffect(() => {
-    if (!selectedInvoiceId) return;
+    if (!activeInvoiceId) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       setShowInvoiceActions(false);
-      setSelectedInvoiceId(null);
+      closeInvoiceDetail();
     };
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -301,7 +326,7 @@ export default function Invoices() {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [selectedInvoiceId]);
+  }, [activeInvoiceId]);
 
   useEffect(() => {
     if (showFilterSheet) setPendingStatusFilter(statusFilter);
@@ -316,6 +341,18 @@ export default function Invoices() {
   const openInvoiceDetail = (invoiceId: string) => {
     setShowInvoiceActions(false);
     setSelectedInvoiceId(invoiceId);
+    if (searchParams.get('invoiceId') !== invoiceId) {
+      navigate(`/app/invoices?invoiceId=${encodeURIComponent(invoiceId)}`, { replace: true });
+    }
+  };
+
+  const closeInvoiceDetail = () => {
+    setShowInvoiceActions(false);
+    setSelectedInvoiceId(null);
+    setDeepLinkedInvoice(null);
+    if (searchParams.get('invoiceId')) {
+      navigate('/app/invoices', { replace: true });
+    }
   };
 
   const printReceipt = async () => {
@@ -446,7 +483,7 @@ export default function Invoices() {
                       {dayLabel(inv.createdAt)}
                     </div>
                   )}
-                  <button type="button" aria-label={`Mở ${invoiceDisplayNo(inv)}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); openInvoiceDetail(inv.id); }} className="w-full touch-manipulation px-4 py-3 text-left transition-colors active:bg-sky-50">
+                  <Link to={`/app/invoices?invoiceId=${encodeURIComponent(inv.id)}`} aria-label={`Mở ${invoiceDisplayNo(inv)}`} className="block w-full touch-manipulation px-4 py-3 text-left transition-colors active:bg-sky-50">
                     <div className="flex justify-between gap-3">
                       <div className="min-w-0">
                         <p className="truncate text-[18px] font-semibold leading-tight text-slate-900">{invoiceDisplayNo(inv)}</p>
@@ -463,7 +500,7 @@ export default function Invoices() {
                         </p>
                       </div>
                     </div>
-                  </button>
+                  </Link>
                 </div>
               );
             })}
@@ -647,6 +684,8 @@ export default function Invoices() {
           {debtPayments.length === 0 && <p className="p-6 text-sm text-slate-500">Chưa có lịch sử thanh toán công nợ.</p>}
         </div>
       </section>
+      </div>
+      </div>
 
       {showTimeSheet && (
         <div className="lg:hidden fixed inset-0 z-[160] bg-black/45" onClick={() => setShowTimeSheet(false)}>
@@ -744,7 +783,7 @@ export default function Invoices() {
           className="fixed inset-0 z-[220] flex items-stretch justify-center bg-black/45 p-0 lg:items-center lg:p-4"
           role="presentation"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setSelectedInvoiceId(null);
+            if (event.target === event.currentTarget) closeInvoiceDetail();
           }}
         >
           <div
@@ -762,7 +801,7 @@ export default function Invoices() {
               <button
                 type="button"
                 aria-label="Đóng chi tiết hóa đơn"
-                onClick={() => setSelectedInvoiceId(null)}
+                onClick={closeInvoiceDetail}
                 className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500"
               >
                 <X className="h-5 w-5" />
@@ -908,7 +947,7 @@ export default function Invoices() {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="flex h-14 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 shadow-sm">
-              <button type="button" onClick={() => setSelectedInvoiceId(null)} className="flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100" aria-label="Đóng chi tiết hóa đơn">
+              <button type="button" onClick={closeInvoiceDetail} className="flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100" aria-label="Đóng chi tiết hóa đơn">
                 <ArrowLeft className="h-5 w-5" />
               </button>
               <div className="min-w-0 flex-1 px-3">
@@ -917,7 +956,7 @@ export default function Invoices() {
               </div>
               <div className="flex items-center gap-1">
                 <button type="button" onClick={() => setShowInvoiceActions(true)} className="flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 text-xl leading-none hover:bg-slate-100" aria-label="Thao tác hóa đơn">•••</button>
-                <button type="button" onClick={() => setSelectedInvoiceId(null)} className="flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100" aria-label="Đóng chi tiết hóa đơn"><X className="h-5 w-5" /></button>
+                <button type="button" onClick={closeInvoiceDetail} className="flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100" aria-label="Đóng chi tiết hóa đơn"><X className="h-5 w-5" /></button>
               </div>
             </div>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 pb-mobile-nav">
@@ -1063,8 +1102,6 @@ export default function Invoices() {
           </div>
         </div>
       )}
-      </div>
-      </div>
     </div>
   );
 }

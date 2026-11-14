@@ -399,6 +399,11 @@ export interface CashbookEntry {
   createdAt: string;
   createdBy: string;
   accountId?: string | null;
+  actorId?: string | null;
+  actorName?: string | null;
+  counterpartyType?: 'customer' | 'supplier' | 'other' | null;
+  counterpartyId?: string | null;
+  counterpartyName?: string | null;
   displayNote?: string;
   referenceLabel?: string | null;
   referenceType?: 'invoice' | 'sales_return' | 'purchase' | 'purchase_return' | 'unknown' | null;

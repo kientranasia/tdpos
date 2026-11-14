@@ -7,6 +7,11 @@
   default_sni {$HKDPLUS_HOSTNAME:hkdsmart.local}
 }
 
+http://{$HKDPLUS_HOSTNAME:hkdsmart.local}, http://localhost, http://127.0.0.1 {
+  encode gzip zstd
+  reverse_proxy web:80
+}
+
 :80 {
   encode gzip zstd
   redir https://{$HKDPLUS_HOSTNAME:hkdsmart.local}:{$HKDPLUS_HTTPS_PORT:6688}{uri} 308

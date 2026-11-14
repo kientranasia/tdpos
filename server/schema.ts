@@ -502,6 +502,11 @@ export const cashbookEntries = sqliteTable('cashbook_entries', {
   note: text('note').notNull().default(''),
   referenceId: text('reference_id'),
   accountId: text('account_id'),
+  actorId: text('actor_id'),
+  actorName: text('actor_name').notNull().default(''),
+  counterpartyType: text('counterparty_type'),
+  counterpartyId: text('counterparty_id'),
+  counterpartyName: text('counterparty_name').notNull().default(''),
   createdAt: text('created_at').notNull(),
   createdBy: text('created_by').notNull(),
 });

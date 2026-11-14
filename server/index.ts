@@ -2934,6 +2934,35 @@ const backfillSalesCashbookAccounts = async () => {
 };
 
 backfillSalesCashbookAccounts();
+app.get('/api/cashbook/participants', async (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'cashbook.create')) return;
+    const [users, customers, suppliers] = await Promise.all([
+      db.select({ id: schema.users.id, name: schema.users.name, email: schema.users.email, role: schema.users.role })
+        .from(schema.users)
+        .where(and(eq(schema.users.tenantId, req.user.tenantId), eq(schema.users.status, 'active')))
+        .orderBy(schema.users.name)
+        .all(),
+      db.select({ id: schema.customers.id, code: schema.customers.code, name: schema.customers.name, phone: schema.customers.phone })
+        .from(schema.customers)
+        .where(and(eq(schema.customers.tenantId, req.user.tenantId), eq(schema.customers.active, true)))
+        .orderBy(schema.customers.name)
+        .limit(5000)
+        .all(),
+      db.select({ id: schema.suppliers.id, code: schema.suppliers.code, name: schema.suppliers.name, phone: schema.suppliers.phone })
+        .from(schema.suppliers)
+        .where(and(eq(schema.suppliers.tenantId, req.user.tenantId), eq(schema.suppliers.active, true)))
+        .orderBy(schema.suppliers.name)
+        .limit(5000)
+        .all(),
+    ]);
+    res.json({ users, customers, suppliers });
+  } catch (err) {
+    console.error('GET /api/cashbook/participants error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.get('/api/suppliers', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'partners.view')) return;
@@ -4757,6 +4786,7 @@ app.get('/api/cashbook', async (req, res) => {
       return {
         ...row,
         createdByName: userNameById.get(row.createdBy) || null,
+        actorName: row.actorName || (row.actorId ? userNameById.get(row.actorId) : null) || null,
         displayNote,
         referenceLabel: reference?.label || null,
         referenceType: reference?.type || (row.referenceId ? 'unknown' : null),
@@ -4777,6 +4807,36 @@ app.post('/api/cashbook', async (req, res) => {
     const amt = Number(amount) || 0;
     if (amt <= 0) return res.status(400).json({ error: 'Amount must be greater than 0' });
 
+    const actorId = String(req.body?.actorId || req.user.id).trim();
+    const actor = await db.select({ id: schema.users.id, name: schema.users.name })
+      .from(schema.users)
+      .where(and(eq(schema.users.id, actorId), eq(schema.users.tenantId, req.user.tenantId), eq(schema.users.status, 'active')))
+      .get();
+    if (!actor) return res.status(400).json({ error: 'Người thu/chi không hợp lệ' });
+
+    const requestedCounterpartyType = String(req.body?.counterpartyType || 'other');
+    if (!['customer', 'supplier', 'other'].includes(requestedCounterpartyType)) {
+      return res.status(400).json({ error: 'Đối tượng thu/chi không hợp lệ' });
+    }
+    const counterpartyType = requestedCounterpartyType as 'customer' | 'supplier' | 'other';
+    const counterpartyId = req.body?.counterpartyId ? String(req.body.counterpartyId) : null;
+    let counterpartyName = String(req.body?.counterpartyName || '').trim();
+    if (counterpartyType === 'customer') {
+      const customer = counterpartyId
+        ? await db.select({ id: schema.customers.id, name: schema.customers.name }).from(schema.customers)
+          .where(and(eq(schema.customers.id, counterpartyId), eq(schema.customers.tenantId, req.user.tenantId), eq(schema.customers.active, true))).get()
+        : null;
+      if (!customer) return res.status(400).json({ error: 'Khách hàng không hợp lệ' });
+      counterpartyName = customer.name;
+    } else if (counterpartyType === 'supplier') {
+      const supplier = counterpartyId
+        ? await db.select({ id: schema.suppliers.id, name: schema.suppliers.name }).from(schema.suppliers)
+          .where(and(eq(schema.suppliers.id, counterpartyId), eq(schema.suppliers.tenantId, req.user.tenantId), eq(schema.suppliers.active, true))).get()
+        : null;
+      if (!supplier) return res.status(400).json({ error: 'Nhà cung cấp không hợp lệ' });
+      counterpartyName = supplier.name;
+    }
+
     const entry = {
       id: uuid(),
       tenantId: req.user.tenantId,
@@ -4786,6 +4846,11 @@ app.post('/api/cashbook', async (req, res) => {
       note: note || '',
       referenceId: referenceId || null,
       accountId: req.body?.accountId || await defaultAccountForPayment(req.user.tenantId, req.body?.accountType || 'cash'),
+      actorId: actor.id,
+      actorName: actor.name,
+      counterpartyType,
+      counterpartyId: counterpartyType === 'other' ? null : counterpartyId,
+      counterpartyName,
       createdAt: new Date().toISOString(),
       createdBy: req.user.id,
     };
