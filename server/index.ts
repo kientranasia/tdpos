@@ -3570,18 +3570,27 @@ app.post('/api/purchases', async (req, res) => {
         ? null
         : Number(item.sellingPrice);
       if (requestedSellingPrice !== null && (!Number.isFinite(requestedSellingPrice) || requestedSellingPrice < 0)) throw new Error('Giá bán sau nhập không hợp lệ');
+      const discountMode = item.discountMode === 'percent' ? 'percent' : 'amount';
+      const discountValue = Math.max(0, Number(item.discountValue) || 0);
+      const lineSubtotal = quantity * price;
+      const discountAmount = discountMode === 'percent'
+        ? lineSubtotal * Math.min(100, discountValue) / 100
+        : Math.min(lineSubtotal, discountValue);
       return {
         ...item,
         quantity,
         price,
         isGift,
+        discountMode,
+        discountValue,
+        discountAmount,
         sellingPrice: requestedSellingPrice,
         note: String(item.note || '').trim().slice(0, 2000),
         unitName: unit.name,
         unitFactor: unit.factor,
         baseQuantity: quantity * unit.factor,
         taxRate: Number(item.taxRate) || 0,
-        total: quantity * price,
+        total: Math.max(0, lineSubtotal - discountAmount),
       };
     }));
     const totalAmount = normalizedItems.reduce((sum: number, item: any) => sum + item.total, 0);
@@ -4582,9 +4591,13 @@ app.post('/api/invoices', async (req, res) => {
       if (!Number.isFinite(requestedPrice) || requestedPrice < 0) throw new Error(`Giá bán không hợp lệ cho ${product.name}`);
       if (priceOverride && !hasPermission(req, 'sales.override_price')) throw new Error('Bạn không có quyền sửa giá bán');
       const price = priceOverride ? requestedPrice : resolved.price;
+      const discountMode = raw.discountMode === 'amount' ? 'amount' : 'percent';
       const discountPercent = Math.min(100, Math.max(0, Number(raw.discountPercent) || 0));
       const lineSubtotal = quantity * price;
-      const lineDiscount = lineSubtotal * discountPercent / 100;
+      const discountAmount = Math.max(0, Number(raw.discountAmount) || 0);
+      const lineDiscount = discountMode === 'amount'
+        ? Math.min(lineSubtotal, discountAmount)
+        : lineSubtotal * discountPercent / 100;
       const total = Math.max(0, lineSubtotal - lineDiscount);
       return {
         ...raw,
@@ -4594,7 +4607,9 @@ app.post('/api/invoices', async (req, res) => {
         unitFactor: unit.factor,
         baseQuantity: quantity * unit.factor,
         price,
+        discountMode,
         discountPercent,
+        discountAmount: discountMode === 'amount' ? lineDiscount : 0,
         taxRate: Number(product.taxRate || raw.taxRate || 0),
         total,
         priceListId: resolved.priceList?.id || null,

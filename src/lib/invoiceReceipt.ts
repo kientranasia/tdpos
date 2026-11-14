@@ -26,7 +26,9 @@ export const getInvoiceReceiptSummary = (invoice: Pick<Invoice, 'totalAmount' | 
     discount,
     amountDue,
     previousDebt,
-    grandTotal: amountDue + previousDebt,
+    // Remaining amount after applying the customer's payment to this receipt
+    // and any outstanding balance carried into it.
+    grandTotal: Math.max(0, amountDue + previousDebt - paidAmount),
     paidAmount,
     changeAmount,
     debtAmount: Math.max(0, Number(invoice.debtAmount) || 0),

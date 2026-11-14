@@ -1,22 +1,27 @@
 import React from 'react';
 import { InvoiceItem } from '../../types';
 import { formatCurrency } from '../../lib/utils';
-import { MessageSquare, Minus, Percent, Plus, X } from 'lucide-react';
+import { MessageSquare, Minus, Plus, X } from 'lucide-react';
+
+type DiscountMode = 'percent' | 'amount';
 
 interface POSCartItemProps {
   key?: React.Key;
-  item: InvoiceItem & { maxStock: number; discountPercent?: number };
+  item: InvoiceItem & { maxStock: number };
   onUpdateQuantity: (lineId: string, delta: number) => void;
   onRemove: (lineId: string) => void;
   onDuplicate: (lineId: string) => void;
   onUpdateNote: (lineId: string, note: string) => void;
-  onUpdateDiscount?: (lineId: string, discountPercent: number) => void;
+  onUpdateDiscount?: (lineId: string, mode: DiscountMode, value: number) => void;
   units?: Array<{ name: string; factor: number }>;
   onChangeUnit?: (lineId: string, unitName: string) => void;
 }
 
 export const POSCartItem = ({ item, onUpdateQuantity, onRemove, onDuplicate, onUpdateNote, onUpdateDiscount, units, onChangeUnit }: POSCartItemProps) => {
-  const [showDiscount, setShowDiscount] = React.useState(Boolean(item.discountPercent));
+  const initialDiscountMode: DiscountMode = item.discountMode === 'amount' ? 'amount' : 'percent';
+  const initialDiscountValue = initialDiscountMode === 'amount' ? item.discountAmount : item.discountPercent;
+  const [showDiscount, setShowDiscount] = React.useState(Boolean(initialDiscountValue));
+  const [discountMode, setDiscountMode] = React.useState<DiscountMode>(initialDiscountMode);
   const [showNote, setShowNote] = React.useState(Boolean(item.note?.trim()));
   const baseUnit = units?.find((unit) => Number(unit.factor) === 1)?.name || 'đơn vị cơ sở';
   const selectedUnit = units?.find((unit) => unit.name === item.unitName);
@@ -67,7 +72,7 @@ export const POSCartItem = ({ item, onUpdateQuantity, onRemove, onDuplicate, onU
               aria-expanded={showDiscount}
               title="Giảm giá sản phẩm"
             >
-              <Percent className="h-3.5 w-3.5" />
+              <span className="font-bold tracking-tight">CK</span>
             </button>
           )}
           <button
@@ -102,15 +107,42 @@ export const POSCartItem = ({ item, onUpdateQuantity, onRemove, onDuplicate, onU
         </select>
       )}
       {onUpdateDiscount && showDiscount && (
-        <div className="mt-0.5 flex items-center justify-between rounded-md bg-slate-50 px-2 py-0.5 ring-1 ring-slate-100">
-          <span className="text-[10px] text-slate-500">Giảm sản phẩm (%)</span>
+        <div className="mt-0.5 flex items-center justify-end gap-1.5 rounded-md bg-slate-50 px-2 py-1 ring-1 ring-slate-100">
+          <span className="sr-only">Đơn vị giảm giá sản phẩm</span>
+          <div className="flex shrink-0 items-center rounded-md border border-slate-200 bg-white p-0.5" role="group" aria-label="Đơn vị giảm giá sản phẩm">
+            <button
+              type="button"
+              onClick={() => {
+                setDiscountMode('amount');
+                onUpdateDiscount(item.id, 'amount', item.discountAmount || 0);
+              }}
+              aria-label="Giảm giá theo VNĐ"
+              aria-pressed={discountMode === 'amount'}
+              className={`h-6 min-w-[34px] rounded px-1 text-[10px] font-semibold transition-colors ${discountMode === 'amount' ? 'bg-sky-100 text-sky-700' : 'text-slate-500 hover:bg-slate-50'}`}
+            >
+              VNĐ
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setDiscountMode('percent');
+                onUpdateDiscount(item.id, 'percent', item.discountPercent || 0);
+              }}
+              aria-label="Giảm giá theo phần trăm"
+              aria-pressed={discountMode === 'percent'}
+              className={`h-6 min-w-[28px] rounded px-1 text-[11px] font-semibold transition-colors ${discountMode === 'percent' ? 'bg-sky-100 text-sky-700' : 'text-slate-500 hover:bg-slate-50'}`}
+            >
+              %
+            </button>
+          </div>
           <input
             type="number"
             min={0}
-            max={100}
-            value={item.discountPercent || 0}
-            onChange={(e) => onUpdateDiscount(item.id, Number(e.target.value))}
-            className="h-6 w-12 rounded-md border border-slate-200 bg-white px-1.5 text-right text-[11px]"
+            max={discountMode === 'percent' ? 100 : undefined}
+            value={discountMode === 'amount' ? item.discountAmount || 0 : item.discountPercent || 0}
+            onChange={(e) => onUpdateDiscount(item.id, discountMode, Number(e.target.value))}
+            className="h-7 w-24 rounded-md border border-slate-200 bg-white px-2 text-right text-[11px] tabular-nums"
+            aria-label={discountMode === 'amount' ? 'Số tiền giảm giá sản phẩm' : 'Phần trăm giảm giá sản phẩm'}
           />
         </div>
       )}

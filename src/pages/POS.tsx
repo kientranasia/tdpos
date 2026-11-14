@@ -18,7 +18,8 @@ import { POSCartItem } from '../components/pos/POSCartItem';
 import { POSInvoiceModal } from '../components/pos/POSInvoiceModal';
 import { BarcodeScannerModal } from '../components/barcode/BarcodeScannerModal';
 
-type CartLine = InvoiceItem & { maxStock: number; discountPercent?: number };
+type DiscountMode = 'percent' | 'amount';
+type CartLine = InvoiceItem & { maxStock: number };
 type SaleUnit = { name: string; factor: number; sku?: string | null; barcode?: string | null };
 type OrderDraft = {
   id: string;
@@ -284,9 +285,16 @@ export default function POS() {
     const safeFactor = Number.isFinite(factor) && factor > 0 ? factor : 1;
     return Math.max(0, Math.floor(Number(product.availableStock ?? product.stock) / safeFactor));
   };
-  const totalForLine = (price: number, quantity: number, discountPercent = 0) => {
+  const lineDiscountValue = (item: Pick<CartLine, 'discountMode' | 'discountAmount' | 'discountPercent'>) => (
+    item.discountMode === 'amount' ? Number(item.discountAmount) || 0 : Number(item.discountPercent) || 0
+  );
+
+  const totalForLine = (price: number, quantity: number, discountValue = 0, discountMode: DiscountMode = 'percent') => {
     const rawTotal = price * quantity;
-    return Math.max(0, rawTotal - (rawTotal * Math.min(100, Math.max(0, Number(discountPercent) || 0))) / 100);
+    const discount = discountMode === 'amount'
+      ? Math.min(rawTotal, Math.max(0, Number(discountValue) || 0))
+      : (rawTotal * Math.min(100, Math.max(0, Number(discountValue) || 0))) / 100;
+    return Math.max(0, rawTotal - discount);
   };
 
   useEffect(() => {
@@ -301,7 +309,7 @@ export default function POS() {
         priceListId: selectedPriceListId || undefined,
         priceListName: list?.name,
         maxStock: maxQuantityForUnit(product, Number(item.unitFactor) || 1),
-        total: totalForLine(price, item.quantity, item.discountPercent),
+        total: totalForLine(price, item.quantity, lineDiscountValue(item), item.discountMode),
       };
     }));
   }, [selectedPriceListId, priceLists, products]);
@@ -440,7 +448,7 @@ export default function POS() {
         wasAdded = true;
         return prev.map(item => 
           item.id === existing.id
-            ? { ...item, quantity: item.quantity + 1, total: totalForLine(item.price, item.quantity + 1, item.discountPercent) }
+            ? { ...item, quantity: item.quantity + 1, total: totalForLine(item.price, item.quantity + 1, lineDiscountValue(item), item.discountMode) }
             : item
         );
       }
@@ -459,7 +467,9 @@ export default function POS() {
         unitFactor,
         priceListId: selectedPriceListId || undefined,
         priceListName: priceLists.find((list: any) => list.id === selectedPriceListId)?.name,
+        discountMode: 'percent',
         discountPercent: 0,
+        discountAmount: 0,
       }];
     });
 
@@ -501,7 +511,7 @@ export default function POS() {
       if (!current) return prev;
       const quantity = Math.min(current.quantity, maxStock);
       return prev.map((item) => item.id === lineId
-        ? { ...item, unitName: unit.name, unitFactor, quantity, maxStock, price, total: totalForLine(price, quantity, item.discountPercent) }
+        ? { ...item, unitName: unit.name, unitFactor, quantity, maxStock, price, total: totalForLine(price, quantity, lineDiscountValue(item), item.discountMode) }
         : item).filter((item) => item.quantity > 0);
     });
   };
@@ -512,7 +522,7 @@ export default function POS() {
         const newQ = item.quantity + delta;
         if (newQ <= 0) return [];
         if (newQ > item.maxStock) return [item];
-        return { ...item, quantity: newQ, total: totalForLine(item.price, newQ, item.discountPercent) };
+        return { ...item, quantity: newQ, total: totalForLine(item.price, newQ, lineDiscountValue(item), item.discountMode) };
       }
       return [item];
     }));
@@ -535,8 +545,10 @@ export default function POS() {
         id: uuid(),
         invoiceId: '',
         quantity: 1,
-        total: totalForLine(source.price, 1, 0),
+        total: totalForLine(source.price, 1, 0, 'percent'),
+        discountMode: 'percent',
         discountPercent: 0,
+        discountAmount: 0,
         note: '',
       };
       const sourceIndex = prev.findIndex((item) => item.id === lineId);
@@ -566,11 +578,19 @@ export default function POS() {
   const changeAmount = Math.max(0, actualPayment - totalReceivable);
   const remainingCustomerDebt = Math.max(0, previousDebtAmount - debtPaymentAmount + invoiceDebtAmount);
 
-  const updateLineDiscount = (lineId: string, discountPercent: number) => {
+  const updateLineDiscount = (lineId: string, mode: DiscountMode, value: number) => {
     setCart((prev) => prev.map((item) => {
       if (item.id !== lineId) return item;
-      const pct = Math.min(100, Math.max(0, Number(discountPercent) || 0));
-      return { ...item, discountPercent: pct, total: totalForLine(item.price, item.quantity, pct) };
+      const safeValue = mode === 'percent'
+        ? Math.min(100, Math.max(0, Number(value) || 0))
+        : Math.max(0, Number(value) || 0);
+      return {
+        ...item,
+        discountMode: mode,
+        discountPercent: mode === 'percent' ? safeValue : 0,
+        discountAmount: mode === 'amount' ? safeValue : 0,
+        total: totalForLine(item.price, item.quantity, safeValue, mode),
+      };
     }));
   };
 
@@ -694,7 +714,9 @@ export default function POS() {
       const createdInvoice = await addInvoice(newInvoice, cart.map((item) => ({
         ...item,
         priceOverride: false,
-        discountPercent: item.discountPercent || 0,
+        discountMode: item.discountMode || 'percent',
+        discountPercent: item.discountMode === 'percent' || !item.discountMode ? item.discountPercent || 0 : 0,
+        discountAmount: item.discountMode === 'amount' ? item.discountAmount || 0 : 0,
       })));
       if (!createdInvoice) {
         setFormError('Không thể ghi nhận hóa đơn. Vui lòng thử lại.');
@@ -1091,17 +1113,28 @@ export default function POS() {
                   <span className="font-medium tabular-nums">{formatCurrency(totalAmount)}</span>
                 </div>
               </div>
-              <div className="flex items-center justify-between text-[17px]">
-                <span className="text-slate-900">Giảm giá (%)</span>
+              <div className="flex items-center justify-between gap-3 text-[17px]">
+                <span className="text-slate-900">Giảm giá</span>
+                <div className="flex items-center gap-1.5">
+                <select
+                  value={orderDiscountType}
+                  onChange={(e) => setOrderDiscountType(e.target.value as 'percent' | 'amount')}
+                  aria-label="Đơn vị giảm giá đơn hàng"
+                  className="h-9 rounded-md border border-slate-200 bg-white px-1.5 text-right text-xs text-slate-700 outline-none"
+                >
+                  <option value="amount">VNĐ</option>
+                  <option value="percent">%</option>
+                </select>
                 <input
                   type="number"
-                  value={orderDiscountType === 'percent' ? orderDiscountValue : 0}
-                  onChange={(e) => {
-                    setOrderDiscountType('percent');
-                    setOrderDiscountValue(Number(e.target.value) || 0);
-                  }}
+                  min={0}
+                  max={orderDiscountType === 'percent' ? 100 : totalAmount}
+                  value={orderDiscountValue || 0}
+                  onChange={(e) => setOrderDiscountValue(Number(e.target.value) || 0)}
+                  aria-label={orderDiscountType === 'amount' ? 'Số tiền giảm giá đơn hàng' : 'Phần trăm giảm giá đơn hàng'}
                   className="h-10 w-28 border-b border-slate-300 bg-transparent text-right text-[17px] outline-none"
                 />
+                </div>
               </div>
               <div className="flex items-center justify-between text-[17px]">
                 <span className="text-slate-900">Khách cần trả</span>

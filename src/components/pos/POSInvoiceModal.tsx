@@ -6,6 +6,20 @@ import { Button } from '../ui/Button';
 import { X, Download, Printer } from 'lucide-react';
 import BrandMark from '../BrandMark';
 
+const invoiceItemDiscountAmount = (item: InvoiceItem) => {
+  const subtotal = Math.max(0, Number(item.price) || 0) * Math.max(0, Number(item.quantity) || 0);
+  if (item.discountMode === 'amount') {
+    return Math.min(subtotal, Math.max(0, Number(item.discountAmount) || 0));
+  }
+  if (item.discountMode === 'percent') {
+    const percent = Math.min(100, Math.max(0, Number(item.discountPercent) || 0));
+    return Math.min(subtotal, subtotal * percent / 100);
+  }
+
+  // Older invoices only stored the net line total. Keep their printed CK accurate.
+  return Math.min(subtotal, Math.max(0, subtotal - (Number(item.total) || 0)));
+};
+
 interface POSInvoiceModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -81,21 +95,27 @@ const InvoiceContent = forwardRef(({
     </div>
 
     <div className="mb-4 space-y-1">
-      <div className="grid grid-cols-[minmax(0,1fr)_20px_72px_78px] gap-1 border-b border-slate-200 pb-1 text-left text-[9px] font-semibold leading-tight text-slate-600">
-        <div>Sản phẩm</div>
-        <div>SL</div>
+      <div className="grid grid-cols-[minmax(0,1fr)_56px_24px_42px_72px] gap-1 border-b border-slate-200 pb-1 text-left text-[9px] font-semibold leading-tight text-slate-600">
+        <div aria-hidden="true" />
         <div>Đơn giá</div>
-        <div>Thành tiền</div>
+        <div>SL</div>
+        <div>CK</div>
+        <div className="text-right">TT</div>
       </div>
       {currentInvoiceItems.map(item => (
-        <div key={item.id} className="grid grid-cols-[minmax(0,1fr)_20px_72px_78px] items-start gap-1 border-b border-dashed border-slate-100 py-1 text-left text-[9px] leading-tight">
-          <div className="min-w-0 pr-1">
-            <div className="break-words font-semibold text-slate-900">{item.productName}</div>
-            {item.note?.trim() && <div className="mt-0.5 break-words text-sky-800">Ghi chú: {item.note.trim()}</div>}
+        <div key={item.id} className="border-b border-dashed border-slate-100 py-1.5 text-left text-[9px] leading-tight last:border-b-0">
+          <div className="break-words font-semibold text-slate-900">
+            {item.productName}
+            {item.unitName?.trim() && <span className="font-medium text-slate-700"> - ({item.unitName.trim()})</span>}
           </div>
-          <div className="font-semibold tabular-nums text-slate-900">{item.quantity}</div>
-          <div className="whitespace-nowrap tabular-nums text-slate-700">{formatCurrency(item.price)}</div>
-          <div className="whitespace-nowrap font-semibold tabular-nums text-slate-900">{formatCurrency(item.total)}</div>
+          {item.note?.trim() && <div className="mt-0.5 break-words text-sky-800">Ghi chú: {item.note.trim()}</div>}
+          <div className="mt-1 grid grid-cols-[minmax(0,1fr)_56px_24px_42px_72px] items-baseline gap-1 text-slate-700">
+            <div />
+            <div className="whitespace-nowrap tabular-nums">{formatCurrency(item.price)}</div>
+            <div className="font-semibold tabular-nums text-slate-900">{item.quantity}</div>
+            <div className="whitespace-nowrap tabular-nums text-slate-600">{formatCurrency(invoiceItemDiscountAmount(item))}</div>
+            <div className="whitespace-nowrap text-right font-semibold tabular-nums text-slate-900">{formatCurrency(item.total)}</div>
+          </div>
         </div>
       ))}
     </div>
@@ -113,17 +133,17 @@ const InvoiceContent = forwardRef(({
         <span className="text-slate-600">Khách cần trả</span>
         <span className="font-semibold text-sky-700">{formatCurrency(receipt.amountDue)}</span>
       </div>
-      {(currentInvoice?.customerId || receipt.previousDebt > 0) && <div className="flex justify-between items-center text-sm">
-        <span className="text-slate-600">Nợ cũ</span>
+      <div className="flex justify-between items-center text-sm">
+        <span className="text-slate-600">Toa cũ</span>
         <span className="font-semibold text-orange-700">{formatCurrency(receipt.previousDebt)}</span>
-      </div>}
-      <div className="flex justify-between items-end border-t border-slate-200 pt-2">
-        <span className="text-sm font-semibold text-slate-900">Tổng cuối toa</span>
-        <span className="text-2xl font-black text-slate-900 font-display tabular-nums leading-none">{formatCurrency(receipt.grandTotal)}</span>
       </div>
       <div className="flex justify-between items-center text-sm">
         <span className="text-slate-600">Khách đã trả</span>
         <span className="font-semibold text-slate-900">{formatCurrency(receipt.paidAmount)}</span>
+      </div>
+      <div className="flex justify-between items-end border-t border-slate-200 pt-2">
+        <span className="text-sm font-semibold text-slate-900">Tổng cuối toa</span>
+        <span className="text-2xl font-black text-slate-900 font-display tabular-nums leading-none">{receipt.grandTotal > 0 ? formatCurrency(receipt.grandTotal) : '--'}</span>
       </div>
       <div className="flex justify-between items-center text-sm">
         <span className="text-slate-600">Tiền thừa trả khách</span>

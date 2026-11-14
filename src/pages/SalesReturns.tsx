@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Barcode, Check, PackagePlus, Receipt, RotateCcw, Search, UserRound, WalletCards, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { BarcodeScannerModal } from '../components/barcode/BarcodeScannerModal';
@@ -38,8 +38,10 @@ const unitForCode = (product: Product, code: string) => {
 
 export default function SalesReturns() {
   const { invoices, customers, products, refreshInvoices, refreshProducts } = useApp();
-  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const requestedInvoiceId = searchParams.get('invoiceId');
+  const requestedReturnId = searchParams.get('returnId');
   const [mode, setMode] = useState<ReturnMode>('invoice');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
@@ -51,6 +53,7 @@ export default function SalesReturns() {
   const [accounts, setAccounts] = useState<any[]>([]);
   const [accountId, setAccountId] = useState('');
   const [returnHistory, setReturnHistory] = useState<any[]>([]);
+  const [selectedHistoryReturn, setSelectedHistoryReturn] = useState<any | null>(null);
   const [message, setMessage] = useState('');
   const [scanMessage, setScanMessage] = useState('');
   const [loading, setLoading] = useState(false);
@@ -60,6 +63,12 @@ export default function SalesReturns() {
   const customerName = (invoice: Invoice) => invoice.customerId
     ? customers.find((customer) => customer.id === invoice.customerId)?.name || 'Khách hàng'
     : 'Khách vãng lai';
+
+  const invoiceDisplayNo = (invoiceId?: string | null) => {
+    if (!invoiceId) return 'Không có hóa đơn';
+    const invoice = invoices.find((row) => row.id === invoiceId);
+    return invoice?.documentNo || `HD-${invoiceId.replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+  };
 
   const invoiceOptions = useMemo(() => {
     const query = normalizeSearchText(searchTerm);
@@ -91,6 +100,15 @@ export default function SalesReturns() {
     void loadHistory();
     cashAccountsApi.list().then(setAccounts).catch(() => setAccounts([]));
   }, []);
+
+  useEffect(() => {
+    if (!requestedReturnId) {
+      setSelectedHistoryReturn(null);
+      return;
+    }
+    const historyRow = returnHistory.find((row) => row.id === requestedReturnId);
+    if (historyRow) setSelectedHistoryReturn(historyRow);
+  }, [requestedReturnId, returnHistory]);
 
   const selectInvoice = async (invoice: Invoice) => {
     setLoading(true);
@@ -239,6 +257,16 @@ export default function SalesReturns() {
     <label className="block text-xs text-slate-600">{label}<select value={accountId} onChange={(event) => setAccountId(event.target.value)} className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs"><option value="">Tự động chọn tiền mặt</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
   ) : null;
 
+  const openReturnHistory = (row: any) => {
+    setSelectedHistoryReturn(row);
+    setSearchParams({ returnId: row.id });
+  };
+
+  const closeReturnHistory = () => {
+    setSelectedHistoryReturn(null);
+    setSearchParams({});
+  };
+
   return (
     <div className="flex min-h-full flex-col bg-slate-50">
       <BarcodeScannerModal
@@ -289,8 +317,25 @@ export default function SalesReturns() {
           </div>
         )}
 
-        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white"><div className="flex items-center justify-between border-b border-slate-100 px-3 py-2.5"><div><h2 className="text-sm font-semibold text-slate-900">Lịch sử trả hàng</h2><p className="mt-0.5 text-[11px] text-slate-500">Bao gồm phiếu trả theo hóa đơn và phiếu trả nhanh.</p></div><span className="text-xs text-slate-500">{returnHistory.length} phiếu</span></div><div className="divide-y divide-slate-100">{returnHistory.slice(0, 30).map((row) => <div key={row.id} className="flex items-center justify-between gap-3 px-3 py-2.5 text-xs"><span className="min-w-0"><b className="text-orange-700">{row.documentNo || row.id}</b><span className="ml-2 text-slate-500">{row.invoiceId ? `Hóa đơn ${row.invoiceId}` : 'Không có hóa đơn'} · {new Date(row.createdAt).toLocaleString('vi-VN')} · Người thực hiện: {row.createdByName || 'Chưa xác định'}</span></span><span className="shrink-0 font-semibold tabular-nums text-orange-700">-{formatCurrency(Number(row.totalAmount || 0))}</span></div>)}{!returnHistory.length && <p className="px-3 py-6 text-center text-xs text-slate-500">Chưa có phiếu trả hàng.</p>}</div></section>
+        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white"><div className="flex items-center justify-between border-b border-slate-100 px-3 py-2.5"><div><h2 className="text-sm font-semibold text-slate-900">Lịch sử trả hàng</h2><p className="mt-0.5 text-[11px] text-slate-500">Bao gồm phiếu trả theo hóa đơn và phiếu trả nhanh.</p></div><span className="text-xs text-slate-500">{returnHistory.length} phiếu</span></div><div className="divide-y divide-slate-100">{returnHistory.slice(0, 30).map((row) => <button key={row.id} type="button" onClick={() => openReturnHistory(row)} className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-xs transition-colors hover:bg-orange-50"><span className="min-w-0"><b className="text-orange-700">{row.documentNo || row.id}</b><span className="ml-2 text-slate-500">{row.invoiceId ? `Hóa đơn ${invoiceDisplayNo(row.invoiceId)}` : 'Không có hóa đơn'} · {new Date(row.createdAt).toLocaleString('vi-VN')} · Người thực hiện: {row.createdByName || 'Chưa xác định'}</span></span><span className="shrink-0 font-semibold tabular-nums text-orange-700">-{formatCurrency(Number(row.totalAmount || 0))}</span></button>)}{!returnHistory.length && <p className="px-3 py-6 text-center text-xs text-slate-500">Chưa có phiếu trả hàng.</p>}</div></section>
       </main>
+
+      {selectedHistoryReturn && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/50 p-3" role="dialog" aria-modal="true" aria-label="Chi tiết phiếu trả hàng">
+          <div className="flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
+              <div className="min-w-0"><h2 className="truncate text-sm font-semibold text-slate-900">Phiếu trả {selectedHistoryReturn.documentNo || selectedHistoryReturn.id}</h2><p className="mt-0.5 text-xs text-slate-500">{new Date(selectedHistoryReturn.createdAt).toLocaleString('vi-VN')} · {selectedHistoryReturn.createdByName || 'Chưa xác định'}</p></div>
+              <button type="button" aria-label="Đóng chi tiết phiếu trả" onClick={closeReturnHistory} className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="min-h-0 space-y-3 overflow-y-auto p-4 text-xs">
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-orange-100 bg-orange-50 px-3 py-2.5"><span className="text-orange-900">Hóa đơn liên quan</span>{selectedHistoryReturn.invoiceId ? <button type="button" className="font-semibold text-sky-700 hover:underline" onClick={() => navigate(`/app/invoices?invoiceId=${encodeURIComponent(selectedHistoryReturn.invoiceId)}`)}>Hóa đơn {invoiceDisplayNo(selectedHistoryReturn.invoiceId)}</button> : <span className="text-slate-600">Không có hóa đơn</span>}</div>
+              <div className="overflow-hidden rounded-lg border border-slate-200"><div className="grid grid-cols-[minmax(0,1fr)_64px_96px] gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-500"><span>Sản phẩm</span><span className="text-right">SL</span><span className="text-right">Thành tiền</span></div>{(selectedHistoryReturn.items || []).map((item: any) => <div key={item.id} className="grid grid-cols-[minmax(0,1fr)_64px_96px] gap-2 border-b border-slate-100 px-3 py-2 last:border-0"><span className="min-w-0"><span className="block break-words font-medium text-slate-800">{item.productName}</span><span className="text-[11px] text-slate-500">{item.unitName || 'Cái'} · {formatCurrency(Number(item.price || 0))}</span></span><span className="text-right tabular-nums text-slate-600">{item.quantity}</span><span className="text-right font-semibold tabular-nums text-orange-700">{formatCurrency(Number(item.total || 0))}</span></div>)}</div>
+              <div className="space-y-1.5 border-t border-slate-100 pt-3"><div className="flex justify-between"><span className="text-slate-500">Tổng trả</span><b className="tabular-nums text-orange-700">{formatCurrency(Number(selectedHistoryReturn.totalAmount || 0))}</b></div><div className="flex justify-between"><span className="text-slate-500">Giảm công nợ</span><b className="tabular-nums text-slate-700">{formatCurrency(Number(selectedHistoryReturn.debtReduction || 0))}</b></div><div className="flex justify-between"><span className="text-slate-500">Đã hoàn tiền</span><b className="tabular-nums text-emerald-700">{formatCurrency(Number(selectedHistoryReturn.refundAmount || 0))}</b></div>{selectedHistoryReturn.note && <p className="border-t border-slate-100 pt-2 text-slate-600">Ghi chú: {selectedHistoryReturn.note}</p>}</div>
+            </div>
+            <div className="flex justify-end border-t border-slate-100 bg-slate-50/70 px-4 py-3"><Button variant="outline" onClick={closeReturnHistory}>Đóng</Button></div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

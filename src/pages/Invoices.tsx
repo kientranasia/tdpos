@@ -880,17 +880,17 @@ export default function Invoices() {
                 <span className="text-slate-500">Khách cần trả</span>
                 <span className="font-medium text-sky-700">{formatCurrency(selectedInvoiceReceipt?.amountDue || 0)}</span>
               </div>
-              {selectedInvoice.customerId && <div className="flex items-center justify-between">
-                <span className="text-slate-500">Nợ cũ</span>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Toa cũ</span>
                 <span className="font-medium text-orange-700">{formatCurrency(selectedInvoiceReceipt?.previousDebt || 0)}</span>
-              </div>}
-              <div className="flex items-center justify-between border-t border-slate-100 pt-2">
-                <span className="font-semibold text-slate-900">Tổng cuối toa</span>
-                <span className="font-semibold text-slate-900">{formatCurrency(selectedInvoiceReceipt?.grandTotal || 0)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Khách đã trả</span>
                 <span className="font-medium text-slate-900">{formatCurrency(selectedInvoiceReceipt?.paidAmount || 0)}</span>
+              </div>
+              <div className="flex items-center justify-between border-t border-slate-100 pt-2">
+                <span className="font-semibold text-slate-900">Tổng cuối toa</span>
+                <span className="font-semibold text-slate-900">{selectedInvoiceReceipt && selectedInvoiceReceipt.grandTotal > 0 ? formatCurrency(selectedInvoiceReceipt.grandTotal) : '--'}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Tiền thừa trả khách</span>
@@ -994,9 +994,9 @@ export default function Invoices() {
                 <div className="p-4 flex justify-between"><span>Tổng hàng</span><span>{formatCurrency(selectedInvoiceReceipt?.totalAmount || 0)}</span></div>
                 <div className="p-4 flex justify-between"><span>Giảm giá</span><span>{formatCurrency(selectedInvoiceReceipt?.discount || 0)}</span></div>
                 <div className="p-4 flex justify-between"><span>Khách cần trả</span><span>{formatCurrency(selectedInvoiceReceipt?.amountDue || 0)}</span></div>
-                {selectedInvoice.customerId && <div className="p-4 flex justify-between"><span>Nợ cũ</span><span className="text-orange-700">{formatCurrency(selectedInvoiceReceipt?.previousDebt || 0)}</span></div>}
-                <div className="p-4 flex justify-between font-semibold"><span>Tổng cuối toa</span><span>{formatCurrency(selectedInvoiceReceipt?.grandTotal || 0)}</span></div>
+                <div className="p-4 flex justify-between"><span>Toa cũ</span><span className="text-orange-700">{formatCurrency(selectedInvoiceReceipt?.previousDebt || 0)}</span></div>
                 <div className="p-4 flex justify-between"><span>Khách đã trả</span><span className="text-sky-700">{formatCurrency(selectedInvoiceReceipt?.paidAmount || 0)}</span></div>
+                <div className="p-4 flex justify-between font-semibold"><span>Tổng cuối toa</span><span>{selectedInvoiceReceipt && selectedInvoiceReceipt.grandTotal > 0 ? formatCurrency(selectedInvoiceReceipt.grandTotal) : '--'}</span></div>
                 <div className="p-4 flex justify-between"><span>Tiền thừa trả khách</span><span className="text-emerald-700">{formatCurrency(selectedInvoiceReceipt?.changeAmount || 0)}</span></div>
                 {selectedInvoiceReceipt && selectedInvoiceReceipt.remainingDebt > 0 && <div className="p-4 flex justify-between"><span>Công nợ còn lại</span><span className="text-orange-700">{formatCurrency(selectedInvoiceReceipt.remainingDebt)}</span></div>}
               </div>

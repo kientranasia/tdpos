@@ -34,6 +34,8 @@ type Line = {
   quantity: NumericDraft;
   price: NumericDraft;
   sellingPrice: NumericDraft;
+  discountMode: 'amount' | 'percent';
+  discountValue: NumericDraft;
   unitName: string;
   unitFactor: number;
   isGift: boolean;
@@ -79,6 +81,14 @@ type PriceSetupState = {
 };
 
 const toNumber = (value: NumericDraft) => Number(value) || 0;
+const purchaseLineTotal = (line: Pick<Line, 'quantity' | 'price' | 'sellingPrice' | 'discountMode' | 'discountValue' | 'isGift'>) => {
+  const subtotal = toNumber(line.quantity) * (line.isGift ? 0 : toNumber(line.price));
+  const value = Math.max(0, toNumber(line.discountValue));
+  const discount = line.discountMode === 'percent'
+    ? subtotal * Math.min(100, value) / 100
+    : Math.min(subtotal, value);
+  return Math.max(0, subtotal - discount);
+};
 
 export default function Purchases() {
   const { products, categories, refreshProducts } = useApp();
@@ -177,10 +187,7 @@ export default function Purchases() {
     return () => document.removeEventListener('pointerdown', handleOutsidePointer);
   }, [showProductPicker, showSupplierPicker]);
 
-  const total = useMemo(
-    () => lines.reduce((sum, line) => sum + toNumber(line.quantity) * (line.isGift ? 0 : toNumber(line.price)), 0),
-    [lines],
-  );
+  const total = useMemo(() => lines.reduce((sum, line) => sum + purchaseLineTotal(line), 0), [lines]);
   const selectedSupplier = suppliers.find((supplier) => supplier.id === supplierId);
   const availableProducts = useMemo(() => {
     const byId = new Map<string, Product>();
@@ -314,6 +321,8 @@ export default function Purchases() {
         quantity: 1,
         price: product.purchasePrice,
         sellingPrice: Number(unit.sellingPrice ?? product.sellingPrice ?? 0),
+        discountMode: 'amount',
+        discountValue: 0,
         unitName: unit.name,
         unitFactor: Number(unit.factor) || 1,
         isGift: false,
@@ -326,9 +335,15 @@ export default function Purchases() {
     setLines((previous) => {
       const source = previous[index];
       if (!source) return previous;
-      const giftLine: Line = { ...source, quantity: 1, price: 0, isGift: true, note: '' };
+      const giftLine: Line = { ...source, quantity: 1, price: 0, isGift: true, discountValue: 0, note: '' };
       return [...previous.slice(0, index + 1), giftLine, ...previous.slice(index + 1)];
     });
+  };
+
+  const updateLineDiscount = (lineIndex: number, mode: 'amount' | 'percent', value: NumericDraft) => {
+    setLines((previous) => previous.map((row, rowIndex) => rowIndex === lineIndex
+      ? { ...row, discountMode: mode, discountValue: value }
+      : row));
   };
 
   const priceSetupUnits = (product: Product): PriceSetupUnit[] => {
@@ -402,6 +417,8 @@ export default function Purchases() {
     }
   };
 
+  const activePriceSetupLine = priceSetup ? lines[priceSetup.lineIndex] : null;
+
   const lookupBarcode = async (codeOverride?: string) => {
     const code = (codeOverride ?? barcode).trim();
     if (!code) {
@@ -428,6 +445,8 @@ export default function Purchases() {
       quantity: toNumber(line.quantity),
       price: line.isGift ? 0 : toNumber(line.price),
       sellingPrice: toNumber(line.sellingPrice),
+      discountMode: line.discountMode,
+      discountValue: Math.max(0, toNumber(line.discountValue)),
       unitFactor: Number(line.unitFactor) || 1,
       note: line.note.trim(),
     }));
@@ -742,8 +761,8 @@ export default function Purchases() {
             </div>
           ) : (
             <div className="overflow-hidden rounded-lg border border-slate-100">
-              <div className="hidden grid-cols-[minmax(210px,2.2fr)_78px_64px_116px_116px_100px_96px] gap-2 border-b border-slate-100 bg-slate-50/70 px-2.5 py-2 text-[11px] font-medium text-slate-500 lg:grid">
-                <span>Sản phẩm</span><span>Đơn vị</span><span>SL</span><span>Giá nhập</span><span>Giá bán</span><span className="text-right">Thành tiền</span><span />
+              <div className="hidden grid-cols-[minmax(210px,2.2fr)_78px_64px_116px_116px_96px_100px_96px] gap-2 border-b border-slate-100 bg-slate-50/70 px-2.5 py-2 text-[11px] font-medium text-slate-500 lg:grid">
+                <span>Sản phẩm</span><span>Đơn vị</span><span>SL</span><span>Giá nhập</span><span>Giá bán</span><span>Giảm giá</span><span className="text-right">Thành tiền</span><span />
               </div>
               <div className="divide-y divide-slate-100">
                 {lines.map((line, index) => {
@@ -751,15 +770,16 @@ export default function Purchases() {
                   const units = product?.units?.length ? product.units : [{ name: product?.unit || '', factor: 1, sellingPrice: product?.sellingPrice || 0 }];
                   const fieldLabel = 'mb-1 block text-[10px] font-medium uppercase tracking-wide text-slate-400 lg:hidden';
                   return (
-                    <div key={`${line.productId}-${index}`} className="grid min-w-0 grid-cols-1 gap-2 bg-white p-2.5 lg:grid-cols-[minmax(210px,2.2fr)_78px_64px_116px_116px_100px_96px] lg:items-start">
+                    <div key={`${line.productId}-${index}`} className="grid min-w-0 grid-cols-1 gap-2 bg-white p-2.5 lg:grid-cols-[minmax(210px,2.2fr)_78px_64px_116px_116px_96px_100px_96px] lg:items-start">
                       <div className="min-w-0"><label className={fieldLabel}>Sản phẩm</label><select className="h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-xs" value={line.productId} onChange={(event) => { const next = availableProducts.find((item) => item.id === event.target.value); if (!next) return; const unit = next.units?.[0] || { name: next.unit, factor: 1, sellingPrice: next.sellingPrice }; setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, productId: next.id, price: row.isGift ? 0 : next.purchasePrice, sellingPrice: Number(unit.sellingPrice ?? next.sellingPrice ?? 0), unitName: unit.name, unitFactor: Number(unit.factor) || 1 } : row)); }}>{standardProducts.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}</select></div>
                       <div><label className={fieldLabel}>Đơn vị</label><select className="h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-1.5 text-xs" value={line.unitName} onChange={(event) => { const unit = units.find((item: any) => item.name === event.target.value); setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, unitName: event.target.value, unitFactor: Number(unit?.factor || 1), sellingPrice: Number(unit?.sellingPrice ?? Number(product?.sellingPrice || 0) * Number(unit?.factor || 1)) } : row)); }}>{units.map((unit: any) => <option key={unit.name} value={unit.name}>{unit.name} · ×{unit.factor}</option>)}</select></div>
                       <div><label className={fieldLabel}>SL</label><input aria-label={`Số lượng dòng ${index + 1}`} className="h-8 w-full min-w-0 rounded-md border border-slate-200 px-2 text-xs" type="number" min="0.01" value={line.quantity} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, quantity: event.target.value } : row))} /></div>
                       <div><label className={fieldLabel}>Giá nhập</label><div className="flex min-w-0 items-center gap-1"><input aria-label={`Giá nhập dòng ${index + 1}`} className={`h-8 w-full min-w-0 rounded-md border border-slate-200 px-2 text-xs ${line.isGift ? 'cursor-not-allowed bg-slate-50 text-slate-400' : 'bg-white'}`} type="number" min="0" value={line.isGift ? 0 : line.price} disabled={line.isGift} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, price: event.target.value } : row))} /><button type="button" className={`shrink-0 rounded-full px-1.5 py-1 text-[10px] font-medium ${line.isGift ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`} onClick={() => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, isGift: !row.isGift, price: !row.isGift ? 0 : (product?.purchasePrice || 0) } : row))}>{line.isGift ? 'Tặng' : 'Tính'}</button></div></div>
                       <div><label className={fieldLabel}>Giá bán sau nhập</label><input aria-label={`Giá bán sau nhập dòng ${index + 1}`} className="h-8 w-full min-w-0 rounded-md border border-sky-200 bg-sky-50/40 px-2 text-xs text-sky-800" type="number" min="0" value={line.sellingPrice} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, sellingPrice: event.target.value } : row))} /></div>
-                      <div className="flex items-center justify-between lg:block lg:text-right"><label className={fieldLabel}>Thành tiền</label><p className="text-xs font-semibold tabular-nums text-slate-700">{formatCurrency(toNumber(line.quantity) * (line.isGift ? 0 : toNumber(line.price)))}</p></div>
+                      <div><label className={fieldLabel}>Giảm giá</label><div className="flex min-w-0 items-center gap-1"><input aria-label={`Giảm giá dòng ${index + 1}`} className="h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right text-xs tabular-nums" type="number" min="0" max={line.discountMode === 'percent' ? 100 : undefined} value={line.discountValue} onChange={(event) => updateLineDiscount(index, line.discountMode, event.target.value)} /><select aria-label={`Đơn vị giảm giá dòng ${index + 1}`} className="h-8 w-12 shrink-0 rounded-md border border-slate-200 bg-white px-1 text-[10px] text-slate-600" value={line.discountMode} onChange={(event) => updateLineDiscount(index, event.target.value as 'amount' | 'percent', line.discountValue)}><option value="amount">VNĐ</option><option value="percent">%</option></select></div></div>
+                      <div className="flex items-center justify-between lg:block lg:text-right"><label className={fieldLabel}>Thành tiền</label><p className="text-xs font-semibold tabular-nums text-slate-700">{formatCurrency(purchaseLineTotal(line))}</p></div>
                       <div className="flex items-center justify-end gap-0.5 lg:pt-5"><button type="button" className="rounded-md p-1.5 text-emerald-600 transition hover:bg-emerald-50" aria-label="Thêm dòng tặng kèm" title="Thêm dòng tặng kèm" onClick={() => addGiftLine(index)}><Plus className="h-4 w-4" /></button><button type="button" className="rounded-md p-1.5 text-sky-600 transition hover:bg-sky-50" aria-label="Thiết lập giá cho mặt hàng" title="Thiết lập giá cho mặt hàng" onClick={() => void openPriceSetup(index)}><Tag className="h-4 w-4" /></button><button type="button" className="rounded-md p-1.5 text-rose-500 transition hover:bg-rose-50 hover:text-rose-600" aria-label="Xóa dòng hàng" onClick={() => setLines((previous) => previous.filter((_, rowIndex) => rowIndex !== index))}><Trash2 className="h-4 w-4" /></button></div>
-                      <div className="min-w-0 border-t border-dashed border-slate-100 pt-2 lg:col-span-7 lg:flex lg:items-center lg:gap-2 lg:pt-0"><span className="mb-1 block shrink-0 text-[10px] font-medium uppercase tracking-wide text-slate-400 lg:mb-0">Ghi chú dòng</span><input aria-label={`Ghi chú dòng ${index + 1}`} className="h-8 min-w-0 w-full rounded-md border border-dashed border-slate-200 bg-slate-50/40 px-2.5 text-xs text-slate-700 placeholder:text-slate-400" value={line.note} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, note: event.target.value } : row))} placeholder={line.isGift ? 'Ví dụ: Tặng kèm theo chương trình tháng này' : 'Ghi chú riêng cho dòng (không bắt buộc)'} /></div>
+                      <div className="min-w-0 border-t border-dashed border-slate-100 pt-2 lg:col-span-8 lg:flex lg:items-center lg:gap-2 lg:pt-0"><span className="mb-1 block shrink-0 text-[10px] font-medium uppercase tracking-wide text-slate-400 lg:mb-0">Ghi chú dòng</span><input aria-label={`Ghi chú dòng ${index + 1}`} className="h-8 min-w-0 w-full rounded-md border border-dashed border-slate-200 bg-slate-50/40 px-2.5 text-xs text-slate-700 placeholder:text-slate-400" value={line.note} onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, note: event.target.value } : row))} placeholder={line.isGift ? 'Ví dụ: Tặng kèm theo chương trình tháng này' : 'Ghi chú riêng cho dòng (không bắt buộc)'} /></div>
                     </div>
                   );
                 })}
@@ -841,20 +861,71 @@ export default function Purchases() {
 
             {priceSetupLoading ? (
               <div className="flex min-h-48 items-center justify-center px-4 py-8 text-sm text-slate-500">Đang tải các bảng giá...</div>
-            ) : !priceSetup.lists.length ? (
-              <div className="px-4 py-10 text-center text-sm text-slate-500">Chưa có bảng giá để thiết lập.</div>
             ) : (
               <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-sky-100 bg-sky-50/60 px-3 py-2.5 text-xs text-sky-800"><span>Mặt hàng: <b>{priceSetup.product.sku}</b> · Đơn vị cơ sở: <b>{priceSetup.product.unit}</b></span><span className="text-sky-700">Bỏ trống nếu bảng giá chưa áp dụng cho đơn vị này.</span></div>
-                <div className="overflow-x-auto rounded-lg border border-slate-200">
-                  <table className="w-full min-w-[720px] text-sm">
-                    <thead className="bg-slate-100 text-left text-[11px] font-semibold text-slate-600"><tr><th className="w-48 px-3 py-2.5">Tên bảng giá</th>{priceSetup.units.map((unit) => <th key={unit.key} className="min-w-[190px] px-3 py-2.5 text-right">Giá bán ({unit.name})<span className="mt-0.5 block text-[10px] font-normal text-slate-400">{unit.factor === 1 ? 'Đơn vị cơ sở' : `×${unit.factor} cơ sở`}</span></th>)}</tr></thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {priceSetup.lists.map((list: any) => <tr key={list.id} className="align-middle hover:bg-slate-50/70"><td className="px-3 py-3 font-medium text-slate-700">{list.name}{list.isDefault && <span className="ml-1.5 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">Mặc định</span>}</td>{priceSetup.units.map((unit) => <td key={`${list.id}-${unit.key}`} className="px-3 py-2"><div className="relative"><input aria-label={`${list.name} · ${unit.name}`} type="number" min="0" inputMode="decimal" value={priceSetup.values[list.id]?.[unit.key] ?? ''} onChange={(event) => setPriceSetup((previous) => previous ? { ...previous, values: { ...previous.values, [list.id]: { ...previous.values[list.id], [unit.key]: event.target.value } } } : previous)} placeholder="Chưa thiết lập" className={`h-9 w-full rounded-md border px-2.5 text-right text-sm tabular-nums outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100 ${list.isDefault ? 'border-sky-200 bg-sky-50/40 text-sky-900' : 'border-slate-200 bg-white text-slate-800'}`} /><span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-slate-400">đ</span></div></td>)}</tr>)}
-                    </tbody>
-                  </table>
-                </div>
-                <p className="mt-2 text-[11px] text-slate-500">Giá ở Bảng giá chung sẽ cập nhật lại giá bán của dòng nhập hiện tại. Các bảng giá khác được lưu riêng và dùng ngay khi bán hàng.</p>
+                {activePriceSetupLine && (
+                  <div className="mb-3 grid gap-2 rounded-lg border border-slate-200 bg-white p-3 sm:grid-cols-[1fr_1.2fr_1fr]">
+                    <label className="space-y-1 text-[11px] font-semibold text-slate-500">
+                      Đơn giá nhập
+                      <div className="relative">
+                        <input
+                          type="number"
+                          min="0"
+                          value={activePriceSetupLine.isGift ? 0 : activePriceSetupLine.price}
+                          disabled={activePriceSetupLine.isGift}
+                          onChange={(event) => setLines((previous) => previous.map((row, rowIndex) => rowIndex === priceSetup.lineIndex ? { ...row, price: event.target.value } : row))}
+                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 pr-8 text-right text-sm tabular-nums text-slate-800 disabled:bg-slate-50 disabled:text-slate-400"
+                        />
+                        <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-slate-400">đ</span>
+                      </div>
+                    </label>
+                    <label className="space-y-1 text-[11px] font-semibold text-slate-500">
+                      Giảm giá nhập
+                      <div className="flex gap-1.5">
+                        <select
+                          value={activePriceSetupLine.discountMode}
+                          onChange={(event) => updateLineDiscount(priceSetup.lineIndex, event.target.value as 'amount' | 'percent', activePriceSetupLine.discountValue)}
+                          disabled={activePriceSetupLine.isGift}
+                          aria-label="Đơn vị giảm giá nhập"
+                          className="h-9 w-24 rounded-md border border-slate-200 bg-white px-1.5 text-xs text-slate-700 disabled:bg-slate-50 disabled:text-slate-400"
+                        >
+                          <option value="amount">VNĐ</option>
+                          <option value="percent">%</option>
+                        </select>
+                        <input
+                          type="number"
+                          min="0"
+                          max={activePriceSetupLine.discountMode === 'percent' ? 100 : undefined}
+                          value={activePriceSetupLine.discountValue}
+                          onChange={(event) => updateLineDiscount(priceSetup.lineIndex, activePriceSetupLine.discountMode, event.target.value)}
+                          disabled={activePriceSetupLine.isGift}
+                          aria-label="Giá trị giảm giá nhập"
+                          className="h-9 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2.5 text-right text-sm tabular-nums text-slate-800 disabled:bg-slate-50 disabled:text-slate-400"
+                        />
+                      </div>
+                    </label>
+                    <div className="space-y-1 text-[11px] font-semibold text-slate-500">
+                      Thành tiền sau giảm
+                      <div className="flex h-9 items-center justify-end rounded-md border border-emerald-100 bg-emerald-50/50 px-2.5 text-sm font-semibold tabular-nums text-emerald-700">{formatCurrency(purchaseLineTotal(activePriceSetupLine))}</div>
+                    </div>
+                  </div>
+                )}
+                {priceSetup.lists.length ? (
+                  <>
+                    <div className="overflow-x-auto rounded-lg border border-slate-200">
+                      <table className="w-full min-w-[720px] text-sm">
+                        <thead className="bg-slate-100 text-left text-[11px] font-semibold text-slate-600"><tr><th className="w-48 px-3 py-2.5">Tên bảng giá</th>{priceSetup.units.map((unit) => <th key={unit.key} className="min-w-[190px] px-3 py-2.5 text-right">Giá bán ({unit.name})<span className="mt-0.5 block text-[10px] font-normal text-slate-400">{unit.factor === 1 ? 'Đơn vị cơ sở' : `×${unit.factor} cơ sở`}</span></th>)}</tr></thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {priceSetup.lists.map((list: any) => <tr key={list.id} className="align-middle hover:bg-slate-50/70"><td className="px-3 py-3 font-medium text-slate-700">{list.name}{list.isDefault && <span className="ml-1.5 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">Mặc định</span>}</td>{priceSetup.units.map((unit) => <td key={`${list.id}-${unit.key}`} className="px-3 py-2"><div className="relative"><input aria-label={`${list.name} · ${unit.name}`} type="number" min="0" inputMode="decimal" value={priceSetup.values[list.id]?.[unit.key] ?? ''} onChange={(event) => setPriceSetup((previous) => previous ? { ...previous, values: { ...previous.values, [list.id]: { ...previous.values[list.id], [unit.key]: event.target.value } } } : previous)} placeholder="Chưa thiết lập" className={`h-9 w-full rounded-md border px-2.5 text-right text-sm tabular-nums outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100 ${list.isDefault ? 'border-sky-200 bg-sky-50/40 text-sky-900' : 'border-slate-200 bg-white text-slate-800'}`} /><span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-slate-400">đ</span></div></td>)}</tr>)}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="mt-2 text-[11px] text-slate-500">Giá ở Bảng giá chung sẽ cập nhật lại giá bán của dòng nhập hiện tại. Các bảng giá khác được lưu riêng và dùng ngay khi bán hàng.</p>
+                  </>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500">Chưa có bảng giá để thiết lập. Phần giảm giá nhập ở trên vẫn được áp dụng cho dòng hàng này.</div>
+                )}
               </div>
             )}
 
