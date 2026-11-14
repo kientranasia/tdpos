@@ -584,6 +584,19 @@ export const cashbookEntries = pgTable('cashbook_entries', {
   tenantReferenceIdx: index('cashbook_entries_tenant_reference_idx').on(table.tenantId, table.referenceId),
 }));
 
+export const cashbookCategories = pgTable('cashbook_categories', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  type: text('type', { enum: ['income', 'expense'] }).notNull(),
+  name: text('name').notNull(),
+  active: integer('active').notNull().default(1),
+  createdAt: text('created_at').notNull(),
+  createdBy: text('created_by').notNull(),
+}, (table) => ({
+  tenantTypeNameUnique: uniqueIndex('cashbook_categories_tenant_type_name_uidx').on(table.tenantId, table.type, table.name),
+  tenantTypeActiveIdx: index('cashbook_categories_tenant_type_active_idx').on(table.tenantId, table.type, table.active),
+}));
+
 export const stockReservations = pgTable('stock_reservations', {
   id: text('id').primaryKey(),
   tenantId: text('tenant_id').notNull().references(() => tenants.id),
@@ -704,6 +717,24 @@ export const auditLogs = pgTable('audit_logs', {
 }, (table) => ({
   tenantCreatedAtIdx: index('audit_logs_tenant_created_at_idx').on(table.tenantId, table.createdAt),
   actorCreatedAtIdx: index('audit_logs_actor_created_at_idx').on(table.actorId, table.createdAt),
+}));
+
+export const notifications = pgTable('notifications', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  recipientUserId: text('recipient_user_id').notNull().references(() => users.id),
+  actorId: text('actor_id').notNull().references(() => users.id),
+  type: text('type').notNull(),
+  title: text('title').notNull(),
+  body: text('body').notNull().default(''),
+  entityType: text('entity_type'),
+  entityId: text('entity_id'),
+  isRead: integer('is_read').notNull().default(0),
+  readAt: text('read_at'),
+  createdAt: text('created_at').notNull(),
+}, (table) => ({
+  tenantRecipientCreatedAtIdx: index('notifications_tenant_recipient_created_at_idx').on(table.tenantId, table.recipientUserId, table.createdAt),
+  recipientUnreadIdx: index('notifications_recipient_unread_idx').on(table.recipientUserId, table.isRead),
 }));
 
 export const customerCareLogs = pgTable('customer_care_logs', {

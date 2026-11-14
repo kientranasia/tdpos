@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // ─── Tenants ───────────────────────────────────────────────
 export const tenants = sqliteTable('tenants', {
@@ -511,6 +511,19 @@ export const cashbookEntries = sqliteTable('cashbook_entries', {
   createdBy: text('created_by').notNull(),
 });
 
+export const cashbookCategories = sqliteTable('cashbook_categories', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  type: text('type', { enum: ['income', 'expense'] }).notNull(),
+  name: text('name').notNull(),
+  active: integer('active', { mode: 'boolean' }).notNull().default(true),
+  createdAt: text('created_at').notNull(),
+  createdBy: text('created_by').notNull(),
+}, (table) => ({
+  tenantTypeNameUnique: uniqueIndex('cashbook_categories_tenant_type_name_uidx').on(table.tenantId, table.type, table.name),
+  tenantTypeActiveIdx: index('cashbook_categories_tenant_type_active_idx').on(table.tenantId, table.type, table.active),
+}));
+
 export const stockReservations = sqliteTable('stock_reservations', {
   id: text('id').primaryKey(),
   tenantId: text('tenant_id').notNull().references(() => tenants.id),
@@ -614,6 +627,21 @@ export const auditLogs = sqliteTable('audit_logs', {
   entityId: text('entity_id').notNull(),
   tenantId: text('tenant_id'),
   meta: text('meta'),
+  createdAt: text('created_at').notNull(),
+});
+
+export const notifications = sqliteTable('notifications', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull().references(() => tenants.id),
+  recipientUserId: text('recipient_user_id').notNull().references(() => users.id),
+  actorId: text('actor_id').notNull().references(() => users.id),
+  type: text('type').notNull(),
+  title: text('title').notNull(),
+  body: text('body').notNull().default(''),
+  entityType: text('entity_type'),
+  entityId: text('entity_id'),
+  isRead: integer('is_read').notNull().default(0),
+  readAt: text('read_at'),
   createdAt: text('created_at').notNull(),
 });
 

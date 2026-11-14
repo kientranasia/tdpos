@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowDownCircle, ArrowUpCircle, BookText, Download, Plus } from 'lucide-react';
-import { cashAccountsApi, cashbookApi } from '../lib/api';
+import { ArrowDownCircle, ArrowUpCircle, BookText, Check, ChevronDown, Download, Plus, Search, Tag } from 'lucide-react';
+import { cashAccountsApi, cashbookApi, cashbookCategoriesApi } from '../lib/api';
 import { CashbookEntry } from '../types';
 import { formatCurrency } from '../lib/utils';
 import { Button } from '../components/ui/Button';
@@ -10,6 +10,69 @@ import AppPageHeader from '../components/layout/AppPageHeader';
 import { useApp } from '../context/AppContext';
 
 const technicalIdPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+
+type CounterpartyType = 'customer' | 'supplier' | 'employee' | 'shipping_partner' | 'other';
+
+type SearchOption = {
+  value: string;
+  label: string;
+  secondary?: string;
+};
+
+function SearchSelect({
+  value,
+  options,
+  onChange,
+  placeholder,
+  searchPlaceholder = 'Tìm kiếm',
+  emptyText = 'Không có dữ liệu phù hợp',
+}: {
+  value: string;
+  options: SearchOption[];
+  onChange: (value: string) => void;
+  placeholder: string;
+  searchPlaceholder?: string;
+  emptyText?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const normalizedQuery = query.trim().toLocaleLowerCase('vi-VN');
+  const filteredOptions = options.filter((option) => `${option.label} ${option.secondary || ''}`.toLocaleLowerCase('vi-VN').includes(normalizedQuery));
+  const selected = options.find((option) => option.value === value);
+
+  useEffect(() => {
+    if (!open) setQuery('');
+  }, [open]);
+
+  return (
+    <div className="relative mt-1">
+      <button type="button" onClick={() => setOpen((previous) => !previous)} className="flex h-10 w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 text-left text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500">
+        <span className={selected ? 'truncate' : 'truncate text-slate-400'}>{selected?.label || placeholder}</span>
+        <ChevronDown className="ml-2 h-4 w-4 shrink-0 text-slate-400" />
+      </button>
+      {open && (
+        <div className="absolute left-0 right-0 top-11 z-30 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">
+          <div className="border-b border-slate-100 p-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+              <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setOpen(false); }} placeholder={searchPlaceholder} className="h-9 w-full rounded-md border border-slate-200 pl-8 pr-2 text-sm outline-none focus:border-sky-500" />
+            </div>
+          </div>
+          <div className="max-h-52 overflow-y-auto p-1">
+            {filteredOptions.length === 0 ? (
+              <p className="px-3 py-3 text-center text-xs text-slate-500">{emptyText}</p>
+            ) : filteredOptions.map((option) => (
+              <button key={option.value} type="button" onClick={() => { onChange(option.value); setOpen(false); }} className="flex w-full items-start justify-between rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50">
+                <span className="min-w-0"><span className="block truncate text-slate-800">{option.label}</span>{option.secondary && <span className="block truncate text-xs text-slate-400">{option.secondary}</span>}</span>
+                {option.value === value && <Check className="ml-2 mt-0.5 h-4 w-4 shrink-0 text-sky-600" />}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const readableEntryNote = (entry: CashbookEntry) => {
   const note = entry.displayNote || entry.note || '';
@@ -35,6 +98,10 @@ export default function Cashbook() {
   const [entries, setEntries] = useState<CashbookEntry[]>([]);
   const [accounts, setAccounts] = useState<any[]>([]);
   const [participants, setParticipants] = useState<{ users: any[]; customers: any[]; suppliers: any[] }>({ users: [], customers: [], suppliers: [] });
+  const [categoryOptions, setCategoryOptions] = useState<any[]>([]);
+  const [categoryLoading, setCategoryLoading] = useState(false);
+  const [showCategoryCreator, setShowCategoryCreator] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
   const [accountFilter, setAccountFilter] = useState('all');
   const [loading, setLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -48,7 +115,7 @@ export default function Cashbook() {
     note: '',
     accountId: '',
     actorId: '',
-    counterpartyType: 'other' as 'customer' | 'supplier' | 'other',
+    counterpartyType: 'other' as CounterpartyType,
     counterpartyId: '',
     counterpartyName: '',
   });
@@ -79,6 +146,14 @@ export default function Cashbook() {
     cashbookApi.participants().then(setParticipants).catch(() => setParticipants({ users: [], customers: [], suppliers: [] }));
   }, [showModal]);
   useEffect(() => {
+    if (!showModal) return;
+    setCategoryLoading(true);
+    cashbookCategoriesApi.list(form.type)
+      .then(setCategoryOptions)
+      .catch(() => setCategoryOptions([]))
+      .finally(() => setCategoryLoading(false));
+  }, [showModal, form.type]);
+  useEffect(() => {
     if (currentUser?.id) setForm((previous) => ({ ...previous, actorId: previous.actorId || currentUser.id }));
   }, [currentUser?.id]);
 
@@ -96,15 +171,54 @@ export default function Cashbook() {
       setError('Số tiền phải lớn hơn 0.');
       return;
     }
+    if (!form.category) {
+      setError(`Vui lòng chọn loại ${form.type === 'income' ? 'thu' : 'chi'} hoặc tạo loại mới.`);
+      return;
+    }
     try {
       const created = await cashbookApi.create(form);
       setEntries((prev) => [created, ...prev]);
       setShowModal(false);
       setForm({ type: 'income', amount: 0, category: '', note: '', accountId: '', actorId: currentUser?.id || '', counterpartyType: 'other', counterpartyId: '', counterpartyName: '' });
+      setShowCategoryCreator(false);
+      setNewCategoryName('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Không thể tạo giao dịch.');
     }
   };
+
+  const createCategory = async () => {
+    const name = newCategoryName.replace(/\s+/g, ' ').trim();
+    if (!name) {
+      setError(`Nhập tên loại ${form.type === 'income' ? 'thu' : 'chi'}.`);
+      return;
+    }
+    try {
+      const created = await cashbookCategoriesApi.create({ type: form.type, name });
+      setCategoryOptions((previous) => [...previous, created].sort((a, b) => a.name.localeCompare(b.name, 'vi')));
+      setForm((previous) => ({ ...previous, category: created.name }));
+      setNewCategoryName('');
+      setShowCategoryCreator(false);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Không thể tạo loại thu chi.');
+    }
+  };
+
+  const actorOptions: SearchOption[] = participants.users.map((user) => ({ value: user.id, label: user.name, secondary: user.email || user.role }));
+  const counterpartyTypeOptions: SearchOption[] = [
+    { value: 'customer', label: 'Khách hàng' },
+    { value: 'supplier', label: 'Nhà cung cấp / đối tác' },
+    { value: 'employee', label: 'Nhân viên' },
+    { value: 'shipping_partner', label: 'Đơn vị vận chuyển' },
+    { value: 'other', label: 'Khác' },
+  ];
+  const counterpartyOptions: SearchOption[] = (form.counterpartyType === 'customer' ? participants.customers : form.counterpartyType === 'supplier' ? participants.suppliers : participants.users).map((item) => ({
+    value: item.id,
+    label: item.name,
+    secondary: item.code || item.email || item.phone || item.role,
+  }));
+  const counterpartyTypeLabel = counterpartyTypeOptions.find((option) => option.value === form.counterpartyType)?.label || 'Đối tượng';
 
   const exportCsv = () => {
     const header = ['Thoi gian', 'Loai', 'Tai khoan', 'Danh muc', 'So tien', 'Nguoi thu/chi', 'Nguoi nop/nhan', 'Ghi chu'];
@@ -224,24 +338,28 @@ export default function Cashbook() {
 
       {showModal && (
         <div className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4">
-          <form onSubmit={submit} className="max-h-[calc(100dvh-1rem)] w-full max-w-md space-y-3 overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 sm:p-5">
+          <form onSubmit={submit} className="max-h-[calc(100dvh-1rem)] w-full max-w-2xl space-y-3 overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 sm:p-5">
             <div className="flex items-start justify-between gap-3">
               <div><h3 className="text-base font-semibold text-slate-900">Tạo phiếu {form.type === 'income' ? 'thu' : 'chi'} tiền</h3><p className="mt-0.5 text-xs text-slate-500">Thông tin người thực hiện và đối tác được lưu cùng giao dịch.</p></div>
               <button type="button" onClick={() => setShowModal(false)} className="text-xl leading-none text-slate-400 hover:text-slate-700" aria-label="Đóng">×</button>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <button type="button" onClick={() => setForm((p) => ({ ...p, type: 'income' }))} className={`h-10 rounded-lg border ${form.type === 'income' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-600'} text-sm`}>
+              <button type="button" onClick={() => setForm((p) => ({ ...p, type: 'income', category: '' }))} className={`h-10 rounded-lg border ${form.type === 'income' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-600'} text-sm`}>
                 <ArrowDownCircle className="inline h-4 w-4 mr-1" /> Thu
               </button>
-              <button type="button" onClick={() => setForm((p) => ({ ...p, type: 'expense' }))} className={`h-10 rounded-lg border ${form.type === 'expense' ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-slate-200 text-slate-600'} text-sm`}>
+              <button type="button" onClick={() => setForm((p) => ({ ...p, type: 'expense', category: '' }))} className={`h-10 rounded-lg border ${form.type === 'expense' ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-slate-200 text-slate-600'} text-sm`}>
                 <ArrowUpCircle className="inline h-4 w-4 mr-1" /> Chi
               </button>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
-              <label className="text-xs font-medium text-slate-600">Loại {form.type === 'income' ? 'thu' : 'chi'}<Input value={form.category} onChange={(e) => setForm((p) => ({ ...p, category: e.target.value }))} placeholder={form.type === 'income' ? 'Ví dụ: Thu công nợ' : 'Ví dụ: Điện nước'} /></label>
-              <label className="text-xs font-medium text-slate-600">{form.type === 'income' ? 'Người thu' : 'Người chi'}<select value={form.actorId} onChange={(e) => setForm((p) => ({ ...p, actorId: e.target.value }))} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"><option value="">Chọn tài khoản</option>{participants.users.map((user) => <option key={user.id} value={user.id}>{user.name}{user.email ? ` · ${user.email}` : ''}</option>)}</select></label>
-              <label className="text-xs font-medium text-slate-600">{form.type === 'income' ? 'Đối tượng nộp' : 'Đối tượng nhận'}<select value={form.counterpartyType} onChange={(e) => setForm((p) => ({ ...p, counterpartyType: e.target.value as 'customer' | 'supplier' | 'other', counterpartyId: '', counterpartyName: '' }))} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"><option value="customer">Khách hàng</option><option value="supplier">Nhà cung cấp</option><option value="other">Khác</option></select></label>
-              <label className="text-xs font-medium text-slate-600">{form.type === 'income' ? 'Tên người nộp' : 'Tên người nhận'}{form.counterpartyType === 'other' ? <Input value={form.counterpartyName} onChange={(e) => setForm((p) => ({ ...p, counterpartyName: e.target.value }))} placeholder="Nhập tên đối tác" /> : <select value={form.counterpartyId} onChange={(e) => { const collection = form.counterpartyType === 'customer' ? participants.customers : participants.suppliers; const selected = collection.find((item) => item.id === e.target.value); setForm((p) => ({ ...p, counterpartyId: e.target.value, counterpartyName: selected?.name || '' })); }} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"><option value="">Chọn đối tác</option>{(form.counterpartyType === 'customer' ? participants.customers : participants.suppliers).map((item) => <option key={item.id} value={item.id}>{item.code ? `${item.code} · ` : ''}{item.name}</option>)}</select>}</label>
+              <div className="text-xs font-medium text-slate-600">
+                <div className="flex items-center justify-between"><span>Loại {form.type === 'income' ? 'thu' : 'chi'}</span><button type="button" onClick={() => setShowCategoryCreator((previous) => !previous)} className="inline-flex items-center gap-1 text-sky-700 hover:underline"><Tag className="h-3.5 w-3.5" /> Tạo loại</button></div>
+                <SearchSelect value={form.category} options={categoryOptions.map((item) => ({ value: item.name, label: item.name }))} onChange={(value) => setForm((previous) => ({ ...previous, category: value }))} placeholder={categoryLoading ? 'Đang tải danh sách...' : `Chọn loại ${form.type === 'income' ? 'thu' : 'chi'}`} searchPlaceholder={`Tìm loại ${form.type === 'income' ? 'thu' : 'chi'}`} emptyText="Chưa có loại phù hợp" />
+                {showCategoryCreator && <div className="mt-2 flex gap-2"><Input autoFocus value={newCategoryName} onChange={(event) => setNewCategoryName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void createCategory(); } }} placeholder={`Tên loại ${form.type === 'income' ? 'thu' : 'chi'}`} /><Button type="button" className="shrink-0" onClick={() => void createCategory()}>Lưu</Button></div>}
+              </div>
+              <label className="text-xs font-medium text-slate-600">{form.type === 'income' ? 'Người thu' : 'Người chi'}<SearchSelect value={form.actorId} options={actorOptions} onChange={(value) => setForm((previous) => ({ ...previous, actorId: value }))} placeholder="Chọn tài khoản nhân viên" searchPlaceholder="Tìm người thu/chi" emptyText="Không tìm thấy tài khoản" /></label>
+              <label className="text-xs font-medium text-slate-600">{form.type === 'income' ? 'Đối tượng nộp' : 'Đối tượng nhận'}<select value={form.counterpartyType} onChange={(e) => setForm((p) => ({ ...p, counterpartyType: e.target.value as CounterpartyType, counterpartyId: '', counterpartyName: '' }))} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">{counterpartyTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+              <div className="text-xs font-medium text-slate-600"><span>{form.type === 'income' ? 'Tên người nộp' : 'Tên người nhận'}</span>{['customer', 'supplier', 'employee'].includes(form.counterpartyType) ? <SearchSelect value={form.counterpartyId} options={counterpartyOptions} onChange={(value) => { const collection = form.counterpartyType === 'customer' ? participants.customers : form.counterpartyType === 'supplier' ? participants.suppliers : participants.users; const selected = collection.find((item) => item.id === value); setForm((previous) => ({ ...previous, counterpartyId: value, counterpartyName: selected?.name || '' })); }} placeholder={`Chọn ${counterpartyTypeLabel.toLocaleLowerCase('vi-VN')}`} searchPlaceholder={`Tìm ${counterpartyTypeLabel.toLocaleLowerCase('vi-VN')}`} emptyText="Không tìm thấy đối tượng" /> : <Input value={form.counterpartyName} onChange={(e) => setForm((p) => ({ ...p, counterpartyName: e.target.value }))} placeholder={form.counterpartyType === 'shipping_partner' ? 'Nhập tên đơn vị vận chuyển' : 'Nhập tên đối tượng'} />}</div>
               <label className="text-xs font-medium text-slate-600 sm:col-span-2">Số tiền<Input type="number" min="0" step="0.01" value={form.amount || ''} onChange={(e) => setForm((p) => ({ ...p, amount: Number(e.target.value) }))} placeholder="Nhập số tiền" /></label>
               <label className="text-xs font-medium text-slate-600 sm:col-span-2">Tài khoản ghi nhận<select value={form.accountId} onChange={(e) => setForm((p) => ({ ...p, accountId: e.target.value }))} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"><option value="">Tự động: Tiền mặt</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
               <label className="text-xs font-medium text-slate-600 sm:col-span-2">Ghi chú<textarea value={form.note} onChange={(e) => setForm((p) => ({ ...p, note: e.target.value }))} placeholder="Nhập ghi chú" className="mt-1 min-h-20 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-sky-500" /></label>

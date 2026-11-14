@@ -83,6 +83,22 @@ export interface User {
   status: 'active' | 'inactive';
 }
 
+export interface AppNotification {
+  id: string;
+  tenantId: string;
+  recipientUserId: string;
+  actorId: string;
+  actorName?: string | null;
+  type: string;
+  title: string;
+  body: string;
+  entityType?: string | null;
+  entityId?: string | null;
+  isRead: number;
+  readAt?: string | null;
+  createdAt: string;
+}
+
 export interface Product {
   id: string;
   tenantId: string;
@@ -401,7 +417,7 @@ export interface CashbookEntry {
   accountId?: string | null;
   actorId?: string | null;
   actorName?: string | null;
-  counterpartyType?: 'customer' | 'supplier' | 'other' | null;
+  counterpartyType?: 'customer' | 'supplier' | 'employee' | 'shipping_partner' | 'other' | null;
   counterpartyId?: string | null;
   counterpartyName?: string | null;
   displayNote?: string;

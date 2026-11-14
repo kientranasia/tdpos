@@ -83,6 +83,7 @@ const copyOrder = [
   'supplier_credit_ledger',
   'debt_ledger',
   'cashbook_entries',
+  'cashbook_categories',
   'payments',
   'payment_allocations',
   'stock_reservations',

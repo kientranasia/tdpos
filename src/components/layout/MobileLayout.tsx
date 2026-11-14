@@ -1,10 +1,11 @@
 import { NavLink, Outlet, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Home, ShoppingCart, Package, Users, Truck, Wallet, LogOut, Receipt, Settings, PanelLeftClose, PanelLeftOpen, Bell, UserRound, BookText, Menu, ClipboardList, ClipboardCheck, BarChart3, RotateCcw, PackageX, HandCoins } from 'lucide-react';
+import { Home, ShoppingCart, Package, Users, Truck, Wallet, LogOut, Receipt, Settings, PanelLeftClose, PanelLeftOpen, UserRound, BookText, Menu, ClipboardList, ClipboardCheck, BarChart3, RotateCcw, PackageX, HandCoins } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { useState } from 'react';
 import { authApi } from '../../lib/api';
 import { firstAllowedPath, isMenuAllowed, canAccessPath } from '../../lib/permissions';
 import BrandMark from '../BrandMark';
+import NotificationBell from './NotificationBell';
 
 export default function MobileLayout() {
   const { activeTenant, currentUser, loading, setActiveTenant, setCurrentUser, setPermissions, products, permissions } = useApp();
@@ -131,18 +132,7 @@ export default function MobileLayout() {
             <ShoppingCart className="h-4 w-4 md:h-5 md:w-5" />
           </button>
 
-          <button
-            onClick={() => navigate('/app/inventory')}
-            className="h-9 w-9 md:h-10 md:w-10 rounded-lg brand-surface text-slate-600 hover:text-sky-600 transition-colors flex items-center justify-center relative"
-            title="Thông báo tồn kho"
-          >
-            <Bell className="h-4 w-4 md:h-5 md:w-5" />
-            {lowStockCount > 0 && (
-              <span className="absolute -top-1 -right-1 h-4 min-w-4 px-1 rounded-full bg-orange-500 text-white text-[10px] leading-4 font-semibold text-center">
-                {lowStockCount > 9 ? '9+' : lowStockCount}
-              </span>
-            )}
-          </button>
+          <NotificationBell lowStockCount={lowStockCount} />
 
           <button
             onClick={() => setShowAccountMenu((prev) => !prev)}

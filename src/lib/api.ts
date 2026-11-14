@@ -72,6 +72,12 @@ export const usersApi = {
   delete: (id: string) => request<any>(`/users/${id}`, { method: 'DELETE' }),
 };
 
+export const notificationsApi = {
+  list: (limit = 40) => request<{ items: any[]; unreadCount: number }>('/notifications', { params: { limit: String(limit) } }),
+  markRead: (id: string) => request<{ ok: boolean }>(`/notifications/${encodeURIComponent(id)}/read`, { method: 'POST', body: {} }),
+  markAllRead: () => request<{ ok: boolean }>('/notifications/read-all', { method: 'POST', body: {} }),
+};
+
 export const permissionsApi = {
   list: () => request<any[]>('/permissions'),
   getForUser: (userId: string) => request<any[]>(`/users/${userId}/permissions`),
@@ -278,8 +284,13 @@ export const paymentsApi = {
 export const cashbookApi = {
   list: (filters?: { from?: string; to?: string; type?: 'income' | 'expense' }) => request<any[]>('/cashbook', { params: { ...(filters || {}), _ts: String(Date.now()) } as any }),
   participants: () => request<{ users: any[]; customers: any[]; suppliers: any[] }>('/cashbook/participants'),
-  create: (data: { type: 'income' | 'expense'; amount: number; category?: string; note?: string; referenceId?: string | null; accountId?: string | null; actorId?: string | null; actorName?: string; counterpartyType?: 'customer' | 'supplier' | 'other' | null; counterpartyId?: string | null; counterpartyName?: string }) =>
+  create: (data: { type: 'income' | 'expense'; amount: number; category: string; note?: string; referenceId?: string | null; accountId?: string | null; actorId?: string | null; actorName?: string; counterpartyType?: 'customer' | 'supplier' | 'employee' | 'shipping_partner' | 'other' | null; counterpartyId?: string | null; counterpartyName?: string }) =>
     request<any>('/cashbook', { method: 'POST', body: data }),
+};
+
+export const cashbookCategoriesApi = {
+  list: (type: 'income' | 'expense', search?: string) => request<any[]>('/cashbook/categories', { params: { type, search: search || '' } }),
+  create: (data: { type: 'income' | 'expense'; name: string }) => request<any>('/cashbook/categories', { method: 'POST', body: data }),
 };
 
 export const reportsApi = {

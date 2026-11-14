@@ -232,6 +232,43 @@ if (sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name
 }
 
 sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS cashbook_categories (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS cashbook_categories_tenant_type_name_uidx
+    ON cashbook_categories (tenant_id, type, name);
+  CREATE INDEX IF NOT EXISTS cashbook_categories_tenant_type_active_idx
+    ON cashbook_categories (tenant_id, type, active);
+`);
+
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    recipient_user_id TEXT NOT NULL REFERENCES users(id),
+    actor_id TEXT NOT NULL REFERENCES users(id),
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    entity_type TEXT,
+    entity_id TEXT,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    read_at TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS notifications_tenant_recipient_created_at_idx
+    ON notifications (tenant_id, recipient_user_id, created_at);
+  CREATE INDEX IF NOT EXISTS notifications_recipient_unread_idx
+    ON notifications (recipient_user_id, is_read);
+`);
+
+sqlite.exec(`
   CREATE TABLE IF NOT EXISTS permissions (
     id TEXT PRIMARY KEY,
     code TEXT NOT NULL UNIQUE,
@@ -430,6 +467,20 @@ sqlite.exec(`
     created_at TEXT NOT NULL,
     created_by TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS cashbook_categories (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS cashbook_categories_tenant_type_name_uidx
+    ON cashbook_categories (tenant_id, type, name);
+  CREATE INDEX IF NOT EXISTS cashbook_categories_tenant_type_active_idx
+    ON cashbook_categories (tenant_id, type, active);
 
   CREATE TABLE IF NOT EXISTS stock_movements (
     id TEXT PRIMARY KEY,

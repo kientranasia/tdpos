@@ -5,7 +5,7 @@ import cors from 'cors';
 import morgan from 'morgan';
 import { controlDb, db, tenantRegistry } from './db';
 import * as schema from './schema';
-import { eq, desc, and, sql, inArray, ne, or } from 'drizzle-orm';
+import { eq, desc, and, sql, inArray, ne, or, asc } from 'drizzle-orm';
 import { v4 as uuid } from 'uuid';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -174,6 +174,50 @@ const writeTenantAudit = async (req: Request, action: string, entityType: string
     id: uuid(), actorType: 'tenant_user', actorId: req.user.id, action, entityType, entityId,
     tenantId: req.user.tenantId, meta: JSON.stringify(meta), createdAt: new Date().toISOString(),
   }).run();
+};
+
+type OwnerNotificationInput = {
+  tenantId: string;
+  actorId: string;
+  type: string;
+  title: string;
+  body: string;
+  entityType?: string | null;
+  entityId?: string | null;
+};
+
+const notifyTenantOwners = async (input: OwnerNotificationInput, client: any = db) => {
+  const owners = await client.select({ id: schema.users.id })
+    .from(schema.users)
+    .where(and(
+      eq(schema.users.tenantId, input.tenantId),
+      eq(schema.users.role, 'owner' as any),
+      eq(schema.users.status, 'active'),
+    ))
+    .all();
+  const recipients = owners.filter((owner: any) => owner.id !== input.actorId);
+  if (!recipients.length) return;
+  const createdAt = new Date().toISOString();
+  await client.insert(schema.notifications).values(recipients.map((owner: any) => ({
+    id: uuid(),
+    tenantId: input.tenantId,
+    recipientUserId: owner.id,
+    actorId: input.actorId,
+    type: input.type,
+    title: input.title,
+    body: input.body,
+    entityType: input.entityType || null,
+    entityId: input.entityId || null,
+    isRead: 0,
+    readAt: null,
+    createdAt,
+  }))).run();
+};
+
+const safeNotifyTenantOwners = (input: OwnerNotificationInput) => {
+  return notifyTenantOwners(input).catch((error) => {
+    console.error('Notification error:', error);
+  });
 };
 
 const sha256File = (filePath: string) => {
@@ -578,6 +622,83 @@ app.get('/api/setup/status', async (_req, res) => {
 });
 
 app.use('/api', authenticateUser);
+
+// ─── Owner notifications ─────────────────────────────────
+app.get('/api/notifications', async (req, res) => {
+  try {
+    if (!ensureOwner(req, res)) return;
+    const requestedLimit = Number(req.query.limit);
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(Math.floor(requestedLimit), 100)
+      : 40;
+    const recipientWhere = and(
+      eq(schema.notifications.tenantId, req.user.tenantId),
+      eq(schema.notifications.recipientUserId, req.user.id),
+    );
+    const [items, unreadRow] = await Promise.all([
+      db.select().from(schema.notifications)
+        .where(recipientWhere)
+        .orderBy(desc(schema.notifications.createdAt))
+        .limit(limit)
+        .all(),
+      db.select({ count: sql<number>`count(*)` })
+        .from(schema.notifications)
+        .where(and(recipientWhere, eq(schema.notifications.isRead, 0)))
+        .get(),
+    ]);
+    const actorIds: string[] = Array.from(new Set(items.map((item) => item.actorId).filter((value): value is string => Boolean(value))));
+    const actors = actorIds.length
+      ? await db.select({ id: schema.users.id, name: schema.users.name })
+        .from(schema.users)
+        .where(and(eq(schema.users.tenantId, req.user.tenantId), inArray(schema.users.id, actorIds)))
+        .all()
+      : [];
+    const actorNames = new Map(actors.map((actor) => [actor.id, actor.name]));
+    res.json({
+      items: items.map((item) => ({ ...item, actorName: actorNames.get(item.actorId) || null })),
+      unreadCount: Number(unreadRow?.count || 0),
+    });
+  } catch (err) {
+    console.error('GET /api/notifications error:', err);
+    res.status(500).json({ error: 'Không thể tải thông báo' });
+  }
+});
+
+app.post('/api/notifications/:id/read', async (req, res) => {
+  try {
+    if (!ensureOwner(req, res)) return;
+    await db.update(schema.notifications)
+      .set({ isRead: 1, readAt: new Date().toISOString() })
+      .where(and(
+        eq(schema.notifications.id, req.params.id),
+        eq(schema.notifications.tenantId, req.user.tenantId),
+        eq(schema.notifications.recipientUserId, req.user.id),
+      ))
+      .run();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('POST /api/notifications/:id/read error:', err);
+    res.status(500).json({ error: 'Không thể cập nhật thông báo' });
+  }
+});
+
+app.post('/api/notifications/read-all', async (req, res) => {
+  try {
+    if (!ensureOwner(req, res)) return;
+    await db.update(schema.notifications)
+      .set({ isRead: 1, readAt: new Date().toISOString() })
+      .where(and(
+        eq(schema.notifications.tenantId, req.user.tenantId),
+        eq(schema.notifications.recipientUserId, req.user.id),
+        eq(schema.notifications.isRead, 0),
+      ))
+      .run();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('POST /api/notifications/read-all error:', err);
+    res.status(500).json({ error: 'Không thể đánh dấu thông báo' });
+  }
+});
 
 const getMachineHash = () => {
   const network = Object.values(os.networkInterfaces()).flat().filter(Boolean).map((item) => `${item?.mac}:${item?.address}`).sort().join('|');
@@ -2963,6 +3084,63 @@ app.get('/api/cashbook/participants', async (req, res) => {
   }
 });
 
+app.get('/api/cashbook/categories', async (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'cashbook.create')) return;
+    const type = String(req.query.type || '');
+    if (!['income', 'expense'].includes(type)) return res.status(400).json({ error: 'Loại giao dịch không hợp lệ' });
+    const search = normalizeSearchText(req.query.search);
+    const rows = await db.select().from(schema.cashbookCategories)
+      .where(and(
+        eq(schema.cashbookCategories.tenantId, req.user.tenantId),
+        eq(schema.cashbookCategories.type, type as 'income' | 'expense'),
+        eq(schema.cashbookCategories.active, true),
+      ))
+      .orderBy(asc(schema.cashbookCategories.name))
+      .all();
+    res.json(search
+      ? rows.filter((row: any) => normalizeSearchText(row.name).includes(search))
+      : rows);
+  } catch (err) {
+    console.error('GET /api/cashbook/categories error:', err);
+    res.status(500).json({ error: 'Không thể tải danh sách loại thu chi' });
+  }
+});
+
+app.post('/api/cashbook/categories', async (req, res) => {
+  try {
+    if (!ensurePermission(req, res, 'cashbook.create')) return;
+    const type = String(req.body?.type || '');
+    const name = String(req.body?.name || '').replace(/\s+/g, ' ').trim();
+    if (!['income', 'expense'].includes(type)) return res.status(400).json({ error: 'Loại giao dịch không hợp lệ' });
+    if (!name) return res.status(400).json({ error: 'Tên loại thu chi là bắt buộc' });
+    if (name.length > 120) return res.status(400).json({ error: 'Tên loại thu chi tối đa 120 ký tự' });
+    const existing = await db.select().from(schema.cashbookCategories)
+      .where(and(
+        eq(schema.cashbookCategories.tenantId, req.user.tenantId),
+        eq(schema.cashbookCategories.type, type as 'income' | 'expense'),
+        eq(schema.cashbookCategories.active, true),
+      )).all();
+    if (existing.some((row: any) => normalizeSearchText(row.name) === normalizeSearchText(name))) {
+      return res.status(409).json({ error: 'Loại thu chi đã tồn tại' });
+    }
+    const category = {
+      id: uuid(),
+      tenantId: req.user.tenantId,
+      type: type as 'income' | 'expense',
+      name,
+      active: true,
+      createdAt: new Date().toISOString(),
+      createdBy: req.user.id,
+    };
+    await db.insert(schema.cashbookCategories).values(category).run();
+    res.status(201).json(category);
+  } catch (err) {
+    console.error('POST /api/cashbook/categories error:', err);
+    res.status(500).json({ error: 'Không thể tạo loại thu chi' });
+  }
+});
+
 app.get('/api/suppliers', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'partners.view')) return;
@@ -3184,6 +3362,15 @@ app.post('/api/purchases', async (req, res) => {
       }
       if (directPaid > 0) await tx.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'expense', amount: directPaid, category: 'Nhập hàng', note: `Thanh toán nhập hàng ${purchaseId}`, referenceId: purchaseId, accountId, createdAt: timestamp, createdBy: req.user.id }).run();
     });
+    await safeNotifyTenantOwners({
+      tenantId: req.user.tenantId,
+      actorId: req.user.id,
+      type: 'purchase',
+      title: 'Có phiếu nhập hàng mới',
+      body: `${documentNo} · ${supplier.name} · ${finalAmount.toLocaleString('vi-VN')} đ`,
+      entityType: 'purchase',
+      entityId: purchaseId,
+    });
     res.status(201).json(await db.select().from(schema.purchases).where(eq(schema.purchases.id, purchaseId)).get());
   } catch (err) {
     console.error('POST /api/purchases error:', err);
@@ -3259,6 +3446,15 @@ app.post('/api/purchases/:id/returns', async (req, res) => {
         await tx.insert(schema.payableLedger).values({ id: uuid(), tenantId: req.user.tenantId, supplierId: supplier.id, purchaseId: purchase.id, amount: appliedPayable, type: 'decrease', note: `Giảm công nợ do trả hàng ${returnId}`, createdAt: timestamp, createdBy: req.user.id }).run();
       }
       if (creditAmount > 0) await tx.insert(schema.supplierCreditLedger).values({ id: uuid(), tenantId: req.user.tenantId, supplierId: supplier.id, purchaseReturnId: returnId, purchaseId: purchase.id, amount: creditAmount, type: 'increase', accountId: null, note: `Số dư được nhận từ trả hàng ${returnId}`, createdBy: req.user.id, createdAt: timestamp }).run();
+    });
+    await safeNotifyTenantOwners({
+      tenantId: req.user.tenantId,
+      actorId: req.user.id,
+      type: 'purchase_return',
+      title: 'Có phiếu trả hàng nhập mới',
+      body: `${purchase.documentNo || 'Phiếu nhập'} · ${supplier.name} · ${totalAmount.toLocaleString('vi-VN')} đ`,
+      entityType: 'purchase_return',
+      entityId: returnId,
     });
     res.status(201).json(await db.select().from(schema.purchaseReturns).where(eq(schema.purchaseReturns.id, returnId)).get());
   } catch (err) {
@@ -4122,6 +4318,15 @@ app.post('/api/invoices', async (req, res) => {
     }
 
     });
+    await safeNotifyTenantOwners({
+      tenantId: req.user.tenantId,
+      actorId: req.user.id,
+      type: 'sale',
+      title: 'Có giao dịch bán hàng mới',
+      body: `${documentNo} · ${customer?.name || 'Khách lẻ'} · ${Number(invoice.finalAmount || 0).toLocaleString('vi-VN')} đ`,
+      entityType: 'invoice',
+      entityId: invoiceId,
+    });
     res.status(201).json(invoice);
   } catch (err) {
     console.error('POST /api/invoices error:', err);
@@ -4233,6 +4438,15 @@ app.patch('/api/invoices/:id', async (req, res) => {
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'Không có trường chỉnh sửa hợp lệ.' });
     await db.update(schema.invoices).set({ ...updates, version: invoice.version + 1 }).where(and(eq(schema.invoices.id, invoice.id), eq(schema.invoices.version, invoice.version))).run();
     writeAudit(req, 'invoice.update', invoice.id, { fields: Object.keys(updates) });
+    await safeNotifyTenantOwners({
+      tenantId: req.user.tenantId,
+      actorId: req.user.id,
+      type: 'invoice_update',
+      title: 'Hóa đơn vừa được cập nhật',
+      body: `${invoice.documentNo || 'Hóa đơn'} · ${Object.keys(updates).join(', ')}`,
+      entityType: 'invoice',
+      entityId: invoice.id,
+    });
     res.json(await invoiceById(req.user.tenantId, invoice.id));
   } catch (err) { console.error('PATCH /api/invoices/:id error:', err); res.status(500).json({ error: 'Internal server error' }); }
 });
@@ -4246,6 +4460,7 @@ app.post('/api/invoices/:id/check', async (req, res) => {
     const now = new Date().toISOString();
     const updated = await db.update(schema.invoices).set({ workflowStatus: 'checked', checkedBy: req.user.id, checkedAt: now, version: invoice.version + 1 }).where(eq(schema.invoices.id, invoice.id)).returning().get();
     writeAudit(req, 'invoice.check', invoice.id);
+    await safeNotifyTenantOwners({ tenantId: req.user.tenantId, actorId: req.user.id, type: 'invoice_update', title: 'Hóa đơn đã được kiểm', body: invoice.documentNo || 'Hóa đơn', entityType: 'invoice', entityId: invoice.id });
     res.json(updated);
   } catch (err) { console.error('POST invoice check error:', err); res.status(500).json({ error: 'Internal server error' }); }
 });
@@ -4266,6 +4481,7 @@ app.post('/api/invoices/:id/pick', async (req, res) => {
       return await db.update(schema.invoices).set({ workflowStatus: 'ready_to_close', pickedBy: req.user.id, pickedAt: now, version: invoice.version + 1 }).where(and(eq(schema.invoices.id, invoice.id), eq(schema.invoices.version, invoice.version))).returning().get();
     });
     await writeAudit(req, 'invoice.pick', invoice.id, { items });
+    await safeNotifyTenantOwners({ tenantId: req.user.tenantId, actorId: req.user.id, type: 'invoice_update', title: 'Hóa đơn đã được chuẩn bị', body: invoice.documentNo || 'Hóa đơn', entityType: 'invoice', entityId: invoice.id });
     res.json(updated);
   } catch (err) { console.error('POST invoice pick error:', err); res.status(500).json({ error: 'Internal server error' }); }
 });
@@ -4279,6 +4495,7 @@ app.post('/api/invoices/:id/close', async (req, res) => {
     const items = await db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoice.id)).all();
     const updated = await postDraftInvoice(req, invoice.id, items);
     await writeAudit(req, 'invoice.close', invoice.id);
+    await safeNotifyTenantOwners({ tenantId: req.user.tenantId, actorId: req.user.id, type: 'invoice_update', title: 'Hóa đơn đã được chốt', body: invoice.documentNo || 'Hóa đơn', entityType: 'invoice', entityId: invoice.id });
     res.json(updated);
   } catch (err) { console.error('POST invoice close error:', err); res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' }); }
 });
@@ -4295,6 +4512,7 @@ app.post('/api/invoices/:id/cancel', async (req, res) => {
       return await db.update(schema.invoices).set({ workflowStatus: 'cancelled', cancelledBy: req.user.id, cancelledAt: now, version: invoice.version + 1 }).where(and(eq(schema.invoices.id, invoice.id), eq(schema.invoices.version, invoice.version))).returning().get();
     });
     await writeAudit(req, 'invoice.cancel', invoice.id, { reason: req.body?.reason || '' });
+    await safeNotifyTenantOwners({ tenantId: req.user.tenantId, actorId: req.user.id, type: 'invoice_update', title: 'Hóa đơn đã bị hủy', body: invoice.documentNo || 'Hóa đơn', entityType: 'invoice', entityId: invoice.id });
     res.json(updated);
   } catch (err) { console.error('POST invoice cancel error:', err); res.status(500).json({ error: 'Internal server error' }); }
 });
@@ -4392,6 +4610,15 @@ app.post('/api/invoices/:id/returns', async (req, res) => {
       if (refundAmount > 0) await tx.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'expense', amount: refundAmount, category: 'Hoàn tiền khách hàng', note: `Hoàn tiền phiếu ${returnId}`, referenceId: returnId, accountId: refundAccountId, createdAt: timestamp, createdBy: req.user.id }).run();
     });
     writeAudit(req, 'sales_return.create', returnId, { invoiceId: invoice.id, totalAmount, debtReduction, refundAmount });
+    await safeNotifyTenantOwners({
+      tenantId: req.user.tenantId,
+      actorId: req.user.id,
+      type: 'sales_return',
+      title: 'Có phiếu trả hàng mới',
+      body: `${invoice.documentNo || 'Hóa đơn'} · ${totalAmount.toLocaleString('vi-VN')} đ`,
+      entityType: 'sales_return',
+      entityId: returnId,
+    });
     res.status(201).json({ ...await db.select().from(schema.salesReturns).where(eq(schema.salesReturns.id, returnId)).get(), items: await db.select().from(schema.salesReturnItems).where(eq(schema.salesReturnItems.returnId, returnId)).all() });
   } catch (err) {
     console.error('POST /api/invoices/:id/returns error:', err);
@@ -4537,6 +4764,15 @@ app.post('/api/sales-returns', async (req, res) => {
     });
 
     writeAudit(req, 'sales_return.create', returnId, { invoiceId: null, source: 'standalone', totalAmount, refundAmount: totalAmount });
+    await safeNotifyTenantOwners({
+      tenantId: req.user.tenantId,
+      actorId: req.user.id,
+      type: 'sales_return',
+      title: 'Có phiếu trả hàng mới',
+      body: `Không theo hóa đơn · ${totalAmount.toLocaleString('vi-VN')} đ`,
+      entityType: 'sales_return',
+      entityId: returnId,
+    });
     res.status(201).json({
       ...await db.select().from(schema.salesReturns).where(eq(schema.salesReturns.id, returnId)).get(),
       items: await db.select().from(schema.salesReturnItems).where(eq(schema.salesReturnItems.returnId, returnId)).all(),
@@ -4628,6 +4864,15 @@ app.post('/api/payments', async (req, res) => {
       await tx.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'income', amount, category: 'Thu công nợ', note: payment.note || 'Thu công nợ', referenceId: payment.id, accountId: payment.accountId, createdAt: payment.createdAt, createdBy: req.user.id }).run();
     });
     writeAudit(req, 'payment.create', payment.id, { amount, customerId: payment.customerId, accountId: payment.accountId });
+    await safeNotifyTenantOwners({
+      tenantId: req.user.tenantId,
+      actorId: req.user.id,
+      type: 'payment',
+      title: 'Có giao dịch thu công nợ mới',
+      body: `${amount.toLocaleString('vi-VN')} đ${payment.customerId ? ' · Khách hàng có hồ sơ' : ''}`,
+      entityType: 'payment',
+      entityId: payment.id,
+    });
     res.status(201).json({ ...payment, allocations: [] });
   } catch (err) { console.error('POST /api/payments error:', err); res.status(500).json({ error: 'Internal server error' }); }
 });
@@ -4807,6 +5052,17 @@ app.post('/api/cashbook', async (req, res) => {
     const amt = Number(amount) || 0;
     if (amt <= 0) return res.status(400).json({ error: 'Amount must be greater than 0' });
 
+    const requestedCategory = String(category || '').replace(/\s+/g, ' ').trim();
+    if (!requestedCategory) return res.status(400).json({ error: `Vui lòng chọn loại ${type === 'income' ? 'thu' : 'chi'}` });
+    const categoryOptions = await db.select().from(schema.cashbookCategories)
+      .where(and(
+        eq(schema.cashbookCategories.tenantId, req.user.tenantId),
+        eq(schema.cashbookCategories.type, type as 'income' | 'expense'),
+        eq(schema.cashbookCategories.active, true),
+      )).all();
+    const selectedCategory = categoryOptions.find((item: any) => normalizeSearchText(item.name) === normalizeSearchText(requestedCategory));
+    if (!selectedCategory) return res.status(400).json({ error: `Loại ${type === 'income' ? 'thu' : 'chi'} không hợp lệ hoặc chưa được tạo` });
+
     const actorId = String(req.body?.actorId || req.user.id).trim();
     const actor = await db.select({ id: schema.users.id, name: schema.users.name })
       .from(schema.users)
@@ -4815,10 +5071,10 @@ app.post('/api/cashbook', async (req, res) => {
     if (!actor) return res.status(400).json({ error: 'Người thu/chi không hợp lệ' });
 
     const requestedCounterpartyType = String(req.body?.counterpartyType || 'other');
-    if (!['customer', 'supplier', 'other'].includes(requestedCounterpartyType)) {
+    if (!['customer', 'supplier', 'employee', 'shipping_partner', 'other'].includes(requestedCounterpartyType)) {
       return res.status(400).json({ error: 'Đối tượng thu/chi không hợp lệ' });
     }
-    const counterpartyType = requestedCounterpartyType as 'customer' | 'supplier' | 'other';
+    const counterpartyType = requestedCounterpartyType as 'customer' | 'supplier' | 'employee' | 'shipping_partner' | 'other';
     const counterpartyId = req.body?.counterpartyId ? String(req.body.counterpartyId) : null;
     let counterpartyName = String(req.body?.counterpartyName || '').trim();
     if (counterpartyType === 'customer') {
@@ -4835,6 +5091,13 @@ app.post('/api/cashbook', async (req, res) => {
         : null;
       if (!supplier) return res.status(400).json({ error: 'Nhà cung cấp không hợp lệ' });
       counterpartyName = supplier.name;
+    } else if (counterpartyType === 'employee') {
+      const employee = counterpartyId
+        ? await db.select({ id: schema.users.id, name: schema.users.name }).from(schema.users)
+          .where(and(eq(schema.users.id, counterpartyId), eq(schema.users.tenantId, req.user.tenantId), eq(schema.users.status, 'active'))).get()
+        : null;
+      if (!employee) return res.status(400).json({ error: 'Nhân viên không hợp lệ' });
+      counterpartyName = employee.name;
     }
 
     const entry = {
@@ -4842,19 +5105,28 @@ app.post('/api/cashbook', async (req, res) => {
       tenantId: req.user.tenantId,
       type,
       amount: amt,
-      category: category || 'Khác',
+      category: selectedCategory.name,
       note: note || '',
       referenceId: referenceId || null,
       accountId: req.body?.accountId || await defaultAccountForPayment(req.user.tenantId, req.body?.accountType || 'cash'),
       actorId: actor.id,
       actorName: actor.name,
       counterpartyType,
-      counterpartyId: counterpartyType === 'other' ? null : counterpartyId,
+      counterpartyId: ['customer', 'supplier', 'employee'].includes(counterpartyType) ? counterpartyId : null,
       counterpartyName,
       createdAt: new Date().toISOString(),
       createdBy: req.user.id,
     };
     await db.insert(schema.cashbookEntries).values(entry).run();
+    await safeNotifyTenantOwners({
+      tenantId: req.user.tenantId,
+      actorId: req.user.id,
+      type: type === 'income' ? 'cash_income' : 'cash_expense',
+      title: type === 'income' ? 'Có phiếu thu mới' : 'Có phiếu chi mới',
+      body: `${entry.category} · ${amt.toLocaleString('vi-VN')} đ`,
+      entityType: 'cashbook',
+      entityId: entry.id,
+    });
     res.status(201).json(entry);
   } catch (err) {
     console.error('POST /api/cashbook error:', err);
@@ -5085,6 +5357,17 @@ app.post('/api/stock-check', async (req, res) => {
       await tx.update(schema.products).set({ stock: afterStock }).where(and(eq(schema.products.id, productId), eq(schema.products.tenantId, req.user.tenantId))).run();
       await tx.insert(schema.stockMovements).values(movement).run();
     });
+    if (beforeStock !== afterStock) {
+      await safeNotifyTenantOwners({
+        tenantId: req.user.tenantId,
+        actorId: req.user.id,
+        type: 'stock_adjustment',
+        title: 'Có điều chỉnh tồn kho mới',
+        body: `${product.name} · ${beforeStock} → ${afterStock}`,
+        entityType: 'stock_movement',
+        entityId: movement.id,
+      });
+    }
     res.json(movement);
   } catch (err) {
     console.error('POST /api/stock-check error:', err);
