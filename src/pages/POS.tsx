@@ -54,7 +54,7 @@ const accountTypeForPayment = (paymentMethod: PaymentMethod) => (
 const POS_CATALOG_PAGE_SIZE = 500;
 
 export default function POS() {
-  const { products: loadedProducts, customers, activeTenant, currentUser, addInvoice, addCustomer, categories: appCategories } = useApp();
+  const { products: loadedProducts, customers, activeTenant, currentUser, permissions, addInvoice, addCustomer, categories: appCategories } = useApp();
   
   const [searchTerm, setSearchTerm] = useState('');
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
@@ -72,6 +72,8 @@ export default function POS() {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [priceLists, setPriceLists] = useState<any[]>([]);
   const [selectedPriceListId, setSelectedPriceListId] = useState('');
+  const [priceListLoading, setPriceListLoading] = useState(false);
+  const [priceListError, setPriceListError] = useState('');
   const [cashAccounts, setCashAccounts] = useState<any[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [orderNote, setOrderNote] = useState('');
@@ -97,6 +99,7 @@ export default function POS() {
   const [showOrderItemsSheet, setShowOrderItemsSheet] = useState(false);
   const [showDraftsSheet, setShowDraftsSheet] = useState(false);
   const isCashier = currentUser?.role === 'cashier';
+  const canCreateCustomer = currentUser?.role === 'owner' || permissions?.includes('partners.create') === true;
 
   const [catalogProducts, setCatalogProducts] = useState<Product[]>([]);
   const [catalogTotal, setCatalogTotal] = useState(0);
@@ -218,19 +221,42 @@ export default function POS() {
   );
 
   useEffect(() => {
-    if (!priceProductIds.length) return;
+    if (!priceProductIds.length) {
+      setPriceLists([]);
+      setPriceListError('');
+      setPriceListLoading(false);
+      return;
+    }
     let active = true;
-    priceListsApi.list(true, priceProductIds).then((lists) => {
+    setPriceListLoading(true);
+    setPriceListError('');
+    const batches: string[][] = [];
+    for (let index = 0; index < priceProductIds.length; index += 80) batches.push(priceProductIds.slice(index, index + 80));
+    Promise.all(batches.map((productIds) => priceListsApi.list(true, productIds))).then((responses) => {
       if (!active) return;
-      const availableLists = lists.filter((list: any) => list.active !== false);
-      setPriceLists((previous) => availableLists.map((list: any) => {
-        const previousItems = previous.find((item: any) => item.id === list.id)?.items || [];
-        const fetchedIds = new Set((list.items || []).map((item: any) => item.productId));
-        return { ...list, items: [...previousItems.filter((item: any) => !fetchedIds.has(item.productId)), ...(list.items || [])] };
-      }));
+      const merged = new Map<string, any>();
+      responses.flat().forEach((list: any) => {
+        const current = merged.get(list.id);
+        if (!current) {
+          merged.set(list.id, { ...list, items: [...(list.items || [])] });
+          return;
+        }
+        const items = new Map<string, any>(current.items.map((item: any) => [`${item.productId}:${item.unitName}`, item]));
+        (list.items || []).forEach((item: any) => items.set(`${item.productId}:${item.unitName}`, item));
+        merged.set(list.id, { ...current, ...list, items: Array.from(items.values()) });
+      });
+      const availableLists = Array.from(merged.values()).filter((list: any) => list.active !== false);
+      setPriceLists(availableLists);
       const defaultList = availableLists.find((list: any) => list.isDefault) || availableLists[0];
-      setSelectedPriceListId((current) => current || defaultList?.id || '');
-    }).catch(() => undefined);
+      setSelectedPriceListId((current) => current && availableLists.some((list: any) => list.id === current) ? current : defaultList?.id || '');
+      setPriceListError(availableLists.length ? '' : 'Chưa có bảng giá khả dụng cho tài khoản này.');
+    }).catch((error) => {
+      if (!active) return;
+      setPriceLists([]);
+      setPriceListError(error instanceof Error ? error.message : 'Không thể tải bảng giá.');
+    }).finally(() => {
+      if (active) setPriceListLoading(false);
+    });
     return () => { active = false; };
   }, [priceProductIds]);
 
@@ -730,6 +756,9 @@ export default function POS() {
       const itemsWithInvoiceId = cart.map(item => ({ ...item, invoiceId: persistedInvoiceId }));
       setCurrentInvoiceItems(itemsWithInvoiceId);
 
+      // The success state renders the invoice modal. Keep it explicit so the
+      // completed bill cannot disappear behind an empty POS shell on mobile.
+      setShowInvoice(true);
       setStep('success');
       setCart([]);
       setOrderDiscountValue(0);
@@ -773,8 +802,8 @@ export default function POS() {
 
   const handleCreateCustomer = () => {
     setFormError('');
-    if (isCashier) {
-      setFormError('Nhân viên bán hàng không có quyền tạo mới khách hàng.');
+    if (!canCreateCustomer) {
+      setFormError('Tài khoản chưa được cấp quyền thêm khách hàng.');
       return;
     }
     if (!newCustomer.name || !newCustomer.phone || !activeTenant) {
@@ -1452,7 +1481,7 @@ export default function POS() {
                           {formError && <p className="text-xs text-rose-600">{formError}</p>}
                           <div className="flex justify-end gap-2 pt-1">
                             <Button type="button" variant="outline" size="sm" onClick={() => setShowAddCustomer(false)}>Quay lại</Button>
-                            <Button type="button" size="sm" onClick={handleCreateCustomer} disabled={isCashier}>Lưu và chọn</Button>
+                            <Button type="button" size="sm" onClick={handleCreateCustomer} disabled={!canCreateCustomer}>Lưu và chọn</Button>
                           </div>
                         </div>
                       ) : (
@@ -1462,7 +1491,7 @@ export default function POS() {
                               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                               <Input autoFocus value={customerSearchTerm} onChange={(event) => setCustomerSearchTerm(event.target.value)} placeholder="Tìm tên hoặc số điện thoại" className="h-9 bg-white pl-8 text-xs" />
                             </div>
-                            <Button type="button" size="sm" variant="outline" onClick={() => setShowAddCustomer(true)} disabled={isCashier} title="Thêm khách hàng"><UserPlus className="h-3.5 w-3.5" /></Button>
+                            <Button type="button" size="sm" variant="outline" onClick={() => setShowAddCustomer(true)} disabled={!canCreateCustomer} title="Thêm khách hàng"><UserPlus className="h-3.5 w-3.5" /></Button>
                           </div>
                           <button type="button" onClick={() => selectCustomer(null)} className="mt-2 flex w-full items-center justify-between rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-left text-xs text-sky-800">
                             <span className="flex items-center gap-2"><User className="h-3.5 w-3.5" /> Khách lẻ / khách ngoài</span><span>Không ghi nợ</span>
@@ -1482,10 +1511,12 @@ export default function POS() {
                   <label className="mt-2 flex min-h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3">
                     <Tag className="h-4 w-4 shrink-0 text-slate-400" />
                     <span className="shrink-0 text-sm text-slate-600">Bảng giá</span>
-                    <select value={selectedPriceListId} onChange={(event) => setSelectedPriceListId(event.target.value)} className="min-w-0 flex-1 bg-transparent text-right text-sm text-slate-800 outline-none">
+                    <select value={selectedPriceListId} onChange={(event) => setSelectedPriceListId(event.target.value)} disabled={priceListLoading || !priceLists.length} aria-busy={priceListLoading} className="min-w-0 flex-1 bg-transparent text-right text-sm text-slate-800 outline-none disabled:cursor-wait disabled:text-slate-400">
+                      {!priceLists.length && <option value="">{priceListLoading ? 'Đang tải bảng giá…' : priceListError || 'Chưa có bảng giá'}</option>}
                       {priceLists.map((list: any) => <option key={list.id} value={list.id}>{list.name}</option>)}
                     </select>
                   </label>
+                  {priceListError && <p className="mt-1 text-right text-[11px] text-rose-600">{priceListError}</p>}
                   </div>
               )}
               <div className="mb-2 flex items-center justify-between gap-2">
@@ -1683,7 +1714,7 @@ export default function POS() {
               <User className="h-3.5 w-3.5 shrink-0 text-slate-400" />
               <span className="truncate text-slate-800">{selectedCustomer?.name || 'Khách lẻ / khách ngoài'}</span>
             </button>
-            <button type="button" onClick={() => { setShowCustomerPicker(true); setShowAddCustomer(true); }} disabled={isCashier} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-sky-200 bg-sky-50 text-sky-700 disabled:cursor-not-allowed disabled:opacity-40" title="Thêm khách hàng">
+            <button type="button" onClick={() => { setShowCustomerPicker(true); setShowAddCustomer(true); }} disabled={!canCreateCustomer} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-sky-200 bg-sky-50 text-sky-700 disabled:cursor-not-allowed disabled:opacity-40" title="Thêm khách hàng">
               <UserPlus className="h-4 w-4" />
             </button>
           </div>
@@ -1693,10 +1724,12 @@ export default function POS() {
           </div>
           <div className="mt-2 flex items-center gap-2">
             <span className="whitespace-nowrap text-xs text-slate-500">Bảng giá</span>
-            <select value={selectedPriceListId} onChange={(e) => setSelectedPriceListId(e.target.value)} className="h-8 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-xs">
+            <select value={selectedPriceListId} onChange={(e) => setSelectedPriceListId(e.target.value)} disabled={priceListLoading || !priceLists.length} aria-busy={priceListLoading} className="h-8 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-xs disabled:cursor-wait disabled:text-slate-400">
+              {!priceLists.length && <option value="">{priceListLoading ? 'Đang tải bảng giá…' : priceListError || 'Chưa có bảng giá'}</option>}
               {priceLists.map((list: any) => <option key={list.id} value={list.id}>{list.name}</option>)}
             </select>
           </div>
+          {priceListError && <p className="mt-1 text-[11px] text-rose-600">{priceListError}</p>}
         </div>}
         
         <div className="flex-none h-auto lg:flex-1 lg:overflow-y-auto p-2 sm:p-3 lg:p-1.5 space-y-1.5 sm:space-y-2 lg:space-y-1.5">
@@ -1879,7 +1912,7 @@ export default function POS() {
                 {formError && <p className="text-xs text-rose-600">{formError}</p>}
                 <div className="flex justify-end gap-2 pt-2">
                   <Button type="button" variant="outline" size="sm" onClick={() => setShowAddCustomer(false)}>Quay lại</Button>
-                  <Button type="button" size="sm" onClick={handleCreateCustomer} disabled={isCashier}>Lưu và chọn</Button>
+                  <Button type="button" size="sm" onClick={handleCreateCustomer} disabled={!canCreateCustomer}>Lưu và chọn</Button>
                 </div>
               </div>
             ) : (
@@ -1889,7 +1922,7 @@ export default function POS() {
                     <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                     <Input autoFocus value={customerSearchTerm} onChange={(event) => setCustomerSearchTerm(event.target.value)} placeholder="Tìm tên hoặc số điện thoại" className="h-9 pl-8 text-xs" />
                   </div>
-                  <Button type="button" size="sm" variant="outline" onClick={() => setShowAddCustomer(true)} disabled={isCashier} title="Thêm khách hàng"><UserPlus className="h-3.5 w-3.5" /></Button>
+                  <Button type="button" size="sm" variant="outline" onClick={() => setShowAddCustomer(true)} disabled={!canCreateCustomer} title="Thêm khách hàng"><UserPlus className="h-3.5 w-3.5" /></Button>
                 </div>
                 <button type="button" onClick={() => selectCustomer(null)} className="mt-3 flex w-full items-center justify-between rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-left text-xs text-sky-800">
                   <span className="flex items-center gap-2"><User className="h-3.5 w-3.5" /> Khách lẻ / khách ngoài</span><span>Không ghi nợ</span>

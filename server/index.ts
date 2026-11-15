@@ -416,6 +416,16 @@ const ensureAnyPermission = (req: Request, res: Response, codes: string[]) => {
   return false;
 };
 
+// Transaction visibility is deliberately enforced on the API, not only by
+// client-side filters. Owners and roles granted this permission can review the
+// whole tenant; other employees only receive records assigned to or created by
+// their own account.
+const canViewAllTransactions = (req: Request) => hasPermission(req, 'transactions.view_all');
+const transactionOwnerId = (row: { actorId?: string | null; createdBy?: string | null }) => row.actorId || row.createdBy || null;
+const canViewTransaction = (req: Request, row: { actorId?: string | null; createdBy?: string | null }) => (
+  canViewAllTransactions(req) || transactionOwnerId(row) === req.user.id
+);
+
 const canReadCatalog = (req: Request) => hasPermission(req, 'inventory.view') || hasPermission(req, 'sales.view') || hasPermission(req, 'dashboard.view');
 const redactProductForUser = (req: Request, product: any) => {
   if (hasPermission(req, 'inventory.view_cost')) return product;
@@ -1929,6 +1939,7 @@ app.put('/api/price-lists/product-prices', async (req, res) => {
 
 app.get('/api/price-lists/:id', async (req, res) => {
   try {
+    if (!ensureAnyPermission(req, res, ['inventory.view', 'sales.view', 'sales.create'])) return;
     const list = await db.select().from(schema.priceLists).where(and(eq(schema.priceLists.id, req.params.id), eq(schema.priceLists.tenantId, req.user.tenantId))).get();
     if (!list) return res.status(404).json({ error: 'Không tìm thấy bảng giá' });
     res.json({ ...list, items: await db.select().from(schema.priceListItems).where(eq(schema.priceListItems.priceListId, list.id)).all() });
@@ -3542,7 +3553,9 @@ app.get('/api/purchases', async (req, res) => {
     const includeMeta = String(req.query.includeMeta || '') === 'true';
     const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
     const offset = Math.max(Number(req.query.offset) || 0, 0);
-    const purchaseWhere = eq(schema.purchases.tenantId, req.user.tenantId);
+    const purchaseConditions = [eq(schema.purchases.tenantId, req.user.tenantId)];
+    if (!canViewAllTransactions(req)) purchaseConditions.push(eq(schema.purchases.createdBy, req.user.id) as any);
+    const purchaseWhere = and(...purchaseConditions);
     const totalRow = includeMeta
       ? await db.select({ count: sql<number>`count(*)` }).from(schema.purchases).where(purchaseWhere).get()
       : null;
@@ -3578,6 +3591,7 @@ app.get('/api/purchases/:id', async (req, res) => {
     if (!ensurePermission(req, res, 'purchases.view')) return;
     const purchase = await db.select().from(schema.purchases).where(and(eq(schema.purchases.id, req.params.id), eq(schema.purchases.tenantId, req.user.tenantId))).get();
     if (!purchase) return res.status(404).json({ error: 'Purchase not found' });
+    if (!canViewTransaction(req, purchase)) return res.status(404).json({ error: 'Purchase not found' });
     const items = await db.select().from(schema.purchaseItems).where(eq(schema.purchaseItems.purchaseId, purchase.id)).all();
     const creator = await db.select({ name: schema.users.name }).from(schema.users).where(and(eq(schema.users.id, purchase.createdBy), eq(schema.users.tenantId, req.user.tenantId))).get();
     res.json({ ...purchase, items, createdByName: creator?.name || null, supplier: await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, purchase.supplierId)).get() || null });
@@ -3719,6 +3733,7 @@ app.get('/api/purchases/:id/returnable', async (req, res) => {
     if (!ensurePermission(req, res, 'purchases.view')) return;
     const purchase = await db.select().from(schema.purchases).where(and(eq(schema.purchases.id, req.params.id), eq(schema.purchases.tenantId, req.user.tenantId))).get();
     if (!purchase) return res.status(404).json({ error: 'Không tìm thấy phiếu nhập' });
+    if (!canViewTransaction(req, purchase)) return res.status(404).json({ error: 'Không tìm thấy phiếu nhập' });
     const items = await db.select().from(schema.purchaseItems).where(eq(schema.purchaseItems.purchaseId, purchase.id)).all();
     const returns = await db.select().from(schema.purchaseReturnItems).where(inArray(schema.purchaseReturnItems.purchaseItemId, items.map((item) => item.id))).all();
     res.json({ purchase, items: items.map((item) => ({ ...item, returnedQuantity: returns.filter((row) => row.purchaseItemId === item.id).reduce((sum, row) => sum + Number(row.quantity), 0), returnedBaseQuantity: returns.filter((row) => row.purchaseItemId === item.id).reduce((sum, row) => sum + Number(row.baseQuantity), 0) })) });
@@ -3729,6 +3744,7 @@ app.get('/api/purchase-returns', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'purchases.view')) return;
     let rows = await db.select().from(schema.purchaseReturns).where(eq(schema.purchaseReturns.tenantId, req.user.tenantId)).orderBy(desc(schema.purchaseReturns.createdAt)).all();
+    if (!canViewAllTransactions(req)) rows = rows.filter((row) => row.createdBy === req.user.id);
     if (req.query.supplierId) rows = rows.filter((row) => row.supplierId === req.query.supplierId);
     res.json(await Promise.all(rows.map(async (row) => ({ ...row, items: await db.select().from(schema.purchaseReturnItems).where(eq(schema.purchaseReturnItems.returnId, row.id)).all(), supplier: await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, row.supplierId)).get() || null }))));
   } catch (err) { res.status(500).json({ error: 'Không thể tải phiếu trả nhà cung cấp' }); }
@@ -3739,6 +3755,7 @@ app.post('/api/purchases/:id/returns', async (req, res) => {
     if (!ensurePermission(req, res, 'purchases.return')) return;
     const purchase = await db.select().from(schema.purchases).where(and(eq(schema.purchases.id, req.params.id), eq(schema.purchases.tenantId, req.user.tenantId))).get();
     if (!purchase) return res.status(404).json({ error: 'Không tìm thấy phiếu nhập' });
+    if (!canViewTransaction(req, purchase)) return res.status(404).json({ error: 'Không tìm thấy phiếu nhập' });
     const requestedItems = Array.isArray(req.body?.items) ? req.body.items : [];
     if (!requestedItems.length) return res.status(400).json({ error: 'Chọn ít nhất một dòng hàng để trả' });
     const purchaseItems = await db.select().from(schema.purchaseItems).where(eq(schema.purchaseItems.purchaseId, purchase.id)).all() as any[];
@@ -3803,6 +3820,7 @@ app.get('/api/supplier-credit-ledger', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'purchases.view')) return;
     let rows = await db.select().from(schema.supplierCreditLedger).where(eq(schema.supplierCreditLedger.tenantId, req.user.tenantId)).orderBy(desc(schema.supplierCreditLedger.createdAt)).all();
+    if (!canViewAllTransactions(req)) rows = rows.filter((row) => row.createdBy === req.user.id);
     if (req.query.supplierId) rows = rows.filter((row) => row.supplierId === req.query.supplierId);
     res.json(rows);
   } catch (err) { res.status(500).json({ error: 'Không thể tải số dư nhà cung cấp' }); }
@@ -3832,6 +3850,7 @@ app.get('/api/payable-ledger', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'debt.view')) return;
     let rows = await db.select().from(schema.payableLedger).where(eq(schema.payableLedger.tenantId, req.user.tenantId)).orderBy(desc(schema.payableLedger.createdAt)).all();
+    if (!canViewAllTransactions(req)) rows = rows.filter((row) => row.createdBy === req.user.id);
     if (req.query.supplierId) rows = rows.filter((row) => row.supplierId === req.query.supplierId);
     res.json(rows);
   } catch (err) {
@@ -4552,6 +4571,7 @@ app.get('/api/invoices', async (req, res) => {
       .where(eq(schema.users.tenantId, req.user.tenantId)).all();
     const userNameById = new Map(tenantUsers.map((u) => [u.id, u.name]));
     const conditions = [eq(schema.invoices.tenantId, req.user.tenantId)];
+    if (!canViewAllTransactions(req)) conditions.push(eq(schema.invoices.createdBy, req.user.id) as any);
     if (customerId) conditions.push(eq(schema.invoices.customerId, String(customerId)) as any);
     if (status && status !== 'all') {
       const invoiceStatus = String(status) as 'partial' | 'unpaid' | 'completed';
@@ -4590,6 +4610,7 @@ app.get('/api/invoices/:id', async (req, res) => {
     const invoice = await db.select().from(schema.invoices)
       .where(and(eq(schema.invoices.id, req.params.id), eq(schema.invoices.tenantId, req.user.tenantId))).get();
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+    if (!canViewTransaction(req, invoice)) return res.status(404).json({ error: 'Invoice not found' });
 
     // Also fetch invoice items
     const items = await db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, req.params.id)).all();
@@ -4924,12 +4945,13 @@ async function postDraftInvoice(req: Request, invoiceId: string, confirmedItems:
 }
 
 async function autoCloseLegacyInvoices(req: Request) {
-  const legacyInvoices = await db.select().from(schema.invoices)
-    .where(and(
-      eq(schema.invoices.tenantId, req.user.tenantId),
-      ne(schema.invoices.workflowStatus, 'closed'),
-      ne(schema.invoices.workflowStatus, 'cancelled'),
-    )).all();
+  const conditions = [
+    eq(schema.invoices.tenantId, req.user.tenantId),
+    ne(schema.invoices.workflowStatus, 'closed'),
+    ne(schema.invoices.workflowStatus, 'cancelled'),
+  ];
+  if (!canViewAllTransactions(req)) conditions.push(eq(schema.invoices.createdBy, req.user.id) as any);
+  const legacyInvoices = await db.select().from(schema.invoices).where(and(...conditions)).all();
 
   for (const invoice of legacyInvoices) {
     try {
@@ -5049,6 +5071,7 @@ app.get('/api/invoices/:id/returnable', async (req, res) => {
     if (!ensurePermission(req, res, 'sales.view')) return;
     const invoice = await invoiceById(req.user.tenantId, req.params.id);
     if (!invoice) return res.status(404).json({ error: 'Không tìm thấy hóa đơn' });
+    if (!canViewTransaction(req, invoice)) return res.status(404).json({ error: 'Không tìm thấy hóa đơn' });
     const items = await db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoice.id)).all();
     const returns = await db.select().from(schema.salesReturnItems).where(inArray(schema.salesReturnItems.invoiceItemId, items.map((item) => item.id))).all();
     res.json({ invoice, items: items.map((item) => {
@@ -5064,6 +5087,7 @@ app.get('/api/sales-returns', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'sales.view')) return;
     let rows = await db.select().from(schema.salesReturns).where(eq(schema.salesReturns.tenantId, req.user.tenantId)).orderBy(desc(schema.salesReturns.createdAt)).all();
+    if (!canViewAllTransactions(req)) rows = rows.filter((row) => row.createdBy === req.user.id);
     if (req.query.invoiceId) rows = rows.filter((row) => row.invoiceId === req.query.invoiceId);
     const users = await db.select().from(schema.users).where(eq(schema.users.tenantId, req.user.tenantId)).all();
     const userNameById = new Map(users.map((user) => [user.id, user.name]));
@@ -5315,6 +5339,7 @@ app.get('/api/invoices/:id/timeline', async (req, res) => {
     if (!ensurePermission(req, res, 'sales.view')) return;
     const invoice = await invoiceById(req.user.tenantId, req.params.id);
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+    if (!canViewTransaction(req, invoice)) return res.status(404).json({ error: 'Invoice not found' });
     const events = await db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.entityType, 'invoice'), eq(schema.auditLogs.entityId, invoice.id), eq(schema.auditLogs.tenantId, req.user.tenantId))).orderBy(desc(schema.auditLogs.createdAt)).all();
     res.json(events);
   } catch (err) { console.error('GET invoice timeline error:', err); res.status(500).json({ error: 'Internal server error' }); }
@@ -5335,7 +5360,7 @@ const ensureDefaultCashAccounts = async (tenantId: string) => {
 
 app.get('/api/cash-accounts', async (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'cashbook.view')) return;
+    if (!ensureAnyPermission(req, res, ['cashbook.view', 'sales.view', 'sales.create'])) return;
     await ensureDefaultCashAccounts(req.user.tenantId);
     res.json(await db.select().from(schema.cashAccounts).where(and(eq(schema.cashAccounts.tenantId, req.user.tenantId), eq(schema.cashAccounts.active, 1))).all());
   } catch (err) { console.error('GET /api/cash-accounts error:', err); res.status(500).json({ error: 'Internal server error' }); }
@@ -5363,6 +5388,7 @@ app.get('/api/payments', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'debt.view')) return;
     let payments = await db.select().from(schema.payments).where(eq(schema.payments.tenantId, req.user.tenantId)).orderBy(desc(schema.payments.createdAt)).all();
+    if (!canViewAllTransactions(req)) payments = payments.filter((payment) => payment.createdBy === req.user.id);
     if (req.query.customerId) payments = payments.filter((payment) => payment.customerId === req.query.customerId);
     res.json(payments);
   } catch (err) { console.error('GET /api/payments error:', err); res.status(500).json({ error: 'Internal server error' }); }
@@ -5373,6 +5399,7 @@ app.get('/api/payments/:id', async (req, res) => {
     if (!ensurePermission(req, res, 'debt.view')) return;
     const payment = await db.select().from(schema.payments).where(and(eq(schema.payments.id, req.params.id), eq(schema.payments.tenantId, req.user.tenantId))).get();
     if (!payment) return res.status(404).json({ error: 'Payment not found' });
+    if (!canViewTransaction(req, payment)) return res.status(404).json({ error: 'Payment not found' });
     const allocations = await db.select().from(schema.paymentAllocations).where(eq(schema.paymentAllocations.paymentId, payment.id)).all();
     res.json({ ...payment, allocations });
   } catch (err) { console.error('GET /api/payments/:id error:', err); res.status(500).json({ error: 'Internal server error' }); }
@@ -5451,7 +5478,7 @@ app.get('/api/reports/staff', async (req, res) => {
       const timestamp = new Date(value).getTime();
       return timestamp >= from && timestamp <= to;
     };
-    const userId = req.query.userId ? String(req.query.userId) : '';
+    const userId = canViewAllTransactions(req) && req.query.userId ? String(req.query.userId) : (canViewAllTransactions(req) ? '' : req.user.id);
     const requestedPaymentMethod = ['cash', 'transfer'].includes(String(req.query.paymentMethod || ''))
       ? String(req.query.paymentMethod)
       : '';
@@ -5598,7 +5625,8 @@ app.get('/api/cashbook', async (req, res) => {
     if (!ensurePermission(req, res, 'cashbook.view')) return;
     res.setHeader('Cache-Control', 'no-store');
     const { from, to, type, accountId, actorId, createdBy } = req.query;
-    const employeeId = actorId || createdBy;
+    const requestedEmployeeId = actorId || createdBy;
+    const employeeId = canViewAllTransactions(req) ? requestedEmployeeId : req.user.id;
     const rows = (await db.select().from(schema.cashbookEntries)
       .where(eq(schema.cashbookEntries.tenantId, req.user.tenantId))
       .orderBy(desc(schema.cashbookEntries.createdAt))
@@ -5801,6 +5829,7 @@ app.get('/api/stock-movements', async (req, res) => {
       .where(eq(schema.stockMovements.tenantId, req.user.tenantId))
       .orderBy(desc(schema.stockMovements.createdAt))
       .all();
+    if (!canViewAllTransactions(req)) rows = rows.filter((row) => row.createdBy === req.user.id);
     if (productId) rows = rows.filter((r) => r.productId === productId);
     if (!productId && !includeAll) rows = rows.slice(0, limit);
 
@@ -6038,6 +6067,7 @@ app.get('/api/invoice-items', async (req, res) => {
     const invoice = await db.select().from(schema.invoices)
       .where(and(eq(schema.invoices.id, invoiceId as string), eq(schema.invoices.tenantId, req.user.tenantId))).get();
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+    if (!canViewTransaction(req, invoice)) return res.status(404).json({ error: 'Invoice not found' });
     const items = await db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoiceId as string)).all();
     res.json(items);
   } catch (err) {
@@ -6057,6 +6087,8 @@ app.get('/api/debt-ledger', async (req, res) => {
     let allEntries = await db.select().from(schema.debtLedger)
       .where(eq(schema.debtLedger.tenantId, req.user.tenantId))
       .orderBy(desc(schema.debtLedger.createdAt)).all();
+
+    if (!canViewAllTransactions(req)) allEntries = allEntries.filter((entry) => entry.createdBy === req.user.id);
 
     if (customerId) {
       allEntries = allEntries.filter(e => e.customerId === customerId);

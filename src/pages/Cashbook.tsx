@@ -94,7 +94,8 @@ const readableEntryNote = (entry: CashbookEntry) => {
 
 export default function Cashbook() {
   const navigate = useNavigate();
-  const { currentUser } = useApp();
+  const { currentUser, permissions } = useApp();
+  const canViewAllTransactions = currentUser?.role === 'owner' || permissions?.includes('transactions.view_all') === true;
   const [entries, setEntries] = useState<CashbookEntry[]>([]);
   const [accounts, setAccounts] = useState<any[]>([]);
   const [participants, setParticipants] = useState<{ users: any[]; customers: any[]; suppliers: any[] }>({ users: [], customers: [], suppliers: [] });
@@ -140,6 +141,9 @@ export default function Cashbook() {
     }
   };
 
+  useEffect(() => {
+    if (!canViewAllTransactions && currentUser?.id) setEmployeeFilter(currentUser.id);
+  }, [canViewAllTransactions, currentUser?.id]);
   useEffect(() => {
     loadEntries();
   }, [accountFilter, employeeFilter, fromDate, toDate, typeFilter]);
@@ -293,8 +297,8 @@ export default function Cashbook() {
             <option value="expense">Chi</option>
           </select>
           <select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 text-sm"><option value="all">Tất cả tài khoản</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select>
-          <select value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 text-sm"><option value="all">Tất cả người thu/chi</option>{participants.users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select>
-          <Button variant="outline" onClick={() => { setFromDate(''); setToDate(''); setTypeFilter('all'); setAccountFilter('all'); setEmployeeFilter('all'); }} className="h-10">Reset lọc</Button>
+          {canViewAllTransactions ? <select value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 text-sm"><option value="all">Tất cả người thu/chi</option>{participants.users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select> : <div className="flex h-10 items-center rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">Giao dịch của tôi</div>}
+          <Button variant="outline" onClick={() => { setFromDate(''); setToDate(''); setTypeFilter('all'); setAccountFilter('all'); setEmployeeFilter(canViewAllTransactions ? 'all' : currentUser?.id || 'all'); }} className="h-10">Reset lọc</Button>
         </section>
 
         <section className="grid grid-cols-1 gap-2 md:grid-cols-3">

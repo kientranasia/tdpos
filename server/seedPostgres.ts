@@ -33,6 +33,7 @@ const permissionDefinitions = [
   ['cashbook.create', 'cashbook', 'create', 'Tạo giao dịch thu chi'],
   ['reports.view', 'reports', 'view', 'Xem báo cáo'],
   ['reports.export', 'reports', 'export', 'Xuất báo cáo'],
+  ['transactions.view_all', 'transactions', 'view_all', 'Xem giao dịch của nhân viên khác'],
   ['settings.view', 'settings', 'view', 'Xem cài đặt'],
   ['settings.manage_users', 'settings', 'manage_users', 'Quản lý nhân viên'],
   ['settings.manage_permissions', 'settings', 'manage_permissions', 'Quản lý phân quyền'],
@@ -43,7 +44,7 @@ const roleDefaults: Record<string, string[]> = {
   manager: permissionDefinitions.filter(([code]) => !['settings.manage_users', 'settings.manage_permissions', 'sales.cancel'].includes(code)).map(([code]) => code),
   cashier: ['sales.view', 'sales.create', 'partners.view', 'partners.create', 'debt.view'],
   warehouse: ['inventory.view', 'inventory.create', 'inventory.adjust', 'inventory.view_cost', 'inventory.manage_pricing', 'purchases.view', 'purchases.create', 'purchases.approve', 'purchases.return', 'partners.view'],
-  accountant: ['dashboard.view', 'purchases.view', 'partners.view', 'debt.view', 'debt.collect', 'cashbook.view', 'cashbook.create', 'reports.view', 'reports.export'],
+  accountant: ['dashboard.view', 'purchases.view', 'partners.view', 'debt.view', 'debt.collect', 'cashbook.view', 'cashbook.create', 'reports.view', 'reports.export', 'transactions.view_all'],
 };
 
 export const seedPostgres = async () => {
