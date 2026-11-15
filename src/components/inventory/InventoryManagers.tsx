@@ -23,14 +23,15 @@ type ManagerModalFrameProps = {
   icon: React.ReactNode;
   children: React.ReactNode;
   onClose: () => void;
+  widthClass?: 'max-w-md' | 'max-w-2xl';
 };
 
-function ManagerModalFrame({ open, title, subtitle, icon, children, onClose }: ManagerModalFrameProps) {
+function ManagerModalFrame({ open, title, subtitle, icon, children, onClose, widthClass = 'max-w-md' }: ManagerModalFrameProps) {
   if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/60 p-3 backdrop-blur-sm">
-      <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-md flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+      <div className={`flex max-h-[calc(100dvh-1rem)] w-full ${widthClass} flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl`}>
         <div className="flex shrink-0 items-center justify-between border-b border-slate-100 bg-slate-50/70 px-4 py-3">
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-50 text-sky-700">{icon}</div>
@@ -343,10 +344,11 @@ export function PriceListManagerModal({ open, priceLists, onClose, onCreate, onR
       subtitle="Tạo nhóm giá để chọn nhanh tại POS"
       icon={<Settings2 className="h-4 w-4" />}
       onClose={onClose}
+      widthClass="max-w-2xl"
     >
       <div className="rounded-lg border border-slate-200">
         <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
-          <div><h3 className="text-xs font-semibold text-slate-900">Bảng giá hiện có</h3><p className="text-[11px] text-slate-500">Giá từng sản phẩm được nhập trong ma trận đơn vị/biến thể; % hoặc số tiền là giá gợi ý.</p></div>
+          <div><h3 className="text-xs font-semibold text-slate-900">Bảng giá hiện có</h3><p className="text-[11px] text-slate-500">Bấm <b>Sửa</b> để đổi tên, nhóm khách hoặc mức điều chỉnh.</p></div>
           <span className="text-[11px] font-medium text-slate-400">{priceLists.length} bảng</span>
         </div>
         <div className="divide-y divide-slate-100">
@@ -376,7 +378,7 @@ export function PriceListManagerModal({ open, priceLists, onClose, onCreate, onR
                 <p className="text-[11px] text-slate-400">{list.isDefault ? 'Mặc định · Giá cơ sở' : `${customerTypeLabel(list.customerType)} · ${formatPriceListAdjustment(list)}`}</p>
               </div>
               <div className="flex shrink-0 items-center gap-1">
-                <button type="button" onClick={() => { const adjustment = getPriceListAdjustment(list); setEditingId(list.id); setEditingName(list.name); setEditingCustomerType(list.customerType || 'all'); setEditingMarkupMode(adjustment.mode); setEditingMarkupValue(adjustment.value); setMessage(''); }} className="rounded-md p-1.5 text-sky-700 hover:bg-sky-50" aria-label={`Sửa bảng giá ${list.name}`} title="Sửa bảng giá"><Edit3 className="h-3.5 w-3.5" /></button>
+                <button type="button" onClick={() => { const adjustment = getPriceListAdjustment(list); setEditingId(list.id); setEditingName(list.name); setEditingCustomerType(list.customerType || 'all'); setEditingMarkupMode(adjustment.mode); setEditingMarkupValue(adjustment.value); setMessage(''); }} className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-sky-700 hover:bg-sky-50" aria-label={`Sửa bảng giá ${list.name}`} title="Sửa bảng giá"><Edit3 className="h-3.5 w-3.5" />Sửa</button>
                 <button type="button" onClick={() => void handleDelete(list)} disabled={Boolean(list.isDefault)} className="rounded-md p-1.5 text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Xóa bảng giá ${list.name}`} title={list.isDefault ? 'Không thể xóa bảng giá mặc định' : 'Xóa bảng giá'}><Trash2 className="h-3.5 w-3.5" /></button>
               </div>
             </div>
@@ -403,6 +405,7 @@ export function PriceListManagerModal({ open, priceLists, onClose, onCreate, onR
           <Button type="button" onClick={() => void handleCreate()} disabled={!newName.trim()} className="h-9 px-3 text-xs">Tạo bảng</Button>
         </div>
         <p className="mt-1.5 text-[11px] text-slate-500">Chọn Theo % để nhập 10 hoặc -10; chọn Theo tiền để cộng trực tiếp số tiền vào giá cơ sở.</p>
+        <p className="mt-1 text-[11px] text-slate-500">Muốn cập nhật giá riêng từng sản phẩm: mở sản phẩm → <b>Sửa</b> → <b>Giá bán theo bảng giá</b>.</p>
       </div>
       {message && <p className="rounded-md bg-sky-50 px-3 py-2 text-[11px] text-sky-700">{message}</p>}
     </ManagerModalFrame>

@@ -222,12 +222,13 @@ export default function POS() {
     let active = true;
     priceListsApi.list(true, priceProductIds).then((lists) => {
       if (!active) return;
-      setPriceLists((previous) => lists.map((list: any) => {
+      const availableLists = lists.filter((list: any) => list.active !== false);
+      setPriceLists((previous) => availableLists.map((list: any) => {
         const previousItems = previous.find((item: any) => item.id === list.id)?.items || [];
         const fetchedIds = new Set((list.items || []).map((item: any) => item.productId));
         return { ...list, items: [...previousItems.filter((item: any) => !fetchedIds.has(item.productId)), ...(list.items || [])] };
       }));
-      const defaultList = lists.find((list: any) => list.isDefault) || lists[0];
+      const defaultList = availableLists.find((list: any) => list.isDefault) || availableLists[0];
       setSelectedPriceListId((current) => current || defaultList?.id || '');
     }).catch(() => undefined);
     return () => { active = false; };
@@ -1327,9 +1328,10 @@ export default function POS() {
               <div className="flex shrink-0 items-center gap-1 lg:hidden">
                 <button
                   type="button"
-                  onClick={() => setShowOrderContext(true)}
+                  onClick={() => setShowOrderContext((previous) => !previous)}
                   className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-white ${showOrderContext ? 'border-sky-300 text-sky-700' : 'border-slate-200 text-slate-500'}`}
                   aria-label="Chọn khách hàng"
+                  aria-expanded={showOrderContext}
                   title="Chọn khách hàng"
                 >
                   <User className="h-4 w-4" />
@@ -1337,9 +1339,10 @@ export default function POS() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowOrderContext(true)}
+                  onClick={() => setShowOrderContext((previous) => !previous)}
                   className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-white ${showOrderContext ? 'border-sky-300 text-sky-700' : 'border-slate-200 text-slate-500'}`}
                   aria-label="Chọn bảng giá"
+                  aria-expanded={showOrderContext}
                   title="Chọn bảng giá"
                 >
                   <Tag className="h-4 w-4" />
@@ -1427,28 +1430,63 @@ export default function POS() {
           {!mobileProductPickerOpen && (
             <div className="lg:hidden">
               {showOrderContext && (
-                <div className="fixed inset-0 z-[118] flex items-end justify-center bg-slate-950/35 p-3 lg:hidden" onClick={() => setShowOrderContext(false)}>
-                  <div role="dialog" aria-modal="true" aria-label="Thông tin đơn hàng" className="w-full max-w-lg rounded-t-2xl border border-slate-200 bg-white p-4 shadow-2xl" onClick={(event) => event.stopPropagation()}>
-                    <div className="mb-3 flex items-center justify-between gap-3">
-                      <div>
-                        <h3 className="text-sm font-semibold text-slate-900">Thông tin đơn hàng</h3>
-                        <p className="text-[11px] text-slate-500">Chọn khách hàng và bảng giá áp dụng</p>
-                      </div>
-                      <button type="button" onClick={() => setShowOrderContext(false)} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100" aria-label="Đóng"><X className="h-4 w-4" /></button>
+                <div className="mb-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-900">Thông tin đơn hàng</h3>
+                      <p className="text-[11px] text-slate-500">Chọn khách hàng và bảng giá áp dụng</p>
                     </div>
-                    <button type="button" onClick={() => { setShowOrderContext(false); setShowCustomerPicker(true); }} className="flex min-h-11 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-left">
-                      <span className="flex min-w-0 items-center gap-2 text-sm text-slate-800"><User className="h-4 w-4 shrink-0 text-slate-400" /><span className="truncate">{selectedCustomer?.name || 'Khách lẻ / khách ngoài'}</span></span>
-                      <span className="ml-2 flex shrink-0 items-center gap-1 text-xs text-slate-500">Nợ: {formatCurrency(selectedCustomer?.totalDebt || 0)} <ChevronRight className="h-4 w-4" /></span>
-                    </button>
-                    <label className="mt-2 flex min-h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3">
-                      <Tag className="h-4 w-4 shrink-0 text-slate-400" />
-                      <span className="shrink-0 text-sm text-slate-600">Bảng giá</span>
-                      <select value={selectedPriceListId} onChange={(event) => setSelectedPriceListId(event.target.value)} className="min-w-0 flex-1 bg-transparent text-right text-sm text-slate-800 outline-none">
-                        {priceLists.map((list: any) => <option key={list.id} value={list.id}>{list.name}</option>)}
-                      </select>
-                    </label>
+                    <button type="button" onClick={() => { setShowOrderContext(false); setShowCustomerPicker(false); setShowAddCustomer(false); }} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100" aria-label="Thu gọn thông tin đơn hàng"><X className="h-4 w-4" /></button>
                   </div>
-                </div>
+                  <button type="button" onClick={() => { setShowCustomerPicker((previous) => !previous); setShowAddCustomer(false); }} className="flex min-h-11 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-left">
+                    <span className="flex min-w-0 items-center gap-2 text-sm text-slate-800"><User className="h-4 w-4 shrink-0 text-slate-400" /><span className="truncate">{selectedCustomer?.name || 'Khách lẻ / khách ngoài'}</span></span>
+                    <span className="ml-2 flex shrink-0 items-center gap-1 text-xs text-slate-500">Nợ: {formatCurrency(selectedCustomer?.totalDebt || 0)} <ChevronRight className={`h-4 w-4 transition-transform ${showCustomerPicker ? 'rotate-90' : ''}`} /></span>
+                  </button>
+                  {showCustomerPicker && (
+                    <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 p-2">
+                      {showAddCustomer ? (
+                        <div className="space-y-2">
+                          <Input autoFocus value={newCustomer.name} onChange={(event) => setNewCustomer((previous) => ({ ...previous, name: event.target.value }))} placeholder="Tên khách hàng *" className="h-9 bg-white text-xs" />
+                          <Input value={newCustomer.phone} onChange={(event) => setNewCustomer((previous) => ({ ...previous, phone: event.target.value }))} placeholder="Số điện thoại *" className="h-9 bg-white text-xs" />
+                          <Input value={newCustomer.address} onChange={(event) => setNewCustomer((previous) => ({ ...previous, address: event.target.value }))} placeholder="Địa chỉ" className="h-9 bg-white text-xs" />
+                          {formError && <p className="text-xs text-rose-600">{formError}</p>}
+                          <div className="flex justify-end gap-2 pt-1">
+                            <Button type="button" variant="outline" size="sm" onClick={() => setShowAddCustomer(false)}>Quay lại</Button>
+                            <Button type="button" size="sm" onClick={handleCreateCustomer} disabled={isCashier}>Lưu và chọn</Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex gap-2">
+                            <div className="relative min-w-0 flex-1">
+                              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                              <Input autoFocus value={customerSearchTerm} onChange={(event) => setCustomerSearchTerm(event.target.value)} placeholder="Tìm tên hoặc số điện thoại" className="h-9 bg-white pl-8 text-xs" />
+                            </div>
+                            <Button type="button" size="sm" variant="outline" onClick={() => setShowAddCustomer(true)} disabled={isCashier} title="Thêm khách hàng"><UserPlus className="h-3.5 w-3.5" /></Button>
+                          </div>
+                          <button type="button" onClick={() => selectCustomer(null)} className="mt-2 flex w-full items-center justify-between rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-left text-xs text-sky-800">
+                            <span className="flex items-center gap-2"><User className="h-3.5 w-3.5" /> Khách lẻ / khách ngoài</span><span>Không ghi nợ</span>
+                          </button>
+                          <div className="mt-2 max-h-56 overflow-y-auto rounded-md border border-slate-100 bg-white">
+                            {filteredCustomers.length > 0 ? filteredCustomers.map((customer) => (
+                              <button type="button" key={customer.id} onClick={() => selectCustomer(customer)} className="flex w-full items-center justify-between border-b border-slate-100 px-3 py-2.5 text-left last:border-0 hover:bg-slate-50">
+                                <span className="min-w-0"><span className="block truncate text-xs font-medium text-slate-800">{customer.name}</span><span className="block text-[11px] text-slate-500">{customer.phone}</span></span>
+                                <span className={`ml-3 shrink-0 text-xs font-semibold tabular-nums ${customer.totalDebt > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>{formatCurrency(customer.totalDebt || 0)}</span>
+                              </button>
+                            )) : customerSearchTerm ? <p className="px-3 py-4 text-center text-xs text-slate-500">Không tìm thấy khách hàng phù hợp.</p> : <p className="px-3 py-4 text-center text-xs text-slate-500">Chưa có khách hàng.</p>}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  <label className="mt-2 flex min-h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3">
+                    <Tag className="h-4 w-4 shrink-0 text-slate-400" />
+                    <span className="shrink-0 text-sm text-slate-600">Bảng giá</span>
+                    <select value={selectedPriceListId} onChange={(event) => setSelectedPriceListId(event.target.value)} className="min-w-0 flex-1 bg-transparent text-right text-sm text-slate-800 outline-none">
+                      {priceLists.map((list: any) => <option key={list.id} value={list.id}>{list.name}</option>)}
+                    </select>
+                  </label>
+                  </div>
               )}
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div>
@@ -1824,7 +1862,7 @@ export default function POS() {
       {renderMobileDraftsSheet()}
 
       {showCustomerPicker && (
-        <div className="fixed inset-0 z-[125] flex items-center justify-center bg-slate-900/40 p-3" onClick={() => { setShowCustomerPicker(false); setShowAddCustomer(false); }}>
+        <div className="fixed inset-0 z-[125] hidden items-center justify-center bg-slate-900/40 p-3 lg:flex" onClick={() => { setShowCustomerPicker(false); setShowAddCustomer(false); }}>
           <div className="flex max-h-[calc(100dvh-1rem)] w-full max-w-md flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
               <div>

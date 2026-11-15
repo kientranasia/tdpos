@@ -1838,7 +1838,7 @@ const withStockAvailabilityBatch = async (tenantId: string, products: any[], def
 
 app.get('/api/price-lists', async (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'inventory.view')) return;
+    if (!ensureAnyPermission(req, res, ['inventory.view', 'sales.view', 'sales.create'])) return;
     const defaultList = await ensureDefaultPriceList(req.user.tenantId);
     const includeItems = String(req.query.includeItems ?? 'true') !== 'false';
     const requestedProductIds = new Set(String(req.query.productIds || '').split(',').map((value) => value.trim()).filter(Boolean));
@@ -4026,7 +4026,7 @@ app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
 
 app.get('/api/customers', async (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'partners.view')) return;
+    if (!ensureAnyPermission(req, res, ['partners.view', 'sales.view', 'sales.create'])) return;
     const { search } = req.query;
     const includeMeta = String(req.query.includeMeta || '') === 'true';
     const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
