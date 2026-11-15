@@ -19,6 +19,8 @@ const invoiceDisplayNo = (invoice: Pick<Invoice, 'id' | 'documentNo'>) => {
   return `HD-${invoice.id.replace(/-/g, '').slice(0, 8).toUpperCase()}`;
 };
 
+type InvoicePaymentFilter = 'all' | 'cash' | 'transfer';
+
 export default function Invoices() {
   const { invoices, customers, products, activeTenant, currentUser, refreshInvoices } = useApp();
   const navigate = useNavigate();
@@ -26,6 +28,8 @@ export default function Invoices() {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'partial' | 'unpaid'>('all');
   const [pendingStatusFilter, setPendingStatusFilter] = useState<'all' | 'completed' | 'partial' | 'unpaid'>('all');
+  const [paymentFilter, setPaymentFilter] = useState<InvoicePaymentFilter>('all');
+  const [pendingPaymentFilter, setPendingPaymentFilter] = useState<InvoicePaymentFilter>('all');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(() => new URLSearchParams(window.location.search).get('invoiceId'));
   const [deepLinkedInvoice, setDeepLinkedInvoice] = useState<Invoice | null>(null);
   const [debtPayments, setDebtPayments] = useState<DebtLedger[]>([]);
@@ -98,8 +102,9 @@ export default function Invoices() {
         const customerName = inv.customerId ? customerNameById.get(inv.customerId) || '' : 'khách vãng lai';
         return normalizeSearchText(`${invoiceDisplayNo(inv)} ${inv.id}`).includes(keyword) || normalizeSearchText(customerName).includes(keyword);
       })
+      .filter((inv) => paymentFilter === 'all' || inv.paymentMethod === paymentFilter)
       .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
-  }, [customerNameById, invoices, searchTerm, timeFilter]);
+  }, [customerNameById, invoices, paymentFilter, searchTerm, timeFilter]);
 
   const filteredInvoices = useMemo(() => {
     if (statusFilter === 'all') return baseInvoices;
@@ -241,6 +246,11 @@ export default function Invoices() {
     partial: 'Thanh toán một phần',
     unpaid: 'Chưa thanh toán',
   }[statusFilter];
+  const paymentFilterLabel = {
+    all: 'Tất cả phương thức',
+    cash: 'Tiền mặt',
+    transfer: 'Chuyển khoản',
+  }[paymentFilter];
 
   useEffect(() => {
     if (!routeInvoiceId) {
@@ -330,7 +340,8 @@ export default function Invoices() {
 
   useEffect(() => {
     if (showFilterSheet) setPendingStatusFilter(statusFilter);
-  }, [showFilterSheet, statusFilter]);
+    if (showFilterSheet) setPendingPaymentFilter(paymentFilter);
+  }, [paymentFilter, showFilterSheet, statusFilter]);
 
   const openReceiptModal = (invoiceId: string) => {
     if (invoiceId !== selectedInvoiceId) setLoadingInvoiceItems(true);
@@ -436,6 +447,11 @@ export default function Invoices() {
                 {statusFilter !== 'all' && (
                   <span className="h-10 px-3 rounded-full bg-slate-100 text-slate-700 text-sm font-medium inline-flex items-center">
                     {statusFilterLabel}
+                  </span>
+                )}
+                {paymentFilter !== 'all' && (
+                  <span className="h-10 px-3 rounded-full bg-sky-100 text-sky-700 text-sm font-medium inline-flex items-center">
+                    {paymentFilterLabel}
                   </span>
                 )}
               </div>
@@ -548,6 +564,16 @@ export default function Invoices() {
               <option value="partial">Thanh toán một phần</option>
               <option value="unpaid">Chưa thanh toán</option>
             </select>
+            <select
+              value={paymentFilter}
+              onChange={(e) => setPaymentFilter(e.target.value as InvoicePaymentFilter)}
+              className="h-9 lg:h-10 rounded-lg border-none bg-slate-100/70 shadow-inner px-3 text-sm text-slate-700"
+              aria-label="Lọc theo phương thức thanh toán"
+            >
+              <option value="all">Tất cả phương thức</option>
+              <option value="cash">Tiền mặt</option>
+              <option value="transfer">Chuyển khoản</option>
+            </select>
             <div className="flex items-center gap-2">
               <Button variant="outline" className="h-9 lg:h-10 px-3 text-sm" onClick={() => navigate('/app/returns')}>
                 <RotateCcw className="h-4 w-4 sm:mr-2" />
@@ -608,6 +634,24 @@ export default function Invoices() {
             className={`h-8 rounded-md px-2.5 text-xs ${statusFilter === 'unpaid' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}
           >
             Chưa thanh toán
+          </button>
+          <button
+            onClick={() => setPaymentFilter('all')}
+            className={`h-8 rounded-md px-2.5 text-xs ${paymentFilter === 'all' ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-600'}`}
+          >
+            Tất cả phương thức
+          </button>
+          <button
+            onClick={() => setPaymentFilter('cash')}
+            className={`h-8 rounded-md px-2.5 text-xs ${paymentFilter === 'cash' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}
+          >
+            Tiền mặt
+          </button>
+          <button
+            onClick={() => setPaymentFilter('transfer')}
+            className={`h-8 rounded-md px-2.5 text-xs ${paymentFilter === 'transfer' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}
+          >
+            Chuyển khoản
           </button>
         </div>
       </section>
@@ -742,14 +786,31 @@ export default function Invoices() {
                   </button>
                 ))}
               </div>
+              <div className="rounded-lg border border-slate-200 overflow-hidden">
+                {[
+                  ['all', 'Tất cả phương thức'],
+                  ['cash', 'Tiền mặt'],
+                  ['transfer', 'Chuyển khoản'],
+                ].map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setPendingPaymentFilter(key as InvoicePaymentFilter)}
+                    className="h-12 w-full px-4 border-b border-slate-100 last:border-0 flex items-center justify-between text-sm"
+                  >
+                    <span className="text-slate-800">{label}</span>
+                    {pendingPaymentFilter === key && <span className="text-sky-600">✓</span>}
+                  </button>
+                ))}
+              </div>
               <div className="grid grid-cols-2 gap-2">
-                <Button variant="outline" className="h-11 w-full" onClick={() => { setPendingStatusFilter('all'); }}>
+                <Button variant="outline" className="h-11 w-full" onClick={() => { setPendingStatusFilter('all'); setPendingPaymentFilter('all'); }}>
                   Đặt lại
                 </Button>
                 <Button
                   className="h-11 w-full"
                   onClick={() => {
                     setStatusFilter(pendingStatusFilter);
+                    setPaymentFilter(pendingPaymentFilter);
                     setShowFilterSheet(false);
                     window.scrollTo({ top: 0, behavior: 'smooth' });
                   }}

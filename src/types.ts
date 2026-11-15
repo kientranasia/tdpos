@@ -426,6 +426,7 @@ export interface CashbookEntry {
   displayNote?: string;
   referenceLabel?: string | null;
   referenceType?: 'invoice' | 'sales_return' | 'purchase' | 'purchase_return' | 'unknown' | null;
+  createdByName?: string | null;
 }
 
 export interface CashAccount {

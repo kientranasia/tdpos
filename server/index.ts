@@ -5415,7 +5415,19 @@ app.get('/api/reports/staff', async (req, res) => {
       return timestamp >= from && timestamp <= to;
     };
     const userId = req.query.userId ? String(req.query.userId) : '';
+    const requestedPaymentMethod = ['cash', 'transfer'].includes(String(req.query.paymentMethod || ''))
+      ? String(req.query.paymentMethod)
+      : '';
     const users = await db.select().from(schema.users).where(eq(schema.users.tenantId, req.user.tenantId)).all();
+    const cashAccounts = await db.select().from(schema.cashAccounts).where(eq(schema.cashAccounts.tenantId, req.user.tenantId)).all();
+    const accountPaymentMethod = (accountId?: string | null) => {
+      const account = accountId ? cashAccounts.find((item) => item.id === accountId) : null;
+      return account?.type === 'bank' ? 'transfer' : account?.type === 'cash' ? 'cash' : null;
+    };
+    const matchesPayment = (rowPaymentMethod?: string | null, accountId?: string | null) => {
+      if (!requestedPaymentMethod) return true;
+      return (rowPaymentMethod || accountPaymentMethod(accountId) || 'cash') === requestedPaymentMethod;
+    };
     const rows = new Map<string, any>();
     const details: any[] = [];
     const summary = {
@@ -5439,8 +5451,11 @@ app.get('/api/reports/staff', async (req, res) => {
       if (!rows.has(id)) rows.set(id, { userId: id, userName: id, salesCount: 0, salesAmount: 0, salesReturnAmount: 0, purchaseAmount: 0, purchaseReturnAmount: 0, cashIncome: 0, cashExpense: 0, netCash: 0, netSales: 0 });
       return rows.get(id);
     };
-    (await db.select().from(schema.invoices).where(eq(schema.invoices.tenantId, req.user.tenantId)).all()).filter((invoice) => invoice.workflowStatus !== 'cancelled' && invoice.workflowStatus === 'closed' && inRange(invoice.createdAt)).forEach((invoice) => {
+    const allInvoices = await db.select().from(schema.invoices).where(eq(schema.invoices.tenantId, req.user.tenantId)).all();
+    const invoiceById = new Map(allInvoices.map((invoice) => [invoice.id, invoice]));
+    allInvoices.filter((invoice) => invoice.workflowStatus !== 'cancelled' && invoice.workflowStatus === 'closed' && inRange(invoice.createdAt)).forEach((invoice) => {
       if (userId && invoice.createdBy !== userId) return;
+      if (!matchesPayment(invoice.paymentMethod, invoice.accountId)) return;
       const row = ensureRow(invoice.createdBy);
       row.salesCount += 1;
       const finalAmount = Number(invoice.finalAmount) || 0;
@@ -5472,6 +5487,11 @@ app.get('/api/reports/staff', async (req, res) => {
     const salesReturns = (await db.select().from(schema.salesReturns).where(eq(schema.salesReturns.tenantId, req.user.tenantId)).all()).filter((item) => inRange(item.createdAt));
     for (const item of salesReturns) {
       if (userId && item.createdBy !== userId) continue;
+      const linkedInvoice = item.invoiceId ? invoiceById.get(item.invoiceId) : null;
+      const returnPaymentMethod = Number(item.refundAmount || 0) > 0
+        ? accountPaymentMethod(item.refundAccountId)
+        : linkedInvoice?.paymentMethod;
+      if (!matchesPayment(returnPaymentMethod, item.refundAccountId)) continue;
       ensureRow(item.createdBy).salesReturnAmount += Number(item.totalAmount) || 0;
       summary.salesReturnAmount += Number(item.totalAmount) || 0;
       summary.refundAmount += Number(item.refundAmount) || 0;
@@ -5489,10 +5509,12 @@ app.get('/api/reports/staff', async (req, res) => {
       ensureRow(item.createdBy).purchaseReturnAmount += Number(item.totalAmount) || 0;
       details.push({ type: 'purchase_return', id: item.id, documentNo: item.documentNo, userId: item.createdBy, userName: ensureRow(item.createdBy).userName, amount: Number(item.totalAmount) || 0, createdAt: item.createdAt });
     }
-    const cancelledInvoiceIds = new Set((await db.select({ id: schema.invoices.id }).from(schema.invoices).where(and(eq(schema.invoices.tenantId, req.user.tenantId), eq(schema.invoices.workflowStatus, 'cancelled'))).all()).map((item) => item.id));
+    const cancelledInvoiceIds = new Set(allInvoices.filter((invoice) => invoice.workflowStatus === 'cancelled').map((item) => item.id));
     const cashbook = (await db.select().from(schema.cashbookEntries).where(eq(schema.cashbookEntries.tenantId, req.user.tenantId)).all()).filter((item) => inRange(item.createdAt) && !(item.referenceId && cancelledInvoiceIds.has(item.referenceId)));
     for (const item of cashbook) {
       if (userId && item.createdBy !== userId) continue;
+      const linkedInvoice = item.referenceId ? invoiceById.get(item.referenceId) : null;
+      if (!matchesPayment(linkedInvoice?.paymentMethod, item.accountId)) continue;
       const row = ensureRow(item.createdBy);
       if (item.type === 'income') row.cashIncome += Number(item.amount) || 0;
       else row.cashExpense += Number(item.amount) || 0;
@@ -5534,13 +5556,15 @@ app.get('/api/cashbook', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'cashbook.view')) return;
     res.setHeader('Cache-Control', 'no-store');
-    const { from, to, type } = req.query;
+    const { from, to, type, accountId, createdBy } = req.query;
     const rows = (await db.select().from(schema.cashbookEntries)
       .where(eq(schema.cashbookEntries.tenantId, req.user.tenantId))
       .orderBy(desc(schema.cashbookEntries.createdAt))
       .all())
       .filter((row) => {
         if (type && row.type !== type) return false;
+        if (accountId && row.accountId !== String(accountId)) return false;
+        if (createdBy && row.createdBy !== String(createdBy)) return false;
         if (from && new Date(row.createdAt).getTime() < new Date(String(from)).getTime()) return false;
         if (to && new Date(row.createdAt).getTime() > (new Date(String(to)).getTime() + 24 * 60 * 60 * 1000 - 1)) return false;
         return true;

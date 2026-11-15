@@ -103,6 +103,7 @@ export default function Cashbook() {
   const [showCategoryCreator, setShowCategoryCreator] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [accountFilter, setAccountFilter] = useState('all');
+  const [employeeFilter, setEmployeeFilter] = useState('all');
   const [loading, setLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [fromDate, setFromDate] = useState('');
@@ -128,6 +129,8 @@ export default function Cashbook() {
         from: fromDate || undefined,
         to: toDate || undefined,
         type: typeFilter === 'all' ? undefined : typeFilter,
+        accountId: accountFilter === 'all' ? undefined : accountFilter,
+        createdBy: employeeFilter === 'all' ? undefined : employeeFilter,
       });
       setEntries(data);
     } catch (err) {
@@ -139,12 +142,11 @@ export default function Cashbook() {
 
   useEffect(() => {
     loadEntries();
-  }, [fromDate, toDate, typeFilter]);
+  }, [accountFilter, employeeFilter, fromDate, toDate, typeFilter]);
   useEffect(() => { cashAccountsApi.list().then(setAccounts).catch(() => setAccounts([])); }, []);
   useEffect(() => {
-    if (!showModal) return;
     cashbookApi.participants().then(setParticipants).catch(() => setParticipants({ users: [], customers: [], suppliers: [] }));
-  }, [showModal]);
+  }, []);
   useEffect(() => {
     if (!showModal) return;
     setCategoryLoading(true);
@@ -176,8 +178,8 @@ export default function Cashbook() {
       return;
     }
     try {
-      const created = await cashbookApi.create(form);
-      setEntries((prev) => [created, ...prev]);
+      await cashbookApi.create(form);
+      await loadEntries();
       setShowModal(false);
       setForm({ type: 'income', amount: 0, category: '', note: '', accountId: '', actorId: currentUser?.id || '', counterpartyType: 'other', counterpartyId: '', counterpartyName: '' });
       setShowCategoryCreator(false);
@@ -222,7 +224,7 @@ export default function Cashbook() {
 
   const exportCsv = () => {
     const header = ['Thoi gian', 'Loai', 'Tai khoan', 'Danh muc', 'So tien', 'Nguoi thu/chi', 'Nguoi nop/nhan', 'Ghi chu'];
-    const rows = entries.filter((e) => accountFilter === 'all' || e.accountId === accountFilter).map((e) => [
+    const rows = entries.map((e) => [
       new Date(e.createdAt).toLocaleString('vi-VN'),
       e.type === 'income' ? 'Thu' : 'Chi',
       accounts.find((account) => account.id === e.accountId)?.name || 'Chưa phân bổ',
@@ -248,7 +250,7 @@ export default function Cashbook() {
       return;
     }
     if (entry.referenceType === 'sales_return' || entry.category === 'Hoàn tiền khách hàng') {
-      navigate('/app/returns');
+      navigate(`/app/returns?returnId=${encodeURIComponent(entry.referenceId)}`);
       return;
     }
     if (entry.referenceType === 'purchase_return') {
@@ -282,7 +284,7 @@ export default function Cashbook() {
         </div>} />
 
       <div className="flex-1 overflow-y-auto space-y-2 p-2 md:space-y-3 md:p-3 lg:p-4">
-        <section className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 bg-white p-2 md:grid-cols-4 md:p-3">
+        <section className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 bg-white p-2 md:grid-cols-5 md:p-3">
           <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
           <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
           <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as any)} className="h-10 rounded-md border border-gray-300 bg-white px-3 text-sm">
@@ -291,7 +293,8 @@ export default function Cashbook() {
             <option value="expense">Chi</option>
           </select>
           <select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 text-sm"><option value="all">Tất cả tài khoản</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select>
-          <Button variant="outline" onClick={() => { setFromDate(''); setToDate(''); setTypeFilter('all'); }} className="h-10">Reset lọc</Button>
+          <select value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)} className="h-10 rounded-md border border-gray-300 bg-white px-3 text-sm"><option value="all">Tất cả nhân viên</option>{participants.users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select>
+          <Button variant="outline" onClick={() => { setFromDate(''); setToDate(''); setTypeFilter('all'); setAccountFilter('all'); setEmployeeFilter('all'); }} className="h-10">Reset lọc</Button>
         </section>
 
         <section className="grid grid-cols-1 gap-2 md:grid-cols-3">
@@ -314,7 +317,7 @@ export default function Cashbook() {
           {loading ? (
             <p className="p-4 text-sm text-slate-500">Đang tải...</p>
           ) : entries.length === 0 ? (
-            <p className="p-4 text-sm text-slate-500">Chưa có giao dịch thu chi.</p>
+            <p className="p-4 text-sm text-slate-500">Không có giao dịch phù hợp với bộ lọc.</p>
           ) : (
             <div className="divide-y divide-slate-100">
               {entries.map((entry) => (
