@@ -397,9 +397,26 @@ const ensureRole = (req: Request, res: Response, roles: string[]) => {
 
 const ensureOwner = (req: Request, res: Response) => ensureRole(req, res, ['owner']);
 
-const hasPermission = (req: Request, code: string) => {
+const impliedViewPermissions: Record<string, string[]> = {
+  'dashboard.view': [],
+  'sales.view': ['sales.create', 'sales.cancel', 'sales.view_cost', 'sales.return', 'sales.override_price'],
+  'inventory.view': ['inventory.create', 'inventory.update', 'inventory.delete', 'inventory.adjust', 'inventory.view_cost', 'inventory.manage_pricing'],
+  'purchases.view': ['purchases.create', 'purchases.approve', 'purchases.return'],
+  'partners.view': ['partners.create', 'partners.update'],
+  'customers.view': ['customers.view_detail', 'partners.view', 'sales.view', 'sales.create'],
+  'suppliers.view': ['suppliers.view_detail', 'partners.view', 'purchases.view', 'purchases.create'],
+  'debt.view': ['debt.collect'],
+  'cashbook.view': ['cashbook.create'],
+  'reports.view': ['reports.export'],
+  'settings.view': ['settings.manage_users', 'settings.manage_permissions'],
+};
+
+const hasPermission = (req: Request, code: string, visited = new Set<string>()): boolean => {
   if (req.user?.role === 'owner') return true;
-  return Boolean(req.user?.permissionMap?.get(code));
+  if (req.user?.permissionMap?.get(code)) return true;
+  if (visited.has(code)) return false;
+  visited.add(code);
+  return (impliedViewPermissions[code] || []).some((permission) => hasPermission(req, permission, visited));
 };
 
 const ensurePermission = (req: Request, res: Response, code: string) => {
@@ -3121,24 +3138,30 @@ backfillSalesCashbookAccounts();
 app.get('/api/cashbook/participants', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'cashbook.create')) return;
+    const canListCustomers = hasPermission(req, 'customers.view') || hasPermission(req, 'sales.view') || hasPermission(req, 'sales.create');
+    const canListSuppliers = hasPermission(req, 'suppliers.view') || hasPermission(req, 'purchases.view') || hasPermission(req, 'purchases.create');
     const [users, customers, suppliers] = await Promise.all([
-      db.select({ id: schema.users.id, name: schema.users.name, email: schema.users.email, role: schema.users.role })
+      db.select({ id: schema.users.id, name: schema.users.name })
         .from(schema.users)
         .where(and(eq(schema.users.tenantId, req.user.tenantId), eq(schema.users.status, 'active')))
         .orderBy(schema.users.name)
         .all(),
-      db.select({ id: schema.customers.id, code: schema.customers.code, name: schema.customers.name, phone: schema.customers.phone })
+      canListCustomers
+        ? db.select({ id: schema.customers.id, name: schema.customers.name })
         .from(schema.customers)
         .where(and(eq(schema.customers.tenantId, req.user.tenantId), eq(schema.customers.active, true)))
         .orderBy(schema.customers.name)
         .limit(5000)
-        .all(),
-      db.select({ id: schema.suppliers.id, code: schema.suppliers.code, name: schema.suppliers.name, phone: schema.suppliers.phone })
+        .all()
+        : Promise.resolve([]),
+      canListSuppliers
+        ? db.select({ id: schema.suppliers.id, name: schema.suppliers.name })
         .from(schema.suppliers)
         .where(and(eq(schema.suppliers.tenantId, req.user.tenantId), eq(schema.suppliers.active, true)))
         .orderBy(schema.suppliers.name)
         .limit(5000)
-        .all(),
+        .all()
+        : Promise.resolve([]),
     ]);
     res.json({ users, customers, suppliers });
   } catch (err) {
@@ -3479,7 +3502,8 @@ app.post('/api/partners/import', async (req, res) => {
 
 app.get('/api/suppliers', async (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'partners.view')) return;
+    if (!ensureAnyPermission(req, res, ['suppliers.view', 'partners.view', 'purchases.view', 'purchases.create'])) return;
+    const canViewDetails = hasPermission(req, 'suppliers.view_detail');
     const includeMeta = String(req.query.includeMeta || '') === 'true';
     const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
     const offset = Math.max(Number(req.query.offset) || 0, 0);
@@ -3490,9 +3514,11 @@ app.get('/api/suppliers', async (req, res) => {
       conditions.push(or(
         sql`lower(${schema.suppliers.code}) like ${term}`,
         sql`lower(${schema.suppliers.name}) like ${term}`,
-        sql`lower(${schema.suppliers.phone}) like ${term}`,
-        sql`lower(coalesce(${schema.suppliers.email}, '')) like ${term}`,
-        sql`lower(coalesce(${schema.suppliers.sourceCode}, '')) like ${term}`,
+        ...(canViewDetails ? [
+          sql`lower(${schema.suppliers.phone}) like ${term}`,
+          sql`lower(coalesce(${schema.suppliers.email}, '')) like ${term}`,
+          sql`lower(coalesce(${schema.suppliers.sourceCode}, '')) like ${term}`,
+        ] : []),
       ) as any);
     }
     const whereClause = and(...conditions);
@@ -3505,9 +3531,12 @@ app.get('/api/suppliers', async (req, res) => {
       .limit(includeMeta ? limit : 5000)
       .offset(includeMeta ? offset : 0)
       .all();
+    const visibleRows = canViewDetails
+      ? rows
+      : rows.map((row) => ({ id: row.id, code: row.code, name: row.name, active: row.active }));
     res.json(includeMeta
-      ? { items: rows, total: Number(totalRow?.count || 0), offset, limit }
-      : rows);
+      ? { items: visibleRows, total: Number(totalRow?.count || 0), offset, limit }
+      : visibleRows);
   } catch (err) {
     console.error('GET /api/suppliers error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -4045,7 +4074,8 @@ app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
 
 app.get('/api/customers', async (req, res) => {
   try {
-    if (!ensureAnyPermission(req, res, ['partners.view', 'sales.view', 'sales.create'])) return;
+    if (!ensureAnyPermission(req, res, ['customers.view', 'partners.view', 'sales.view', 'sales.create'])) return;
+    const canViewDetails = hasPermission(req, 'customers.view_detail');
     const { search } = req.query;
     const includeMeta = String(req.query.includeMeta || '') === 'true';
     const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
@@ -4060,10 +4090,12 @@ app.get('/api/customers', async (req, res) => {
       conditions.push(or(
         sql`lower(${schema.customers.code}) like ${term}`,
         sql`lower(${schema.customers.name}) like ${term}`,
-        sql`lower(${schema.customers.phone}) like ${term}`,
-        sql`lower(${schema.customers.address}) like ${term}`,
-        sql`lower(coalesce(${schema.customers.email}, '')) like ${term}`,
-        sql`lower(coalesce(${schema.customers.sourceCode}, '')) like ${term}`,
+        ...(canViewDetails ? [
+          sql`lower(${schema.customers.phone}) like ${term}`,
+          sql`lower(${schema.customers.address}) like ${term}`,
+          sql`lower(coalesce(${schema.customers.email}, '')) like ${term}`,
+          sql`lower(coalesce(${schema.customers.sourceCode}, '')) like ${term}`,
+        ] : []),
       ) as any);
     }
     const whereClause = and(...conditions);
@@ -4076,11 +4108,19 @@ app.get('/api/customers', async (req, res) => {
       .limit(includeMeta ? limit : 5000)
       .offset(includeMeta ? offset : 0)
       .all();
-    const items = allCustomers.map((customer) => ({
+    const items = allCustomers.map((customer) => canViewDetails
+      ? {
         ...customer,
         tags: customer.tags ? JSON.parse(customer.tags) : [],
         createdByName: customer.createdBy ? userNameById.get(customer.createdBy) || null : null,
-      }));
+      }
+      : {
+        id: customer.id,
+        code: customer.code,
+        name: customer.name,
+        active: customer.active,
+        sourceCode: customer.sourceCode,
+      });
     res.json(includeMeta
       ? { items, total: Number(totalRow?.count || 0), offset, limit }
       : items);
@@ -4092,13 +4132,16 @@ app.get('/api/customers', async (req, res) => {
 
 app.get('/api/customers/:id', async (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'partners.view')) return;
+    if (!ensureAnyPermission(req, res, ['customers.view', 'partners.view', 'sales.view', 'sales.create'])) return;
     const tenantUsers = await db.select().from(schema.users)
       .where(eq(schema.users.tenantId, req.user.tenantId)).all();
     const userNameById = new Map(tenantUsers.map((u) => [u.id, u.name]));
     const customer = await db.select().from(schema.customers)
       .where(and(eq(schema.customers.id, req.params.id), eq(schema.customers.tenantId, req.user.tenantId))).get();
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
+    if (!hasPermission(req, 'customers.view_detail')) {
+      return res.json({ id: customer.id, code: customer.code, name: customer.name, active: customer.active, sourceCode: customer.sourceCode });
+    }
     res.json({
       ...customer,
       tags: customer.tags ? JSON.parse(customer.tags) : [],
@@ -4395,7 +4438,7 @@ app.patch('/api/customers/:id', async (req, res) => {
 // ═══════════════════════════════════════════════════════════
 app.get('/api/customer-care-logs', async (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'partners.view')) return;
+    if (!ensurePermission(req, res, 'customers.view_detail')) return;
     const { customerId } = req.query;
     const tenantUsers = await db.select().from(schema.users)
       .where(eq(schema.users.tenantId, req.user.tenantId)).all();

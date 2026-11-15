@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, notInArray } from 'drizzle-orm';
 import { db, postgresPool } from './dbPostgres';
 import * as schema from './schema';
 import { ENABLE_PLATFORM_ADMIN, MIN_PASSWORD_LENGTH, OFFLINE_MODE } from './runtimeConfig';
@@ -25,6 +25,10 @@ const permissionDefinitions = [
   ['sales.return', 'sales', 'return', 'Trả hàng khách hàng'],
   ['sales.override_price', 'sales', 'override_price', 'Sửa giá bán tại quầy'],
   ['partners.view', 'partners', 'view', 'Xem đối tác'],
+  ['customers.view', 'partners', 'customers_view', 'Xem tên khách hàng'],
+  ['customers.view_detail', 'partners', 'customers_view_detail', 'Xem chi tiết khách hàng'],
+  ['suppliers.view', 'partners', 'suppliers_view', 'Xem tên nhà cung cấp'],
+  ['suppliers.view_detail', 'partners', 'suppliers_view_detail', 'Xem chi tiết nhà cung cấp'],
   ['partners.create', 'partners', 'create', 'Thêm đối tác'],
   ['partners.update', 'partners', 'update', 'Sửa đối tác'],
   ['debt.view', 'debt', 'view', 'Xem công nợ'],
@@ -42,9 +46,9 @@ const permissionDefinitions = [
 const roleDefaults: Record<string, string[]> = {
   owner: permissionDefinitions.map(([code]) => code),
   manager: permissionDefinitions.filter(([code]) => !['settings.manage_users', 'settings.manage_permissions', 'sales.cancel'].includes(code)).map(([code]) => code),
-  cashier: ['sales.view', 'sales.create', 'partners.view', 'partners.create', 'debt.view'],
-  warehouse: ['inventory.view', 'inventory.create', 'inventory.adjust', 'inventory.view_cost', 'inventory.manage_pricing', 'purchases.view', 'purchases.create', 'purchases.approve', 'purchases.return', 'partners.view'],
-  accountant: ['dashboard.view', 'purchases.view', 'partners.view', 'debt.view', 'debt.collect', 'cashbook.view', 'cashbook.create', 'reports.view', 'reports.export', 'transactions.view_all'],
+  cashier: ['sales.view', 'sales.create', 'customers.view', 'partners.create'],
+  warehouse: ['inventory.view', 'inventory.create', 'inventory.adjust', 'inventory.view_cost', 'inventory.manage_pricing', 'purchases.view', 'purchases.create', 'purchases.approve', 'purchases.return', 'suppliers.view'],
+  accountant: ['dashboard.view', 'customers.view', 'suppliers.view', 'purchases.view', 'debt.view', 'debt.collect', 'cashbook.view', 'cashbook.create', 'reports.view', 'reports.export', 'transactions.view_all'],
 };
 
 export const seedPostgres = async () => {
@@ -67,8 +71,12 @@ export const seedPostgres = async () => {
         role,
         permissionCode: code,
         allowed: true,
-      }).onConflictDoNothing();
+    }).onConflictDoUpdate({ target: schema.rolePermissions.id, set: { allowed: true } });
     }
+  await db.delete(schema.rolePermissions).where(and(
+    eq(schema.rolePermissions.role, role),
+    notInArray(schema.rolePermissions.permissionCode, codes),
+  ));
   }
 
   await db.insert(schema.packages).values({

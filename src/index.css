@@ -470,7 +470,9 @@
 
   @media (max-width: 1023px) {
     .pb-mobile-nav {
-      padding-bottom: calc(80px + env(safe-area-inset-bottom));
+      /* Keep the last row clear of the fixed bottom navigation on short
+         mobile viewports, including devices with a safe-area inset. */
+      padding-bottom: calc(104px + env(safe-area-inset-bottom));
     }
 
     .erp-compact.h-screen {

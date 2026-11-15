@@ -66,7 +66,7 @@ const sections: Array<{ title: string; items: MenuItem[] }> = [
 ];
 
 export default function MoreMenu() {
-  const { currentUser } = useApp();
+  const { currentUser, permissions } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -83,7 +83,7 @@ export default function MoreMenu() {
       </header>
 
       {sections.map((section) => {
-        const visible = section.items.filter((item) => isMenuAllowed(currentUser?.role, item.path));
+        const visible = section.items.filter((item) => isMenuAllowed(currentUser?.role, item.path, permissions));
         if (!visible.length) return null;
         return (
           <section key={section.title} className="overflow-hidden rounded-lg border border-slate-200 bg-white">
@@ -121,7 +121,7 @@ export default function MoreMenu() {
         );
       })}
 
-      {isMenuAllowed(currentUser?.role, '/app/debt') && (
+      {isMenuAllowed(currentUser?.role, '/app/debt', permissions) && (
         <section className="overflow-hidden rounded-lg border border-slate-200 bg-white">
           <div className="border-b border-slate-100 px-4 py-2.5"><h2 className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">Tài chính</h2></div>
           <button type="button" onClick={() => navigate('/app/debt')} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-slate-50">
@@ -131,7 +131,7 @@ export default function MoreMenu() {
         </section>
       )}
 
-      {isMenuAllowed(currentUser?.role, '/app/settings') && (
+      {isMenuAllowed(currentUser?.role, '/app/settings', permissions) && (
         <button type="button" onClick={() => navigate('/app/settings')} className="flex w-full items-center gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 text-left hover:bg-slate-50">
           <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100 text-slate-600"><Settings className="h-4 w-4" /></span>
           <span><span className="block text-sm font-medium text-slate-900">Cài đặt</span><span className="mt-0.5 block text-xs text-slate-500">Thiết lập cửa hàng và người dùng</span></span>

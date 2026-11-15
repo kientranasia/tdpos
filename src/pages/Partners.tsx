@@ -87,7 +87,7 @@ const parsePartnerWorkbook = async (file: File): Promise<ImportPayload> => {
 export default function Partners() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { customers, invoices, activeTenant, addCustomer, refreshCustomers } = useApp();
+  const { customers, invoices, activeTenant, currentUser, permissions, addCustomer, refreshCustomers } = useApp();
   const [type, setType] = useState<PartnerType>(location.pathname.includes('supplier') ? 'supplier' : 'customer');
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [search, setSearch] = useState('');
@@ -111,18 +111,21 @@ export default function Partners() {
     Promise.all([refreshCustomers(), loadSuppliers()]).catch((err) => setError(err instanceof Error ? err.message : 'Không thể tải dữ liệu đối tác.'));
   }, [loadSuppliers, location.pathname, refreshCustomers]);
 
+  const isCustomer = type === 'customer';
+  const canViewDetails = currentUser?.role === 'owner' || permissions?.includes(isCustomer ? 'customers.view_detail' : 'suppliers.view_detail') === true;
+  const canManagePartners = currentUser?.role === 'owner' || permissions?.includes('partners.create') === true;
+
   const rows = useMemo(() => {
     const keyword = normalizeSearchText(search);
-    if (type === 'supplier') return suppliers.filter((row) => !keyword || normalizeSearchText(`${row.code} ${row.sourceCode || ''} ${row.name} ${row.phone} ${row.email || ''} ${row.taxCode || ''}`).includes(keyword));
-    return customers.filter((row) => !keyword || normalizeSearchText(`${row.code || ''} ${row.sourceCode || ''} ${row.name} ${row.phone} ${row.email || ''} ${row.address}`).includes(keyword));
-  }, [customers, search, suppliers, type]);
+    if (!isCustomer) return suppliers.filter((row) => !keyword || normalizeSearchText(`${row.code} ${row.sourceCode || ''} ${row.name}${canViewDetails ? ` ${row.phone || ''} ${row.email || ''} ${row.taxCode || ''}` : ''}`).includes(keyword));
+    return customers.filter((row) => !keyword || normalizeSearchText(`${row.code || ''} ${row.sourceCode || ''} ${row.name}${canViewDetails ? ` ${row.phone || ''} ${row.address || ''}` : ''}`).includes(keyword));
+  }, [canViewDetails, customers, isCustomer, search, suppliers]);
 
   const switchType = (next: PartnerType) => {
     setType(next);
     navigate(next === 'customer' ? '/app/customers' : '/app/suppliers', { replace: true });
   };
 
-  const isCustomer = type === 'customer';
   const HeaderIcon = isCustomer ? Users : Truck;
 
   const submit = async (event: FormEvent) => {
@@ -183,26 +186,28 @@ export default function Partners() {
     <header className="sticky top-0 z-40 flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-3 py-3">
       <div className="mr-auto flex items-center gap-2.5"><div className={`flex h-9 w-9 items-center justify-center rounded-lg text-white shadow-sm ${isCustomer ? 'bg-sky-600' : 'bg-amber-600'}`}><HeaderIcon className="h-4 w-4" /></div><div><h1 className="text-base font-semibold leading-tight text-slate-900">{isCustomer ? 'Khách hàng' : 'Nhà cung cấp'}</h1><p className="mt-0.5 text-[11px] leading-tight text-slate-500">{isCustomer ? 'Quản lý hồ sơ, nhóm khách và công nợ' : 'Quản lý thông tin và công nợ phải trả'}</p></div></div>
       <div className="flex items-center rounded border border-slate-200 bg-slate-50 p-0.5"><button className={`h-7 px-3 text-xs ${type === 'customer' ? 'bg-white font-semibold text-sky-700 shadow-sm' : 'text-slate-500'}`} onClick={() => switchType('customer')}><Users className="mr-1 inline h-3.5 w-3.5" />Khách hàng</button><button className={`h-7 px-3 text-xs ${type === 'supplier' ? 'bg-white font-semibold text-sky-700 shadow-sm' : 'text-slate-500'}`} onClick={() => switchType('supplier')}><Truck className="mr-1 inline h-3.5 w-3.5" />Nhà cung cấp</button></div>
-      <div className="relative w-48"><Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" /><Input className="h-8 rounded border-slate-200 pl-7 text-xs" placeholder="Tìm mã, tên, SĐT..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
+      <div className="relative w-48"><Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" /><Input className="h-8 rounded border-slate-200 pl-7 text-xs" placeholder={canViewDetails ? 'Tìm mã, tên, SĐT...' : 'Tìm mã, tên...'} value={search} onChange={(e) => setSearch(e.target.value)} /></div>
       <input ref={importInputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleImportFile} />
-      <Button size="sm" variant="outline" className="h-8 rounded px-3 text-xs" disabled={parsing} onClick={() => importInputRef.current?.click()}><Upload className="mr-1 h-3.5 w-3.5" />{parsing ? 'Đang đọc...' : 'Nhập dữ liệu'}</Button>
-      <Button size="sm" className="h-8 rounded px-3 text-xs" onClick={() => setShowCreate(true)}><Plus className="mr-1 h-3.5 w-3.5" />Thêm {type === 'customer' ? 'khách' : 'NCC'}</Button>
+      {canManagePartners && <><Button size="sm" variant="outline" className="h-8 rounded px-3 text-xs" disabled={parsing} onClick={() => importInputRef.current?.click()}><Upload className="mr-1 h-3.5 w-3.5" />{parsing ? 'Đang đọc...' : 'Nhập dữ liệu'}</Button>
+      <Button size="sm" className="h-8 rounded px-3 text-xs" onClick={() => setShowCreate(true)}><Plus className="mr-1 h-3.5 w-3.5" />Thêm {type === 'customer' ? 'khách' : 'NCC'}</Button></>}
     </header>
 
     <div className="flex-1 overflow-auto p-2">
       {error && <div className="mb-2 flex items-start gap-2 rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />{error}<button className="ml-auto" onClick={() => setError('')}><X className="h-3.5 w-3.5" /></button></div>}
       {success && <div className="mb-2 flex items-start gap-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700"><CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />{success}<button className="ml-auto" onClick={() => setSuccess('')}><X className="h-3.5 w-3.5" /></button></div>}
       <div className="overflow-hidden rounded border border-slate-200 bg-white">
-        <div className="grid grid-cols-[88px_minmax(180px,1.5fr)_110px_130px_minmax(180px,1fr)_120px_32px] gap-2 border-b border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] font-semibold text-slate-500"><span>Mã</span><span>{isCustomer ? 'Tên khách hàng' : 'Tên nhà cung cấp'}</span><span>Điện thoại</span><span>MST</span><span>Địa chỉ</span><span className="text-right">{isCustomer ? 'Dư nợ' : 'Phải trả'}</span><span /></div>
+        <div className={`grid ${canViewDetails ? 'grid-cols-[88px_minmax(180px,1.5fr)_110px_130px_minmax(180px,1fr)_120px_32px]' : 'grid-cols-[100px_minmax(180px,1fr)]'} gap-2 border-b border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] font-semibold text-slate-500`}><span>Mã</span><span>{isCustomer ? 'Tên khách hàng' : 'Tên nhà cung cấp'}</span>{canViewDetails && <><span>Điện thoại</span><span>MST</span><span>Địa chỉ</span><span className="text-right">{isCustomer ? 'Dư nợ' : 'Phải trả'}</span><span /></>}</div>
         <div className="divide-y divide-slate-100">{rows.map((row) => {
           const rowIsCustomer = type === 'customer';
           const code = row.code || row.sourceCode || (rowIsCustomer ? `KH-${row.id.slice(0, 6).toUpperCase()}` : '-');
           const balance = rowIsCustomer ? row.totalDebt : row.currentPayable;
-          return <button key={row.id} className="grid w-full grid-cols-[88px_minmax(180px,1.5fr)_110px_130px_minmax(180px,1fr)_120px_32px] items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-sky-50" onClick={() => rowIsCustomer ? navigate(`/app/customers/${row.id}`) : navigate(`/app/suppliers/${row.id}`)} aria-label={`Xem chi tiết ${row.name}`}>
-            <span className="truncate font-mono text-[11px] text-slate-500" title={String(code)}>{code}</span>
-            <span className="min-w-0"><span className="block truncate font-medium text-slate-900">{row.name}</span><span className="block truncate text-[11px] text-slate-400">{rowIsCustomer ? (row.type === 'loyal' ? 'Khách VIP' : 'Khách lẻ') : (row.groupName || 'Nhà cung cấp')}</span></span>
-            <span className="truncate text-slate-600">{row.phone || '-'}</span><span className="truncate text-slate-600">{row.taxCode || '-'}</span><span className="truncate text-slate-500">{row.address || '-'}</span><span className={`text-right tabular-nums font-medium ${balance > 0 ? 'text-amber-700' : 'text-slate-500'}`}>{formatCurrency(balance || 0)}</span><ChevronRight className="h-3.5 w-3.5 text-slate-300" />
-          </button>;
+          const rowContent = <><span className="truncate font-mono text-[11px] text-slate-500" title={String(code)}>{code}</span>
+            <span className="min-w-0"><span className="block truncate font-medium text-slate-900">{row.name}</span>{canViewDetails && <span className="block truncate text-[11px] text-slate-400">{rowIsCustomer ? (row.type === 'loyal' ? 'Khách VIP' : 'Khách lẻ') : (row.groupName || 'Nhà cung cấp')}</span>}</span>
+            {canViewDetails && <><span className="truncate text-slate-600">{row.phone || '-'}</span><span className="truncate text-slate-600">{row.taxCode || '-'}</span><span className="truncate text-slate-500">{row.address || '-'}</span><span className={`text-right tabular-nums font-medium ${balance > 0 ? 'text-amber-700' : 'text-slate-500'}`}>{formatCurrency(balance || 0)}</span><ChevronRight className="h-3.5 w-3.5 text-slate-300" /></>}
+          </>;
+          return canViewDetails
+            ? <button key={row.id} className="grid w-full grid-cols-[88px_minmax(180px,1.5fr)_110px_130px_minmax(180px,1fr)_120px_32px] items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-sky-50" onClick={() => rowIsCustomer ? navigate(`/app/customers/${row.id}`) : navigate(`/app/suppliers/${row.id}`)} aria-label={`Xem chi tiết ${row.name}`}>{rowContent}</button>
+            : <div key={row.id} className="grid grid-cols-[100px_minmax(180px,1fr)] items-center gap-2 px-2 py-1.5 text-left text-xs">{rowContent}</div>;
         })}{!rows.length && <div className="px-3 py-6 text-center text-xs text-slate-500">Chưa có dữ liệu phù hợp.</div>}</div>
       </div>
     </div>

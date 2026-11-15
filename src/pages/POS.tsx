@@ -100,6 +100,7 @@ export default function POS() {
   const [showDraftsSheet, setShowDraftsSheet] = useState(false);
   const isCashier = currentUser?.role === 'cashier';
   const canCreateCustomer = currentUser?.role === 'owner' || permissions?.includes('partners.create') === true;
+  const canViewCustomerDetails = currentUser?.role === 'owner' || permissions?.includes('customers.view_detail') === true;
 
   const [catalogProducts, setCatalogProducts] = useState<Product[]>([]);
   const [catalogTotal, setCatalogTotal] = useState(0);
@@ -1469,7 +1470,7 @@ export default function POS() {
                   </div>
                   <button type="button" onClick={() => { setShowCustomerPicker((previous) => !previous); setShowAddCustomer(false); }} className="flex min-h-11 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-left">
                     <span className="flex min-w-0 items-center gap-2 text-sm text-slate-800"><User className="h-4 w-4 shrink-0 text-slate-400" /><span className="truncate">{selectedCustomer?.name || 'Khách lẻ / khách ngoài'}</span></span>
-                    <span className="ml-2 flex shrink-0 items-center gap-1 text-xs text-slate-500">Nợ: {formatCurrency(selectedCustomer?.totalDebt || 0)} <ChevronRight className={`h-4 w-4 transition-transform ${showCustomerPicker ? 'rotate-90' : ''}`} /></span>
+                    <span className="ml-2 flex shrink-0 items-center gap-1 text-xs text-slate-500">{canViewCustomerDetails ? `Nợ: ${formatCurrency(selectedCustomer?.totalDebt || 0)}` : 'Đã chọn'} <ChevronRight className={`h-4 w-4 transition-transform ${showCustomerPicker ? 'rotate-90' : ''}`} /></span>
                   </button>
                   {showCustomerPicker && (
                     <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 p-2">
@@ -1489,7 +1490,7 @@ export default function POS() {
                           <div className="flex gap-2">
                             <div className="relative min-w-0 flex-1">
                               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                              <Input autoFocus value={customerSearchTerm} onChange={(event) => setCustomerSearchTerm(event.target.value)} placeholder="Tìm tên hoặc số điện thoại" className="h-9 bg-white pl-8 text-xs" />
+                              <Input autoFocus value={customerSearchTerm} onChange={(event) => setCustomerSearchTerm(event.target.value)} placeholder={canViewCustomerDetails ? 'Tìm tên hoặc số điện thoại' : 'Tìm tên khách hàng'} className="h-9 bg-white pl-8 text-xs" />
                             </div>
                             <Button type="button" size="sm" variant="outline" onClick={() => setShowAddCustomer(true)} disabled={!canCreateCustomer} title="Thêm khách hàng"><UserPlus className="h-3.5 w-3.5" /></Button>
                           </div>
@@ -1499,8 +1500,8 @@ export default function POS() {
                           <div className="mt-2 max-h-56 overflow-y-auto rounded-md border border-slate-100 bg-white">
                             {filteredCustomers.length > 0 ? filteredCustomers.map((customer) => (
                               <button type="button" key={customer.id} onClick={() => selectCustomer(customer)} className="flex w-full items-center justify-between border-b border-slate-100 px-3 py-2.5 text-left last:border-0 hover:bg-slate-50">
-                                <span className="min-w-0"><span className="block truncate text-xs font-medium text-slate-800">{customer.name}</span><span className="block text-[11px] text-slate-500">{customer.phone}</span></span>
-                                <span className={`ml-3 shrink-0 text-xs font-semibold tabular-nums ${customer.totalDebt > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>{formatCurrency(customer.totalDebt || 0)}</span>
+                                <span className="min-w-0"><span className="block truncate text-xs font-medium text-slate-800">{customer.name}</span>{canViewCustomerDetails && <span className="block text-[11px] text-slate-500">{customer.phone}</span>}</span>
+                                {canViewCustomerDetails && <span className={`ml-3 shrink-0 text-xs font-semibold tabular-nums ${customer.totalDebt > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>{formatCurrency(customer.totalDebt || 0)}</span>}
                               </button>
                             )) : customerSearchTerm ? <p className="px-3 py-4 text-center text-xs text-slate-500">Không tìm thấy khách hàng phù hợp.</p> : <p className="px-3 py-4 text-center text-xs text-slate-500">Chưa có khách hàng.</p>}
                           </div>
@@ -1718,10 +1719,10 @@ export default function POS() {
               <UserPlus className="h-4 w-4" />
             </button>
           </div>
-          <div className="mt-2 flex items-center justify-between rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs">
+          {canViewCustomerDetails && <div className="mt-2 flex items-center justify-between rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs">
             <span className="text-slate-500">Công nợ hiện tại</span>
             <span className={`font-semibold tabular-nums ${selectedCustomer?.totalDebt ? 'text-rose-600' : 'text-emerald-700'}`}>{formatCurrency(selectedCustomer?.totalDebt || 0)}</span>
-          </div>
+          </div>}
           <div className="mt-2 flex items-center gap-2">
             <span className="whitespace-nowrap text-xs text-slate-500">Bảng giá</span>
             <select value={selectedPriceListId} onChange={(e) => setSelectedPriceListId(e.target.value)} disabled={priceListLoading || !priceLists.length} aria-busy={priceListLoading} className="h-8 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-xs disabled:cursor-wait disabled:text-slate-400">
@@ -1920,7 +1921,7 @@ export default function POS() {
                 <div className="flex gap-2">
                   <div className="relative flex-1">
                     <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                    <Input autoFocus value={customerSearchTerm} onChange={(event) => setCustomerSearchTerm(event.target.value)} placeholder="Tìm tên hoặc số điện thoại" className="h-9 pl-8 text-xs" />
+                    <Input autoFocus value={customerSearchTerm} onChange={(event) => setCustomerSearchTerm(event.target.value)} placeholder={canViewCustomerDetails ? 'Tìm tên hoặc số điện thoại' : 'Tìm tên khách hàng'} className="h-9 pl-8 text-xs" />
                   </div>
                   <Button type="button" size="sm" variant="outline" onClick={() => setShowAddCustomer(true)} disabled={!canCreateCustomer} title="Thêm khách hàng"><UserPlus className="h-3.5 w-3.5" /></Button>
                 </div>
@@ -1930,8 +1931,8 @@ export default function POS() {
                 <div className="mt-2 max-h-64 overflow-y-auto rounded-md border border-slate-100">
                   {filteredCustomers.length > 0 ? filteredCustomers.map((customer) => (
                     <button type="button" key={customer.id} onClick={() => selectCustomer(customer)} className="flex w-full items-center justify-between border-b border-slate-100 px-3 py-2.5 text-left last:border-0 hover:bg-slate-50">
-                      <span className="min-w-0"><span className="block truncate text-xs font-medium text-slate-800">{customer.name}</span><span className="block text-[11px] text-slate-500">{customer.phone}</span></span>
-                      <span className={`ml-3 shrink-0 text-xs font-semibold tabular-nums ${customer.totalDebt > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>{formatCurrency(customer.totalDebt || 0)}</span>
+                      <span className="min-w-0"><span className="block truncate text-xs font-medium text-slate-800">{customer.name}</span>{canViewCustomerDetails && <span className="block text-[11px] text-slate-500">{customer.phone}</span>}</span>
+                      {canViewCustomerDetails && <span className={`ml-3 shrink-0 text-xs font-semibold tabular-nums ${customer.totalDebt > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>{formatCurrency(customer.totalDebt || 0)}</span>}
                     </button>
                   )) : customerSearchTerm ? <p className="px-3 py-4 text-center text-xs text-slate-500">Không tìm thấy khách hàng phù hợp.</p> : <p className="px-3 py-4 text-center text-xs text-slate-500">Chưa có khách hàng.</p>}
                 </div>

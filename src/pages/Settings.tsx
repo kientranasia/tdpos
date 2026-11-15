@@ -232,6 +232,7 @@ export default function Settings() {
       setRoleForm({ code: '', name: '', description: '' });
       setEditingRoleCode('');
       setRolePermissionRows([]);
+      setOperationMessage('Đã lưu vai trò. Nhân viên thuộc vai trò này cần đăng nhập lại để nhận quyền mới. Quyền xem tên không bao gồm hồ sơ chi tiết hoặc công nợ.');
       await loadRoles();
       await loadTenantUsers();
     } catch (err) {
@@ -539,7 +540,7 @@ export default function Settings() {
           {isOwner && !isSingleUserPlan && (
             <div className="space-y-3 rounded-lg border border-slate-200 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div><p className="text-sm font-medium text-slate-900">Nhóm quyền / vai trò</p><p className="text-xs text-slate-500">Tạo vai trò riêng rồi bật từng nhóm tính năng cho nhân viên.</p></div>
+                <div><p className="text-sm font-medium text-slate-900">Nhóm quyền / vai trò</p><p className="text-xs text-slate-500">Tạo vai trò riêng rồi bật từng nhóm tính năng cho nhân viên.</p><p className="mt-1 text-[11px] text-slate-400">Quyền tạo, sửa, trả hàng hoặc điều chỉnh sẽ tự bao gồm quyền xem khu vực tương ứng.</p></div>
                 <Button size="sm" variant="outline" onClick={() => void openRoleEditor()}><Plus className="mr-1 h-3.5 w-3.5" />Tạo vai trò</Button>
               </div>
               <div className="grid gap-3 lg:grid-cols-[minmax(190px,0.8fr)_minmax(0,1.6fr)]">
