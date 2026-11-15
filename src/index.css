@@ -525,4 +525,14 @@
   .card-shadow-hover:hover {
     box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
   }
+
+  /* The daily report is for cash movement; sales and return documents live
+     in the dedicated sales report tab. */
+  .report-daily-sales-sections.report-view-daily > section:nth-child(2),
+  .report-daily-sales-sections.report-view-daily > section:nth-child(3),
+  .report-daily-sales-sections.report-view-sales > section:nth-child(1),
+  .report-daily-sales-sections.report-view-sales > section:nth-child(4),
+  .report-daily-sales-sections.report-view-sales > section:nth-child(5) {
+    display: none;
+  }
 }

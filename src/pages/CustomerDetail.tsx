@@ -1,8 +1,9 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import * as XLSX from 'xlsx';
 import { useApp } from '../context/AppContext';
 import { formatCurrency } from '../lib/utils';
-import { debtLedgerApi } from '../lib/api';
+import { customersApi, debtLedgerApi } from '../lib/api';
 import { DebtLedger } from '../types';
 import {
   Users,
@@ -18,7 +19,8 @@ import {
   Receipt,
   UserCheck,
   Star,
-  Edit2
+  Edit2,
+  Download,
 } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
@@ -38,6 +40,8 @@ export default function CustomerDetail() {
     type: 'retail' as 'retail' | 'loyal',
   });
   const [debtPayments, setDebtPayments] = useState<DebtLedger[]>([]);
+  const [exportingDebt, setExportingDebt] = useState(false);
+  const [exportError, setExportError] = useState('');
 
   const customer = customers.find(c => c.id === id);
   const customerInvoices = useMemo(() => {
@@ -62,6 +66,44 @@ export default function CustomerDetail() {
     };
     loadDebtPayments();
   }, [id]);
+
+  const exportDebtStatement = async () => {
+    if (!customer || exportingDebt) return;
+    setExportingDebt(true);
+    setExportError('');
+    try {
+      const statement = await customersApi.debtStatement(customer.id);
+      const money = (value: unknown) => Number(value || 0);
+      const dateText = (value: string) => {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? value : date.toLocaleString('vi-VN', { hour12: false });
+      };
+      const rows: any[][] = [
+        [statement.tenant?.name || 'HKD Smart'],
+        ['Công nợ chi tiết khách hàng'],
+        ['Khách hàng', customer.name],
+        ['Mã KH', customer.code || customer.id],
+        ['Nợ đầu kỳ', money(statement.openingDebt), 'Ghi nợ trong kỳ', money(statement.periodDebit)],
+        ['Ghi có trong kỳ', money(statement.periodCredit), 'Nợ cuối kỳ', money(statement.closingDebt)],
+        [],
+        ['Thời gian', 'Mã', 'Diễn giải', 'ĐVT', 'SL', 'Đơn giá', 'Thành tiền', 'Ghi nợ', 'Ghi có', 'Ghi chú', 'Người thực hiện'],
+        ...(statement.rows || []).flatMap((row: any) => [
+          [dateText(row.createdAt), row.documentNo || row.id, row.description || '', row.unitName || '', row.quantity ?? '', money(row.unitPrice), money(row.total), money(row.debit), money(row.credit), row.note || '', row.createdByName || row.createdBy || ''],
+          ...(row.rowType === 'invoice' ? (row.items || []).map((item: any) => ['', item.sku || item.productId || '', item.productName || '', item.unitName || '', item.quantity ?? '', money(item.price), money(item.total), '', '', item.note || '', row.createdByName || row.createdBy || '']) : []),
+        ]),
+      ];
+      const sheet = XLSX.utils.aoa_to_sheet(rows);
+      sheet['!cols'] = [{ wch: 20 }, { wch: 19 }, { wch: 43 }, { wch: 13 }, { wch: 8 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 35 }, { wch: 20 }];
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, sheet, 'CNCT');
+      const safeCustomerName = String(customer.name || customer.id).replace(/[\\/:*?"<>|]/g, '-').slice(0, 60);
+      XLSX.writeFile(workbook, `cong-no-chi-tiet-${safeCustomerName}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Không thể xuất file công nợ chi tiết.');
+    } finally {
+      setExportingDebt(false);
+    }
+  };
 
   const customerTimeline = useMemo(() => {
     const invoiceEvents = customerInvoices.map((inv) => ({
@@ -268,6 +310,14 @@ export default function CustomerDetail() {
         </div>
         <div className="grid grid-cols-2 gap-2 md:flex md:items-center md:gap-2 w-full md:w-auto">
           <Button
+            onClick={exportDebtStatement}
+            disabled={exportingDebt}
+            variant="outline"
+            className="h-9 px-3 rounded-lg font-medium text-sm bg-white border-emerald-200 text-emerald-700 hover:bg-emerald-50 gap-2"
+          >
+            <Download className="h-4 w-4" /> {exportingDebt ? 'Đang xuất...' : 'Xuất công nợ'}
+          </Button>
+          <Button
             onClick={openEditModal}
             variant="outline"
             className="h-9 px-3 rounded-lg font-medium text-sm bg-white border-slate-200 text-slate-600 hover:bg-slate-50 gap-2"
@@ -279,6 +329,7 @@ export default function CustomerDetail() {
           </Button>
         </div>
       </div>
+      {exportError && <p className="mx-3 mt-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 md:mx-4">{exportError}</p>}
 
       <div className="flex-1 overflow-y-auto p-3 md:p-4 custom-scrollbar">
         <div className="max-w-7xl mx-auto space-y-4">

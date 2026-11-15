@@ -718,7 +718,6 @@ export default function Debt() {
           <div className="grid w-full grid-cols-[1fr_auto] gap-2 sm:flex sm:w-auto sm:items-center sm:gap-2">
             {debtTab === 'customer' && <select value={careFilter} onChange={(e) => setCareFilter(e.target.value as typeof careFilter)} className="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700"><option value="all">Còn nợ</option><option value="due_soon">Sắp đến hạn</option><option value="inactive_7">7 ngày chưa mua</option><option value="inactive_30">30 ngày chưa mua</option></select>}
             {debtTab === 'customer' && <Button onClick={() => openDebtModal('decrease')} className="h-8 rounded-md bg-sky-600 px-3 text-xs font-medium text-white hover:bg-sky-700"><ArrowDownCircle className="mr-1.5 h-3.5 w-3.5" />Thu nợ</Button>}
-            {debtTab === 'customer' && <Button variant="outline" onClick={openDebtExportModal} className="h-8 rounded-md border-emerald-200 px-3 text-xs text-emerald-700 hover:bg-emerald-50"><Download className="mr-1.5 h-3.5 w-3.5" />Xuất Excel chi tiết</Button>}
             {debtTab === 'customer' && <Button variant="outline" onClick={exportDebtCsv} className="h-8 rounded-md px-3 text-xs"><Download className="mr-1.5 h-3.5 w-3.5" />Xuất CSV tổng hợp</Button>}
           </div>
         </div>

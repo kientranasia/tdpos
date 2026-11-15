@@ -20,6 +20,7 @@ const invoiceDisplayNo = (invoice: Pick<Invoice, 'id' | 'documentNo'>) => {
 };
 
 type InvoicePaymentFilter = 'all' | 'cash' | 'transfer';
+type InvoiceStaffFilter = 'all' | string;
 
 export default function Invoices() {
   const { invoices, customers, products, activeTenant, currentUser, refreshInvoices } = useApp();
@@ -30,6 +31,8 @@ export default function Invoices() {
   const [pendingStatusFilter, setPendingStatusFilter] = useState<'all' | 'completed' | 'partial' | 'unpaid'>('all');
   const [paymentFilter, setPaymentFilter] = useState<InvoicePaymentFilter>('all');
   const [pendingPaymentFilter, setPendingPaymentFilter] = useState<InvoicePaymentFilter>('all');
+  const [staffFilter, setStaffFilter] = useState<InvoiceStaffFilter>('all');
+  const [pendingStaffFilter, setPendingStaffFilter] = useState<InvoiceStaffFilter>('all');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(() => new URLSearchParams(window.location.search).get('invoiceId'));
   const [deepLinkedInvoice, setDeepLinkedInvoice] = useState<Invoice | null>(null);
   const [debtPayments, setDebtPayments] = useState<DebtLedger[]>([]);
@@ -60,6 +63,17 @@ export default function Invoices() {
     customers.forEach((c) => map.set(c.id, c.name));
     return map;
   }, [customers]);
+
+  const invoiceStaffOptions = useMemo(() => {
+    const staffById = new Map<string, string>();
+    invoices.forEach((invoice) => {
+      if (!invoice.createdBy) return;
+      staffById.set(invoice.createdBy, invoice.createdByName || invoice.createdBy);
+    });
+    return Array.from(staffById.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'vi'));
+  }, [invoices]);
 
   const effectiveStatusOf = (inv: any): 'completed' | 'partial' | 'unpaid' => {
     const finalAmount = Number(inv?.finalAmount || 0);
@@ -103,8 +117,9 @@ export default function Invoices() {
         return normalizeSearchText(`${invoiceDisplayNo(inv)} ${inv.id}`).includes(keyword) || normalizeSearchText(customerName).includes(keyword);
       })
       .filter((inv) => paymentFilter === 'all' || inv.paymentMethod === paymentFilter)
+      .filter((inv) => staffFilter === 'all' || inv.createdBy === staffFilter)
       .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
-  }, [customerNameById, invoices, paymentFilter, searchTerm, timeFilter]);
+  }, [customerNameById, invoices, paymentFilter, searchTerm, staffFilter, timeFilter]);
 
   const filteredInvoices = useMemo(() => {
     if (statusFilter === 'all') return baseInvoices;
@@ -251,6 +266,9 @@ export default function Invoices() {
     cash: 'Tiền mặt',
     transfer: 'Chuyển khoản',
   }[paymentFilter];
+  const staffFilterLabel = staffFilter === 'all'
+    ? 'Tất cả nhân viên'
+    : invoiceStaffOptions.find((staff) => staff.id === staffFilter)?.name || 'Nhân viên đã chọn';
 
   useEffect(() => {
     if (!routeInvoiceId) {
@@ -341,7 +359,8 @@ export default function Invoices() {
   useEffect(() => {
     if (showFilterSheet) setPendingStatusFilter(statusFilter);
     if (showFilterSheet) setPendingPaymentFilter(paymentFilter);
-  }, [paymentFilter, showFilterSheet, statusFilter]);
+    if (showFilterSheet) setPendingStaffFilter(staffFilter);
+  }, [paymentFilter, showFilterSheet, staffFilter, statusFilter]);
 
   const openReceiptModal = (invoiceId: string) => {
     if (invoiceId !== selectedInvoiceId) setLoadingInvoiceItems(true);
@@ -452,6 +471,11 @@ export default function Invoices() {
                 {paymentFilter !== 'all' && (
                   <span className="h-10 px-3 rounded-full bg-sky-100 text-sky-700 text-sm font-medium inline-flex items-center">
                     {paymentFilterLabel}
+                  </span>
+                )}
+                {staffFilter !== 'all' && (
+                  <span className="h-10 px-3 rounded-full bg-violet-100 text-violet-700 text-sm font-medium inline-flex items-center">
+                    {staffFilterLabel}
                   </span>
                 )}
               </div>
@@ -573,6 +597,15 @@ export default function Invoices() {
               <option value="all">Tất cả phương thức</option>
               <option value="cash">Tiền mặt</option>
               <option value="transfer">Chuyển khoản</option>
+            </select>
+            <select
+              value={staffFilter}
+              onChange={(e) => setStaffFilter(e.target.value)}
+              className="h-9 lg:h-10 rounded-lg border-none bg-slate-100/70 shadow-inner px-3 text-sm text-slate-700"
+              aria-label="Lọc theo nhân viên tạo"
+            >
+              <option value="all">Tất cả nhân viên</option>
+              {invoiceStaffOptions.map((staff) => <option key={staff.id} value={staff.id}>{staff.name}</option>)}
             </select>
             <div className="flex items-center gap-2">
               <Button variant="outline" className="h-9 lg:h-10 px-3 text-sm" onClick={() => navigate('/app/returns')}>
@@ -802,8 +835,30 @@ export default function Invoices() {
                   </button>
                 ))}
               </div>
+              <div className="rounded-lg border border-slate-200 overflow-hidden">
+                <div className="border-b border-slate-100 px-4 py-3 text-xs font-medium uppercase tracking-wide text-slate-400">Nhân viên tạo</div>
+                <button
+                  type="button"
+                  onClick={() => setPendingStaffFilter('all')}
+                  className="h-12 w-full px-4 border-b border-slate-100 flex items-center justify-between text-sm"
+                >
+                  <span className="text-slate-800">Tất cả nhân viên</span>
+                  {pendingStaffFilter === 'all' && <span className="text-sky-600">✓</span>}
+                </button>
+                {invoiceStaffOptions.map((staff) => (
+                  <button
+                    type="button"
+                    key={staff.id}
+                    onClick={() => setPendingStaffFilter(staff.id)}
+                    className="h-12 w-full px-4 border-b border-slate-100 last:border-0 flex items-center justify-between text-sm"
+                  >
+                    <span className="text-slate-800">{staff.name}</span>
+                    {pendingStaffFilter === staff.id && <span className="text-sky-600">✓</span>}
+                  </button>
+                ))}
+              </div>
               <div className="grid grid-cols-2 gap-2">
-                <Button variant="outline" className="h-11 w-full" onClick={() => { setPendingStatusFilter('all'); setPendingPaymentFilter('all'); }}>
+                <Button variant="outline" className="h-11 w-full" onClick={() => { setPendingStatusFilter('all'); setPendingPaymentFilter('all'); setPendingStaffFilter('all'); }}>
                   Đặt lại
                 </Button>
                 <Button
@@ -811,6 +866,7 @@ export default function Invoices() {
                   onClick={() => {
                     setStatusFilter(pendingStatusFilter);
                     setPaymentFilter(pendingPaymentFilter);
+                    setStaffFilter(pendingStaffFilter);
                     setShowFilterSheet(false);
                     window.scrollTo({ top: 0, behavior: 'smooth' });
                   }}
