@@ -293,7 +293,7 @@ export const paymentsApi = {
 };
 
 export const cashbookApi = {
-  list: (filters?: { from?: string; to?: string; type?: 'income' | 'expense'; accountId?: string; createdBy?: string }) => request<any[]>('/cashbook', { params: { ...(filters || {}), _ts: String(Date.now()) } as any }),
+  list: (filters?: { from?: string; to?: string; type?: 'income' | 'expense'; accountId?: string; actorId?: string }) => request<any[]>('/cashbook', { params: { ...(filters || {}), _ts: String(Date.now()) } as any }),
   participants: () => request<{ users: any[]; customers: any[]; suppliers: any[] }>('/cashbook/participants'),
   create: (data: { type: 'income' | 'expense'; amount: number; category: string; note?: string; referenceId?: string | null; accountId?: string | null; actorId?: string | null; actorName?: string; counterpartyType?: 'customer' | 'supplier' | 'employee' | 'shipping_partner' | 'other' | null; counterpartyId?: string | null; counterpartyName?: string }) =>
     request<any>('/cashbook', { method: 'POST', body: data }),

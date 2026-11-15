@@ -9,7 +9,7 @@ import { Info, Plus, Save, Settings2, ShieldCheck, Store, Trash2, Users } from '
 import AppPageHeader from '../components/layout/AppPageHeader';
 
 type SettingsTab = 'profile' | 'system' | 'invoice' | 'users';
-type RoleProfile = { code: string; name: string; description?: string; builtIn?: boolean; permissionCount?: number };
+type RoleProfile = { code: string; name: string; description?: string; builtIn?: boolean; editable?: boolean; customized?: boolean; permissionCount?: number };
 
 export default function Settings() {
   const { activeTenant, currentUser, updateTenant } = useApp();
@@ -545,7 +545,7 @@ export default function Settings() {
               <div className="grid gap-3 lg:grid-cols-[minmax(190px,0.8fr)_minmax(0,1.6fr)]">
                 <div className="space-y-1">
                   {roles.map((role) => <div key={role.code} className={`flex items-center gap-1 rounded-md border px-2 py-1.5 ${editingRoleCode === role.code ? 'border-sky-300 bg-sky-50' : 'border-slate-100'}`}>
-                    <button type="button" className="min-w-0 flex-1 text-left" onClick={() => void openRoleEditor(role)}><span className="block truncate text-xs font-medium text-slate-800">{role.name}</span><span className="block truncate font-mono text-[10px] text-slate-400">{role.code} · {role.permissionCount || 0} quyền</span></button>
+                    <button type="button" className="min-w-0 flex-1 text-left" onClick={() => void openRoleEditor(role)}><span className="flex items-center gap-1 truncate text-xs font-medium text-slate-800">{role.name}{role.customized && <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] font-medium text-emerald-700">Đã tùy chỉnh</span>}</span><span className="block truncate font-mono text-[10px] text-slate-400">{role.code} · {role.permissionCount || 0} quyền</span></button>
                     {!role.builtIn && <button type="button" aria-label={`Xóa ${role.name}`} title="Xóa vai trò" onClick={() => void deleteRole(role)} className="rounded p-1 text-rose-500 hover:bg-rose-50 hover:text-rose-700"><Trash2 className="h-3.5 w-3.5" /></button>}
                   </div>)}
                   {!roles.length && <p className="text-xs text-slate-400">Đang tải vai trò...</p>}
@@ -554,13 +554,13 @@ export default function Settings() {
                   <div className="space-y-3 rounded-md bg-slate-50 p-3">
                     <div className="grid gap-2 sm:grid-cols-3">
                       <Input value={roleForm.code} disabled={Boolean(editingRoleCode)} onChange={(e) => setRoleForm((prev) => ({ ...prev, code: e.target.value }))} placeholder="Mã vai trò (vd: sales_lead)" />
-                      <Input value={roleForm.name} onChange={(e) => setRoleForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Tên vai trò" />
-                      <Input value={roleForm.description} onChange={(e) => setRoleForm((prev) => ({ ...prev, description: e.target.value }))} placeholder="Mô tả ngắn" />
+                      <Input value={roleForm.name} disabled={roles.find((role) => role.code === editingRoleCode)?.editable === false} onChange={(e) => setRoleForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Tên vai trò" />
+                      <Input value={roleForm.description} disabled={roles.find((role) => role.code === editingRoleCode)?.editable === false} onChange={(e) => setRoleForm((prev) => ({ ...prev, description: e.target.value }))} placeholder="Mô tả ngắn" />
                     </div>
                     <div className="grid gap-1 sm:grid-cols-2">
-                      {rolePermissionRows.map((permission) => <label key={permission.code} className="flex items-center gap-2 rounded border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700"><input type="checkbox" checked={Boolean(permission.allowed)} disabled={roles.find((role) => role.code === editingRoleCode)?.builtIn} onChange={(e) => setRolePermissionRows((prev) => prev.map((row) => row.code === permission.code ? { ...row, allowed: e.target.checked } : row))} /><span>{permission.label}</span><span className="ml-auto font-mono text-[10px] text-slate-400">{permission.code}</span></label>)}
+                      {rolePermissionRows.map((permission) => <label key={permission.code} className="flex items-center gap-2 rounded border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700"><input type="checkbox" checked={Boolean(permission.allowed)} disabled={roles.find((role) => role.code === editingRoleCode)?.editable === false} onChange={(e) => setRolePermissionRows((prev) => prev.map((row) => row.code === permission.code ? { ...row, allowed: e.target.checked } : row))} /><span>{permission.label}</span><span className="ml-auto font-mono text-[10px] text-slate-400">{permission.code}</span></label>)}
                     </div>
-                    <div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => { setEditingRoleCode(''); setRolePermissionRows([]); }}>Đóng</Button><Button size="sm" onClick={() => void saveRole()} disabled={Boolean(roles.find((role) => role.code === editingRoleCode)?.builtIn) || !roleForm.name.trim() || !roleForm.code.trim()}> <Save className="mr-1 h-3.5 w-3.5" />Lưu vai trò</Button></div>
+                    <div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => { setEditingRoleCode(''); setRolePermissionRows([]); }}>Đóng</Button><Button size="sm" onClick={() => void saveRole()} disabled={roles.find((role) => role.code === editingRoleCode)?.editable === false || !roleForm.name.trim() || !roleForm.code.trim()}> <Save className="mr-1 h-3.5 w-3.5" />Lưu vai trò</Button></div>
                   </div>
                 )}
               </div>

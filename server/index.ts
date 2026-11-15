@@ -321,19 +321,18 @@ const authenticateUser = async (req: Request, res: Response, next: NextFunction)
       eq(schema.userPermissions.tenantId, user.tenantId),
       eq(schema.userPermissions.userId, user.id),
     )).all();
-    const rolePermissionRows = user.role === 'owner'
-      ? []
-      : ['owner', 'manager', 'cashier', 'warehouse', 'accountant'].includes(user.role)
-        ? await db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, user.role)).all()
-        : [];
-    const customRole = !['owner', 'manager', 'cashier', 'warehouse', 'accountant'].includes(user.role)
-      ? await db.select().from(schema.roleProfiles).where(and(eq(schema.roleProfiles.tenantId, user.tenantId), eq(schema.roleProfiles.code, user.role))).get()
-      : null;
-    const customRolePermissionRows = customRole
-      ? await db.select().from(schema.roleProfilePermissions).where(eq(schema.roleProfilePermissions.roleProfileId, customRole.id)).all()
+    const roleProfile = await db.select().from(schema.roleProfiles).where(and(
+      eq(schema.roleProfiles.tenantId, user.tenantId),
+      eq(schema.roleProfiles.code, user.role),
+    )).get();
+    const rolePermissionRows = !roleProfile && isBuiltInRole(user.role) && user.role !== 'owner'
+      ? await db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, user.role)).all()
+      : [];
+    const roleProfilePermissionRows = roleProfile
+      ? await db.select().from(schema.roleProfilePermissions).where(eq(schema.roleProfilePermissions.roleProfileId, roleProfile.id)).all()
       : [];
     const permissionMap = new Map<string, boolean>();
-    for (const grant of [...rolePermissionRows, ...customRolePermissionRows]) permissionMap.set(String(grant.permissionCode), Boolean(grant.allowed));
+    for (const grant of [...rolePermissionRows, ...roleProfilePermissionRows]) permissionMap.set(String(grant.permissionCode), Boolean(grant.allowed));
     for (const grant of directPermissionRows) permissionMap.set(String(grant.permissionCode), Boolean(grant.allowed));
     req.user = { ...decoded, id: user.id, email: user.email, tenantId: user.tenantId, role: user.role, sessionVersion: user.sessionVersion, permissionMap };
     // The JWT is validated against the control database first. All following
@@ -351,10 +350,42 @@ const authenticateUser = async (req: Request, res: Response, next: NextFunction)
 
 const hasRole = (userRole: string, roles: string[]) => roles.includes(userRole);
 const builtInRoles = ['owner', 'manager', 'cashier', 'warehouse', 'accountant'];
+const editableBuiltInRoles = ['manager', 'cashier', 'warehouse', 'accountant'];
 const isBuiltInRole = (role: string) => builtInRoles.includes(role);
+const builtInRoleDefinitions = [
+  { code: 'owner', name: 'Chủ cửa hàng', description: 'Toàn quyền trong cửa hàng.' },
+  { code: 'manager', name: 'Quản lý', description: 'Điều hành bán hàng, kho và báo cáo.' },
+  { code: 'cashier', name: 'Bán hàng', description: 'Lên đơn và chăm sóc khách tại quầy.' },
+  { code: 'warehouse', name: 'Kho', description: 'Quản lý mặt hàng và nhập hàng.' },
+  { code: 'accountant', name: 'Kế toán', description: 'Theo dõi công nợ, sổ quỹ và báo cáo.' },
+] as const;
 
 const roleProfileFor = async (tenantId: string, code: string) => await db.select().from(schema.roleProfiles)
   .where(and(eq(schema.roleProfiles.tenantId, tenantId), eq(schema.roleProfiles.code, code))).get();
+
+const ensureEditableRoleProfile = async (tenantId: string, code: string) => {
+  const existing = await roleProfileFor(tenantId, code);
+  if (existing) return existing;
+  if (!editableBuiltInRoles.includes(code)) return null;
+  const definition = builtInRoleDefinitions.find((role) => role.code === code);
+  if (!definition) return null;
+  const now = new Date().toISOString();
+  const profile = { id: uuid(), tenantId, code, name: definition.name, description: definition.description, createdAt: now, updatedAt: now };
+  const grants = await db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, code)).all();
+  await db.transaction(async (tx) => {
+    await tx.insert(schema.roleProfiles).values(profile).run();
+    for (const grant of grants) {
+      await tx.insert(schema.roleProfilePermissions).values({
+        id: uuid(),
+        roleProfileId: profile.id,
+        permissionCode: grant.permissionCode,
+        allowed: Boolean(grant.allowed),
+        updatedAt: now,
+      }).run();
+    }
+  });
+  return profile;
+};
 
 const ensureRole = (req: Request, res: Response, roles: string[]) => {
   if (!req.user || !hasRole(req.user.role, roles)) {
@@ -957,10 +988,7 @@ app.post('/api/license/refresh', async (req, res) => {
 app.get('/api/permissions', async (req, res) => {
   try {
     const grants = await db.select().from(schema.permissions).all();
-    const profile = isBuiltInRole(req.user.role) ? null : await roleProfileFor(req.user.tenantId, req.user.role);
-    const roleGrants = isBuiltInRole(req.user.role)
-      ? await db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, req.user.role)).all()
-      : profile ? await db.select().from(schema.roleProfilePermissions).where(eq(schema.roleProfilePermissions.roleProfileId, profile.id)).all() : [];
+    const roleGrants = await rolePermissionRows(req.user.role, req.user.tenantId);
     const userGrants = await db.select().from(schema.userPermissions).where(and(eq(schema.userPermissions.tenantId, req.user.tenantId), eq(schema.userPermissions.userId, req.user.id))).all();
     const roleMap = new Map<string, boolean>(roleGrants.map((grant) => [String(grant.permissionCode), Boolean(grant.allowed)] as [string, boolean]));
     const userMap = new Map<string, boolean>(userGrants.map((grant) => [String(grant.permissionCode), Boolean(grant.allowed)] as [string, boolean]));
@@ -972,30 +1000,39 @@ app.get('/api/permissions', async (req, res) => {
 });
 
 const rolePermissionRows = async (role: string, tenantId: string) => {
-  if (isBuiltInRole(role)) {
-    return await db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, role)).all();
-  }
   const profile = await roleProfileFor(tenantId, role);
-  return profile ? await db.select().from(schema.roleProfilePermissions).where(eq(schema.roleProfilePermissions.roleProfileId, profile.id)).all() : [];
+  if (profile) return await db.select().from(schema.roleProfilePermissions).where(eq(schema.roleProfilePermissions.roleProfileId, profile.id)).all();
+  if (isBuiltInRole(role) && role !== 'owner') return await db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, role)).all();
+  return [];
 };
 
 app.get('/api/roles', async (req, res) => {
   try {
     if (!ensureOwner(req, res)) return;
-    const permissionCount = new Map<string, number>();
-    for (const role of builtInRoles) permissionCount.set(role, (await db.select().from(schema.rolePermissions).where(eq(schema.rolePermissions.role, role)).all()).filter((grant) => grant.allowed).length);
-    const builtIns = [
-      { code: 'owner', name: 'Chủ cửa hàng', description: 'Toàn quyền trong cửa hàng.', builtIn: true },
-      { code: 'manager', name: 'Quản lý', description: 'Điều hành bán hàng, kho và báo cáo.', builtIn: true },
-      { code: 'cashier', name: 'Bán hàng', description: 'Lên đơn và chăm sóc khách tại quầy.', builtIn: true },
-      { code: 'warehouse', name: 'Kho', description: 'Quản lý mặt hàng và nhập hàng.', builtIn: true },
-      { code: 'accountant', name: 'Kế toán', description: 'Theo dõi công nợ, sổ quỹ và báo cáo.', builtIn: true },
-    ].map((role) => ({ ...role, permissionCount: permissionCount.get(role.code) || 0 }));
-    const custom = await Promise.all((await db.select().from(schema.roleProfiles).where(eq(schema.roleProfiles.tenantId, req.user.tenantId)).all()).map(async (role) => ({
+    const profiles = await db.select().from(schema.roleProfiles).where(eq(schema.roleProfiles.tenantId, req.user.tenantId)).all();
+    const profileByCode = new Map<string, typeof profiles[number]>(profiles.map((profile) => [profile.code, profile] as [string, typeof profile]));
+    const builtIns = await Promise.all(builtInRoleDefinitions.map(async (role) => {
+      const profile = profileByCode.get(role.code);
+      const grants = profile
+        ? await db.select().from(schema.roleProfilePermissions).where(and(eq(schema.roleProfilePermissions.roleProfileId, profile.id), eq(schema.roleProfilePermissions.allowed, true))).all()
+        : await db.select().from(schema.rolePermissions).where(and(eq(schema.rolePermissions.role, role.code), eq(schema.rolePermissions.allowed, true))).all();
+      return {
+        ...role,
+        name: profile?.name || role.name,
+        description: profile?.description || role.description,
+        builtIn: true,
+        editable: editableBuiltInRoles.includes(role.code),
+        customized: Boolean(profile),
+        permissionCount: grants.length,
+      };
+    }));
+    const custom = await Promise.all(profiles.filter((role) => !isBuiltInRole(role.code)).map(async (role) => ({
       code: role.code,
       name: role.name,
       description: role.description,
       builtIn: false,
+      editable: true,
+      customized: true,
       permissionCount: (await db.select().from(schema.roleProfilePermissions).where(and(eq(schema.roleProfilePermissions.roleProfileId, role.id), eq(schema.roleProfilePermissions.allowed, true))).all()).length,
       createdAt: role.createdAt,
       updatedAt: role.updatedAt,
@@ -1050,8 +1087,8 @@ app.post('/api/roles', async (req, res) => {
 app.patch('/api/roles/:code', async (req, res) => {
   try {
     if (!ensureOwner(req, res)) return;
-    if (isBuiltInRole(req.params.code)) return res.status(400).json({ error: 'Không sửa vai trò mặc định' });
-    const profile = await roleProfileFor(req.user.tenantId, req.params.code);
+    if (req.params.code === 'owner') return res.status(400).json({ error: 'Không sửa vai trò chủ cửa hàng' });
+    const profile = await ensureEditableRoleProfile(req.user.tenantId, req.params.code);
     if (!profile) return res.status(404).json({ error: 'Không tìm thấy vai trò' });
     const now = new Date().toISOString();
     const updates: any = { updatedAt: now };
@@ -1069,8 +1106,8 @@ app.patch('/api/roles/:code', async (req, res) => {
 app.put('/api/roles/:code/permissions', async (req, res) => {
   try {
     if (!ensureOwner(req, res)) return;
-    if (isBuiltInRole(req.params.code)) return res.status(400).json({ error: 'Không sửa quyền vai trò mặc định' });
-    const profile = await roleProfileFor(req.user.tenantId, req.params.code);
+    if (req.params.code === 'owner') return res.status(400).json({ error: 'Không sửa quyền vai trò chủ cửa hàng' });
+    const profile = await ensureEditableRoleProfile(req.user.tenantId, req.params.code);
     if (!profile) return res.status(404).json({ error: 'Không tìm thấy vai trò' });
     const entries = Array.isArray(req.body?.permissions) ? req.body.permissions : [];
     const knownCodes = new Set((await db.select({ code: schema.permissions.code }).from(schema.permissions).all()).map((permission) => permission.code));
@@ -5452,7 +5489,7 @@ app.get('/api/reports/staff', async (req, res) => {
       return rows.get(id);
     };
     const allInvoices = await db.select().from(schema.invoices).where(eq(schema.invoices.tenantId, req.user.tenantId)).all();
-    const invoiceById = new Map(allInvoices.map((invoice) => [invoice.id, invoice]));
+    const invoiceById = new Map<string, any>(allInvoices.map((invoice: any) => [invoice.id, invoice] as [string, any]));
     allInvoices.filter((invoice) => invoice.workflowStatus !== 'cancelled' && invoice.workflowStatus === 'closed' && inRange(invoice.createdAt)).forEach((invoice) => {
       if (userId && invoice.createdBy !== userId) return;
       if (!matchesPayment(invoice.paymentMethod, invoice.accountId)) return;
@@ -5511,16 +5548,20 @@ app.get('/api/reports/staff', async (req, res) => {
     }
     const cancelledInvoiceIds = new Set(allInvoices.filter((invoice) => invoice.workflowStatus === 'cancelled').map((item) => item.id));
     const cashbook = (await db.select().from(schema.cashbookEntries).where(eq(schema.cashbookEntries.tenantId, req.user.tenantId)).all()).filter((item) => inRange(item.createdAt) && !(item.referenceId && cancelledInvoiceIds.has(item.referenceId)));
+    const userNameById = new Map(users.map((user) => [user.id, user.name]));
     for (const item of cashbook) {
-      if (userId && item.createdBy !== userId) continue;
+      const reportUserId = item.actorId || item.createdBy;
+      if (userId && reportUserId !== userId) continue;
       const linkedInvoice = item.referenceId ? invoiceById.get(item.referenceId) : null;
       if (!matchesPayment(linkedInvoice?.paymentMethod, item.accountId)) continue;
-      const row = ensureRow(item.createdBy);
+      const row = ensureRow(reportUserId);
+      const reportUserName = item.actorName || userNameById.get(reportUserId) || row.userName;
+      row.userName = reportUserName;
       if (item.type === 'income') row.cashIncome += Number(item.amount) || 0;
       else row.cashExpense += Number(item.amount) || 0;
       if (item.type === 'income') summary.cashIncome += Number(item.amount) || 0;
       else summary.cashExpense += Number(item.amount) || 0;
-      details.push({ type: item.type === 'income' ? 'cash_income' : 'cash_expense', id: item.id, userId: item.createdBy, userName: row.userName, amount: Number(item.amount) || 0, category: item.category, referenceId: item.referenceId, accountId: item.accountId, createdAt: item.createdAt });
+      details.push({ type: item.type === 'income' ? 'cash_income' : 'cash_expense', id: item.id, userId: reportUserId, userName: reportUserName, actorId: item.actorId, actorName: item.actorName, createdBy: item.createdBy, createdByName: userNameById.get(item.createdBy) || null, amount: Number(item.amount) || 0, category: item.category, referenceId: item.referenceId, accountId: item.accountId, createdAt: item.createdAt });
     }
     if (!userId) {
       const customers = await db.select({ totalDebt: schema.customers.totalDebt })
@@ -5556,7 +5597,8 @@ app.get('/api/cashbook', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'cashbook.view')) return;
     res.setHeader('Cache-Control', 'no-store');
-    const { from, to, type, accountId, createdBy } = req.query;
+    const { from, to, type, accountId, actorId, createdBy } = req.query;
+    const employeeId = actorId || createdBy;
     const rows = (await db.select().from(schema.cashbookEntries)
       .where(eq(schema.cashbookEntries.tenantId, req.user.tenantId))
       .orderBy(desc(schema.cashbookEntries.createdAt))
@@ -5564,7 +5606,7 @@ app.get('/api/cashbook', async (req, res) => {
       .filter((row) => {
         if (type && row.type !== type) return false;
         if (accountId && row.accountId !== String(accountId)) return false;
-        if (createdBy && row.createdBy !== String(createdBy)) return false;
+        if (employeeId && (row.actorId || row.createdBy) !== String(employeeId)) return false;
         if (from && new Date(row.createdAt).getTime() < new Date(String(from)).getTime()) return false;
         if (to && new Date(row.createdAt).getTime() > (new Date(String(to)).getTime() + 24 * 60 * 60 * 1000 - 1)) return false;
         return true;
@@ -5656,12 +5698,14 @@ app.post('/api/cashbook', async (req, res) => {
     const counterpartyType = requestedCounterpartyType as 'customer' | 'supplier' | 'employee' | 'shipping_partner' | 'other';
     const counterpartyId = req.body?.counterpartyId ? String(req.body.counterpartyId) : null;
     let counterpartyName = String(req.body?.counterpartyName || '').trim();
+    let counterpartyCustomer: { id: string; name: string; totalDebt: number } | null = null;
     if (counterpartyType === 'customer') {
       const customer = counterpartyId
-        ? await db.select({ id: schema.customers.id, name: schema.customers.name }).from(schema.customers)
+        ? await db.select({ id: schema.customers.id, name: schema.customers.name, totalDebt: schema.customers.totalDebt }).from(schema.customers)
           .where(and(eq(schema.customers.id, counterpartyId), eq(schema.customers.tenantId, req.user.tenantId), eq(schema.customers.active, true))).get()
         : null;
       if (!customer) return res.status(400).json({ error: 'Khách hàng không hợp lệ' });
+      counterpartyCustomer = customer;
       counterpartyName = customer.name;
     } else if (counterpartyType === 'supplier') {
       const supplier = counterpartyId
@@ -5679,6 +5723,7 @@ app.post('/api/cashbook', async (req, res) => {
       counterpartyName = employee.name;
     }
 
+    const createdAt = new Date().toISOString();
     const entry = {
       id: uuid(),
       tenantId: req.user.tenantId,
@@ -5693,10 +5738,38 @@ app.post('/api/cashbook', async (req, res) => {
       counterpartyType,
       counterpartyId: ['customer', 'supplier', 'employee'].includes(counterpartyType) ? counterpartyId : null,
       counterpartyName,
-      createdAt: new Date().toISOString(),
+      createdAt,
       createdBy: req.user.id,
     };
-    await db.insert(schema.cashbookEntries).values(entry).run();
+    await db.transaction(async (tx) => {
+      await tx.insert(schema.cashbookEntries).values(entry).run();
+      if (counterpartyCustomer) {
+        const customer = await tx.select().from(schema.customers)
+          .where(and(eq(schema.customers.id, counterpartyCustomer.id), eq(schema.customers.tenantId, req.user.tenantId))).get();
+        if (customer) {
+          const currentDebt = Math.max(0, Number(customer.totalDebt) || 0);
+          const debtAmount = type === 'expense' ? amt : Math.min(currentDebt, amt);
+          if (debtAmount > 0) {
+            const nextDebt = type === 'expense' ? currentDebt + debtAmount : Math.max(0, currentDebt - debtAmount);
+            await tx.update(schema.customers)
+              .set({ totalDebt: nextDebt })
+              .where(and(eq(schema.customers.id, customer.id), eq(schema.customers.tenantId, req.user.tenantId)))
+              .run();
+            await tx.insert(schema.debtLedger).values({
+              id: uuid(),
+              tenantId: req.user.tenantId,
+              customerId: customer.id,
+              invoiceId: null,
+              amount: debtAmount,
+              type: type === 'expense' ? 'increase' : 'decrease',
+              note: entry.note || `${type === 'expense' ? 'Chi' : 'Thu'} ${entry.category}`,
+              createdAt,
+              createdBy: req.user.id,
+            }).run();
+          }
+        }
+      }
+    });
     await safeNotifyTenantOwners({
       tenantId: req.user.tenantId,
       actorId: req.user.id,

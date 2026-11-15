@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect, type UIEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import { Product, Customer, PaymentMethod, InvoiceItem, Invoice } from '../types';
 import { formatCurrency, normalizeSearchText } from '../lib/utils';
-import { Search, X, CheckCircle, ShoppingCart, Wallet, TrendingUp, Package, Printer, ChevronLeft, ChevronRight, AlertCircle, MapPin, Phone, User, UserPlus, ScanLine, Camera, SlidersHorizontal, MessageSquare, Tag, Plus, ClipboardList } from 'lucide-react';
+import { Search, X, ShoppingCart, Wallet, TrendingUp, Package, ChevronLeft, ChevronRight, AlertCircle, MapPin, Phone, User, UserPlus, ScanLine, Camera, SlidersHorizontal, MessageSquare, Tag, Plus, ClipboardList } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { toPng } from 'html-to-image';
@@ -746,7 +746,10 @@ export default function POS() {
 
   const resetPOS = () => {
     setStep('cart');
+    setCart([]);
     setSelectedCustomer(null);
+    setPaymentMethod('cash');
+    setActualPaymentAmount(0);
     setSelectedCategory('All');
     setSearchTerm('');
     setCustomerSearchTerm('');
@@ -754,6 +757,10 @@ export default function POS() {
     setShowAddCustomer(false);
     setNewCustomer({ name: '', phone: '', address: '' });
     setShowInvoice(false);
+    setLastInvoiceId('');
+    setCurrentInvoice(null);
+    setCurrentInvoiceItems([]);
+    setActiveOrderTab('live');
     setFormError('');
     setOrderDiscountType('amount');
     setOrderDiscountValue(0);
@@ -970,6 +977,11 @@ export default function POS() {
     window.setTimeout(printInvoice, 250);
   };
 
+  const handlePrintAndReturn = async () => {
+    await handlePrint();
+    resetPOS();
+  };
+
   const closeScannerModal = () => {
     setShowScannerModal(false);
   };
@@ -1009,44 +1021,20 @@ export default function POS() {
 
   if (step === 'success') {
     return (
-      <div className="flex h-full flex-col items-center justify-center p-8 bg-slate-50 text-center animate-in fade-in zoom-in duration-300">
-        <div className="h-28 w-28 rounded-full bg-sky-100 flex items-center justify-center mb-8 shadow-sm ring-4 ring-sky-50">
-          <CheckCircle className="h-14 w-14 text-sky-600" />
-        </div>
-        <h2 className="text-3xl font-semibold text-slate-900 mb-3">Đã tạo bill</h2>
-        <p className="text-slate-500 mb-10 text-base">Bill <span className="text-sky-700 font-semibold">{lastInvoiceId}</span> đã ghi nhận vào lịch sử đơn, tồn kho và sổ quỹ.</p>
-        
-        <div className="flex flex-col gap-4 w-full max-w-sm">
-          <Button 
-            className="h-14 rounded-lg bg-sky-600 hover:bg-sky-700 shadow-xl shadow-sky-900/30 text-base font-semibold transition-all hover:scale-[1.01] active:scale-100" 
-            onClick={() => setShowInvoice(true)}
-          >
-            <Printer className="mr-2 h-6 w-6" /> Xuất hóa đơn
-          </Button>
-          <Button 
-            variant="ghost" 
-            className="h-12 rounded-lg text-slate-500 font-medium hover:text-slate-900" 
-            onClick={resetPOS}
-          >
-            Bán đơn tiếp theo
-          </Button>
-        </div>
-
-        <POSInvoiceModal 
-          ref={invoiceRef}
-          isOpen={showInvoice}
-          onClose={() => setShowInvoice(false)}
-          lastInvoiceId={lastInvoiceId}
-          activeTenant={activeTenant}
-          selectedCustomer={selectedCustomer}
-          paymentMethod={paymentMethod}
-          currentInvoiceItems={currentInvoiceItems}
-          currentInvoice={currentInvoice}
-          currentUserName={currentUser?.name}
-          onExportImage={handleExportImage}
-          onPrint={handlePrint}
-        />
-      </div>
+      <POSInvoiceModal
+        ref={invoiceRef}
+        isOpen={showInvoice}
+        onClose={resetPOS}
+        lastInvoiceId={lastInvoiceId}
+        activeTenant={activeTenant}
+        selectedCustomer={selectedCustomer}
+        paymentMethod={paymentMethod}
+        currentInvoiceItems={currentInvoiceItems}
+        currentInvoice={currentInvoice}
+        currentUserName={currentUser?.name}
+        onExportImage={handleExportImage}
+        onPrint={handlePrintAndReturn}
+      />
     );
   }
 
