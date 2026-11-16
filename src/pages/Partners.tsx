@@ -99,6 +99,12 @@ export default function Partners() {
   const [importing, setImporting] = useState(false);
   const [parsing, setParsing] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const isCustomer = type === 'customer';
+  const canViewCustomers = currentUser?.role === 'owner' || permissions?.includes('customers.view') === true;
+  const canViewSuppliers = currentUser?.role === 'owner' || permissions?.includes('suppliers.view') === true;
+  const canViewCurrentPartner = isCustomer ? canViewCustomers : canViewSuppliers;
+  const canViewDetails = currentUser?.role === 'owner' || permissions?.includes(isCustomer ? 'customers.view_detail' : 'suppliers.view_detail') === true;
+  const canManagePartners = currentUser?.role === 'owner' || (permissions?.includes('partners.create') === true && canViewCurrentPartner);
 
   const loadSuppliers = useCallback(async () => setSuppliers(await suppliersApi.list()), []);
 
@@ -108,12 +114,12 @@ export default function Partners() {
   }, [location.pathname]);
 
   useEffect(() => {
-    Promise.all([refreshCustomers(), loadSuppliers()]).catch((err) => setError(err instanceof Error ? err.message : 'Không thể tải dữ liệu đối tác.'));
-  }, [loadSuppliers, location.pathname, refreshCustomers]);
-
-  const isCustomer = type === 'customer';
-  const canViewDetails = currentUser?.role === 'owner' || permissions?.includes(isCustomer ? 'customers.view_detail' : 'suppliers.view_detail') === true;
-  const canManagePartners = currentUser?.role === 'owner' || permissions?.includes('partners.create') === true;
+    const load = async () => {
+      if (isCustomer && canViewCustomers) await refreshCustomers();
+      if (!isCustomer && canViewSuppliers) await loadSuppliers();
+    };
+    load().catch((err) => setError(err instanceof Error ? err.message : 'Không thể tải dữ liệu đối tác.'));
+  }, [canViewCustomers, canViewSuppliers, isCustomer, loadSuppliers, location.pathname, refreshCustomers]);
 
   const rows = useMemo(() => {
     const keyword = normalizeSearchText(search);
@@ -122,6 +128,8 @@ export default function Partners() {
   }, [canViewDetails, customers, isCustomer, search, suppliers]);
 
   const switchType = (next: PartnerType) => {
+    if (next === 'customer' && !canViewCustomers) return;
+    if (next === 'supplier' && !canViewSuppliers) return;
     setType(next);
     navigate(next === 'customer' ? '/app/customers' : '/app/suppliers', { replace: true });
   };
@@ -174,7 +182,10 @@ export default function Partners() {
       const importedLabel = entityLabel(importPreview.payload.entityType);
       setImportPreview(null);
       setSuccess(`Đã import ${importedLabel}: tạo ${batch.createdCount || 0}, cập nhật ${batch.updatedCount || 0}${batch.detailCount ? `, ${batch.detailCount} dòng công nợ` : ''}.`);
-      await Promise.all([refreshCustomers(), loadSuppliers()]);
+      await Promise.all([
+        canViewCustomers ? refreshCustomers() : Promise.resolve(),
+        canViewSuppliers ? loadSuppliers() : Promise.resolve(),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Không thể import dữ liệu đối tác.');
     } finally {
@@ -185,7 +196,7 @@ export default function Partners() {
   return <div className="erp-partners erp-compact flex h-full flex-col overflow-hidden bg-slate-50">
     <header className="sticky top-0 z-40 flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-3 py-3">
       <div className="mr-auto flex items-center gap-2.5"><div className={`flex h-9 w-9 items-center justify-center rounded-lg text-white shadow-sm ${isCustomer ? 'bg-sky-600' : 'bg-amber-600'}`}><HeaderIcon className="h-4 w-4" /></div><div><h1 className="text-base font-semibold leading-tight text-slate-900">{isCustomer ? 'Khách hàng' : 'Nhà cung cấp'}</h1><p className="mt-0.5 text-[11px] leading-tight text-slate-500">{isCustomer ? 'Quản lý hồ sơ, nhóm khách và công nợ' : 'Quản lý thông tin và công nợ phải trả'}</p></div></div>
-      <div className="flex items-center rounded border border-slate-200 bg-slate-50 p-0.5"><button className={`h-7 px-3 text-xs ${type === 'customer' ? 'bg-white font-semibold text-sky-700 shadow-sm' : 'text-slate-500'}`} onClick={() => switchType('customer')}><Users className="mr-1 inline h-3.5 w-3.5" />Khách hàng</button><button className={`h-7 px-3 text-xs ${type === 'supplier' ? 'bg-white font-semibold text-sky-700 shadow-sm' : 'text-slate-500'}`} onClick={() => switchType('supplier')}><Truck className="mr-1 inline h-3.5 w-3.5" />Nhà cung cấp</button></div>
+      <div className="flex items-center rounded border border-slate-200 bg-slate-50 p-0.5">{canViewCustomers && <button className={`h-7 px-3 text-xs ${type === 'customer' ? 'bg-white font-semibold text-sky-700 shadow-sm' : 'text-slate-500'}`} onClick={() => switchType('customer')}><Users className="mr-1 inline h-3.5 w-3.5" />Khách hàng</button>}{canViewSuppliers && <button className={`h-7 px-3 text-xs ${type === 'supplier' ? 'bg-white font-semibold text-sky-700 shadow-sm' : 'text-slate-500'}`} onClick={() => switchType('supplier')}><Truck className="mr-1 inline h-3.5 w-3.5" />Nhà cung cấp</button>}</div>
       <div className="relative w-48"><Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" /><Input className="h-8 rounded border-slate-200 pl-7 text-xs" placeholder={canViewDetails ? 'Tìm mã, tên, SĐT...' : 'Tìm mã, tên...'} value={search} onChange={(e) => setSearch(e.target.value)} /></div>
       <input ref={importInputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleImportFile} />
       {canManagePartners && <><Button size="sm" variant="outline" className="h-8 rounded px-3 text-xs" disabled={parsing} onClick={() => importInputRef.current?.click()}><Upload className="mr-1 h-3.5 w-3.5" />{parsing ? 'Đang đọc...' : 'Nhập dữ liệu'}</Button>

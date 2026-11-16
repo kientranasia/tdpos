@@ -120,7 +120,8 @@ const formatCompactCurrency = (amount: number) => {
 };
 
 export default function Inventory() {
-  const { products, addProduct, updateProduct, deleteProduct, activeTenant, categories, addCategory, updateCategory, deleteCategory, refreshProducts } = useApp();
+  const { products, addProduct, updateProduct, deleteProduct, activeTenant, categories, addCategory, updateCategory, deleteCategory, refreshProducts, currentUser, permissions } = useApp();
+  const canManagePricing = currentUser?.role === 'owner' || permissions?.includes('inventory.manage_pricing') === true;
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [searchTerm, setSearchTerm] = useState('');
@@ -411,20 +412,22 @@ export default function Inventory() {
       await productUnitsApi.save(productId, productForm.productType === 'standard' ? variants : []);
       await productComponentsApi.save(productId, productForm.productType === 'combo' ? components : []);
 
-      for (const list of currentPriceLists) {
-        const basePrice = productFormBasePrice(list, components);
-        const rows = [
-          { productId, unitName: productForm.unit.trim(), unitFactor: 1, price: basePrice },
-          ...(productForm.productType === 'standard'
-            ? variants.map((variant) => {
-              const draftKey = `${list.id}::${variant.id}`;
-              const variantPrice = productVariantPriceDrafts[draftKey];
-              return { productId, unitName: variant.name, unitFactor: variant.factor, price: variantPrice === undefined || variantPrice === '' ? basePrice * Number(variant.factor) : Number(variantPrice) || 0 };
-            })
-            : []),
-        ];
-        const existingItems = (list.items || []).filter((item: any) => item.productId !== productId);
-        await priceListsApi.saveItems(list.id, [...existingItems, ...rows]);
+      if (canManagePricing) {
+        for (const list of currentPriceLists) {
+          const basePrice = productFormBasePrice(list, components);
+          const rows = [
+            { productId, unitName: productForm.unit.trim(), unitFactor: 1, price: basePrice },
+            ...(productForm.productType === 'standard'
+              ? variants.map((variant) => {
+                const draftKey = `${list.id}::${variant.id}`;
+                const variantPrice = productVariantPriceDrafts[draftKey];
+                return { productId, unitName: variant.name, unitFactor: variant.factor, price: variantPrice === undefined || variantPrice === '' ? basePrice * Number(variant.factor) : Number(variantPrice) || 0 };
+              })
+              : []),
+          ];
+          const existingItems = (list.items || []).filter((item: any) => item.productId !== productId);
+          await priceListsApi.saveItems(list.id, [...existingItems, ...rows]);
+        }
       }
       await refreshProducts();
       setInventoryReloadKey((value) => value + 1);
@@ -487,6 +490,10 @@ export default function Inventory() {
   };
 
   const openPricing = async () => {
+    if (!canManagePricing) {
+      setPricingMessage('Tài khoản chỉ được xem bảng giá, không có quyền quản lý bảng giá.');
+      return;
+    }
     setPricingMessage('');
     try {
       const lists = await priceListsApi.list(true);
@@ -498,6 +505,7 @@ export default function Inventory() {
   };
 
   const createPriceList = async () => {
+    if (!canManagePricing) return;
     if (!newPriceList.name.trim()) return;
     try {
       await priceListsApi.create({ name: newPriceList.name.trim(), customerType: newPriceList.customerType, markupMode: newPriceList.markupMode, markupValue: Number(newPriceList.markupValue) || 0, active: true });
@@ -616,6 +624,7 @@ export default function Inventory() {
   };
 
   const createPriceListForManager = async (name: string, customerType: string, markupMode: 'percent' | 'amount', markupValue: number) => {
+    if (!canManagePricing) return false;
     try {
       await priceListsApi.create({ name, customerType, markupMode, markupValue, active: true });
       const lists = await priceListsApi.list(true);
@@ -628,6 +637,7 @@ export default function Inventory() {
   };
 
   const renamePriceListForManager = async (id: string, name: string, customerType: string, markupMode: 'percent' | 'amount', markupValue: number) => {
+    if (!canManagePricing) return false;
     try {
       await priceListsApi.update(id, { name, customerType, markupMode, markupValue });
       setPriceLists(await priceListsApi.list(true));
@@ -638,6 +648,7 @@ export default function Inventory() {
   };
 
   const deletePriceListForManager = async (list: any) => {
+    if (!canManagePricing) return false;
     try {
       await priceListsApi.remove(list.id);
       setPriceLists(await priceListsApi.list(true));
@@ -1428,7 +1439,7 @@ export default function Inventory() {
                 <Tag className="h-4 w-4" />
                 Quản lý đơn vị tính
               </Button>
-              <Button
+              {canManagePricing && <Button
                 variant="outline"
                 className="h-11 w-full justify-start gap-2"
                 onClick={() => {
@@ -1438,7 +1449,7 @@ export default function Inventory() {
               >
                 <Settings2 className="h-4 w-4" />
                 Quản lý bảng giá
-              </Button>
+              </Button>}
             </div>
           </div>
         </div>
@@ -1654,14 +1665,16 @@ export default function Inventory() {
                      </p>
                    </div>
                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-                     <button
-                       type="button"
-                       onClick={() => setShowInlinePriceListForm((visible) => !visible)}
-                       className="rounded-md border border-sky-200 bg-white px-2 py-1 text-[11px] font-medium text-sky-700 hover:bg-sky-50"
-                     >
-                       {showInlinePriceListForm ? 'Đóng' : '+ Tạo bảng giá'}
-                     </button>
-                     <button type="button" onClick={openPricing} className="text-[11px] font-medium text-slate-500 hover:text-sky-700">Quản lý</button>
+                     {canManagePricing && <>
+                       <button
+                         type="button"
+                         onClick={() => setShowInlinePriceListForm((visible) => !visible)}
+                         className="rounded-md border border-sky-200 bg-white px-2 py-1 text-[11px] font-medium text-sky-700 hover:bg-sky-50"
+                       >
+                         {showInlinePriceListForm ? 'Đóng' : '+ Tạo bảng giá'}
+                       </button>
+                       <button type="button" onClick={openPricing} className="text-[11px] font-medium text-slate-500 hover:text-sky-700">Quản lý</button>
+                     </>}
                      <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-sky-700">Đơn vị cơ sở</span>
                      <button
                        type="button"
@@ -1677,7 +1690,7 @@ export default function Inventory() {
                  </div>
                  {pricingExpanded && <div id="product-pricing-content" className="space-y-2">
                  {priceLists.length === 0 && <p className="rounded-md bg-amber-50 px-3 py-1.5 text-[11px] text-amber-700">Chưa có bảng giá. Hệ thống sẽ dùng giá cơ bản hiện có và tạo bảng giá mặc định khi lưu.</p>}
-                 {showInlinePriceListForm && (
+                 {canManagePricing && showInlinePriceListForm && (
                    <div className="rounded-md border border-sky-200 bg-white p-2">
                      <div className="mb-1.5 flex items-center justify-between gap-2">
                        <span className="text-xs font-semibold text-slate-800">Tạo bảng giá mới</span>
@@ -1756,7 +1769,7 @@ export default function Inventory() {
                            const fallbackPrice = productFormBasePrice(list);
                            return <td key={list.id} className="px-2 py-2 align-top">
                              <div className="relative">
-                               <Input type="number" min="0" value={productPriceDrafts[list.id] ?? fallbackPrice} aria-label={`Giá ${productForm.unit || 'đơn vị cơ sở'} · ${list.name}`} onChange={(e) => setProductPriceDrafts((previous) => ({ ...previous, [list.id]: parseNumericDraft(e.target.value) }))} className="h-8 pr-7 text-right text-xs font-semibold tabular-nums" />
+                               <Input type="number" min="0" readOnly={!canManagePricing} value={productPriceDrafts[list.id] ?? fallbackPrice} aria-label={`Giá ${productForm.unit || 'đơn vị cơ sở'} · ${list.name}`} onChange={(e) => setProductPriceDrafts((previous) => ({ ...previous, [list.id]: parseNumericDraft(e.target.value) }))} className={`h-8 pr-7 text-right text-xs font-semibold tabular-nums ${!canManagePricing ? 'cursor-default bg-slate-50 text-slate-500' : ''}`} />
                                <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">đ</span>
                              </div>
                            </td>;
@@ -1772,7 +1785,7 @@ export default function Inventory() {
                            const fallbackPrice = productFormBasePrice(list) * (Number(variant.factor) || 1);
                            return <td key={list.id} className="px-2 py-2 align-top">
                              <div className="relative">
-                               <Input type="number" min="0" value={productVariantPriceDrafts[draftKey] ?? fallbackPrice} aria-label={`Giá ${variant.name.trim() || `biến thể ${index + 1}`} · ${list.name}`} onChange={(e) => setProductVariantPriceDrafts((previous) => ({ ...previous, [draftKey]: parseNumericDraft(e.target.value) }))} className="h-8 pr-7 text-right text-xs tabular-nums" />
+                               <Input type="number" min="0" readOnly={!canManagePricing} value={productVariantPriceDrafts[draftKey] ?? fallbackPrice} aria-label={`Giá ${variant.name.trim() || `biến thể ${index + 1}`} · ${list.name}`} onChange={(e) => setProductVariantPriceDrafts((previous) => ({ ...previous, [draftKey]: parseNumericDraft(e.target.value) }))} className={`h-8 pr-7 text-right text-xs tabular-nums ${!canManagePricing ? 'cursor-default bg-slate-50 text-slate-500' : ''}`} />
                                <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">đ</span>
                              </div>
                            </td>;
@@ -1781,7 +1794,7 @@ export default function Inventory() {
                      </tbody>
                    </table>
                  </div>
-                 <p className="text-[11px] text-slate-500">Mỗi hàng là một đơn vị hoặc biến thể; mỗi cột là một bảng giá. Giá gợi ý có thể tính theo % hoặc số tiền cố định, và vẫn có thể sửa riêng.</p>
+                 <p className="text-[11px] text-slate-500">Mỗi hàng là một đơn vị hoặc biến thể; mỗi cột là một bảng giá. Giá gợi ý có thể tính theo % hoặc số tiền cố định, và vẫn có thể sửa riêng.{!canManagePricing && ' Tài khoản hiện chỉ được xem giá.'}</p>
                  {productForm.productType === 'combo' && <p className="text-[11px] text-slate-500">Giá gợi ý của combo là tổng giá thành phần. Có thể nhập giá combo riêng; giá thành phần không bị thay đổi.</p>}
                  </div>}
                </div>
@@ -2083,10 +2096,10 @@ export default function Inventory() {
             <Tag className="h-4 w-4" />
             Đơn vị tính
           </Button>
-          <Button variant="outline" onClick={openPricing} className="hidden lg:inline-flex h-9 px-3 rounded-lg text-xs gap-1.5">
+          {canManagePricing && <Button variant="outline" onClick={openPricing} className="hidden lg:inline-flex h-9 px-3 rounded-lg text-xs gap-1.5">
             <Settings2 className="h-4 w-4" />
             Bảng giá
-          </Button>
+          </Button>}
           <Button
             variant="outline"
             onClick={() => fileInputRef.current?.click()}

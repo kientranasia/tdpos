@@ -397,26 +397,12 @@ const ensureRole = (req: Request, res: Response, roles: string[]) => {
 
 const ensureOwner = (req: Request, res: Response) => ensureRole(req, res, ['owner']);
 
-const impliedViewPermissions: Record<string, string[]> = {
-  'dashboard.view': [],
-  'sales.view': ['sales.create', 'sales.cancel', 'sales.view_cost', 'sales.return', 'sales.override_price'],
-  'inventory.view': ['inventory.create', 'inventory.update', 'inventory.delete', 'inventory.adjust', 'inventory.view_cost', 'inventory.manage_pricing'],
-  'purchases.view': ['purchases.create', 'purchases.approve', 'purchases.return'],
-  'partners.view': ['partners.create', 'partners.update'],
-  'customers.view': ['customers.view_detail', 'partners.view', 'sales.view', 'sales.create'],
-  'suppliers.view': ['suppliers.view_detail', 'partners.view', 'purchases.view', 'purchases.create'],
-  'debt.view': ['debt.collect'],
-  'cashbook.view': ['cashbook.create'],
-  'reports.view': ['reports.export'],
-  'settings.view': ['settings.manage_users', 'settings.manage_permissions'],
-};
-
-const hasPermission = (req: Request, code: string, visited = new Set<string>()): boolean => {
+// Permission checkboxes are independent. Do not infer a workspace permission
+// from another feature: this keeps a supplier denial effective even when the
+// user can sell, create partners, or create purchases.
+const hasPermission = (req: Request, code: string): boolean => {
   if (req.user?.role === 'owner') return true;
-  if (req.user?.permissionMap?.get(code)) return true;
-  if (visited.has(code)) return false;
-  visited.add(code);
-  return (impliedViewPermissions[code] || []).some((permission) => hasPermission(req, permission, visited));
+  return req.user?.permissionMap?.get(code) === true;
 };
 
 const ensurePermission = (req: Request, res: Response, code: string) => {
@@ -451,6 +437,10 @@ const redactProductForUser = (req: Request, product: any) => {
     purchasePrice: 0,
     units: Array.isArray(product.units) ? product.units.map((unit: any) => ({ ...unit, purchasePrice: 0 })) : product.units,
   };
+};
+const redactSupplierForUser = (req: Request, supplier: any) => {
+  if (!supplier || hasPermission(req, 'suppliers.view_detail')) return supplier || null;
+  return { id: supplier.id, code: supplier.code, name: supplier.name, active: supplier.active };
 };
 
 const productWritableFields = [
@@ -3139,7 +3129,10 @@ app.get('/api/cashbook/participants', async (req, res) => {
   try {
     if (!ensurePermission(req, res, 'cashbook.create')) return;
     const canListCustomers = hasPermission(req, 'customers.view') || hasPermission(req, 'sales.view') || hasPermission(req, 'sales.create');
-    const canListSuppliers = hasPermission(req, 'suppliers.view') || hasPermission(req, 'purchases.view') || hasPermission(req, 'purchases.create');
+    // Purchase permissions do not grant access to the partner workspace. A
+    // cashbook participant picker must follow the same supplier visibility
+    // checkbox as the supplier screen itself.
+    const canListSuppliers = hasPermission(req, 'suppliers.view');
     const [users, customers, suppliers] = await Promise.all([
       db.select({ id: schema.users.id, name: schema.users.name })
         .from(schema.users)
@@ -3256,6 +3249,7 @@ const importDate = (value: unknown, fallback = new Date().toISOString()) => {
 
 const sourceStatus = (value: unknown) => ['0', 'false', 'inactive', 'ngung'].includes(normalizeSearchText(value)) ? 'inactive' : 'active';
 const partnerImportHash = (sourceSystem: string, entityType: PartnerImportEntity, rows: unknown[], meta?: unknown) => crypto.createHash('sha256').update(JSON.stringify({ sourceSystem, entityType, rows, meta: meta || null })).digest('hex');
+const partnerViewPermission = (entityType: PartnerImportEntity) => entityType.startsWith('supplier') ? 'suppliers.view' : 'customers.view';
 
 const normalizeCustomerImportRow = (row: Record<string, unknown>) => ({
   code: importText(importValue(row, ['Mã khách hàng'])),
@@ -3357,11 +3351,12 @@ const normalizeDebtImportRows = (rows: Record<string, unknown>[], entityType: Pa
 
 const partnerImportPreview = async (req: Request, res: Response) => {
   try {
-    if (!ensurePermission(req, res, 'partners.create')) return;
     const sourceSystem = importText(req.body?.sourceSystem || 'kiot-viet').toLowerCase();
     const entityType = req.body?.entityType as PartnerImportEntity;
     const rows = Array.isArray(req.body?.rows) ? req.body.rows as Record<string, unknown>[] : [];
     if (!['customer', 'supplier', 'customer_debt', 'supplier_debt'].includes(entityType) || !rows.length) return res.status(400).json({ error: 'Thiếu loại dữ liệu hoặc danh sách dòng import.' });
+    if (!ensurePermission(req, res, partnerViewPermission(entityType))) return;
+    if (!ensurePermission(req, res, 'partners.create')) return;
     if (rows.length > 20000) return res.status(413).json({ error: 'File vượt quá 20.000 dòng cho một lần import.' });
     const sourceHash = partnerImportHash(sourceSystem, entityType, rows, req.body?.meta);
     const issues: Array<{ rowNumber: number; code: string; message: string; sourceCode: string; sourceName: string }> = [];
@@ -3411,7 +3406,7 @@ app.post('/api/partners/import/preview', partnerImportPreview);
 
 app.get('/api/partners/import-history', async (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'partners.view')) return;
+    if (!ensureAnyPermission(req, res, ['customers.view', 'suppliers.view'])) return;
     const rows = await db.select().from(schema.partnerImportBatches).where(eq(schema.partnerImportBatches.tenantId, req.user.tenantId)).orderBy(desc(schema.partnerImportBatches.createdAt)).limit(50).all();
     res.json(rows);
   } catch (err) { console.error('GET /api/partners/import-history error:', err); res.status(500).json({ error: 'Không thể tải lịch sử import đối tác.' }); }
@@ -3419,7 +3414,7 @@ app.get('/api/partners/import-history', async (req, res) => {
 
 app.get('/api/partners/import-history/:batchId/issues', async (req, res) => {
   try {
-    if (!ensurePermission(req, res, 'partners.view')) return;
+    if (!ensureAnyPermission(req, res, ['customers.view', 'suppliers.view'])) return;
     const batch = await db.select().from(schema.partnerImportBatches).where(and(eq(schema.partnerImportBatches.id, req.params.batchId), eq(schema.partnerImportBatches.tenantId, req.user.tenantId))).get();
     if (!batch) return res.status(404).json({ error: 'Không tìm thấy batch import.' });
     const issues = await db.select().from(schema.partnerImportIssues).where(and(eq(schema.partnerImportIssues.batchId, batch.id), eq(schema.partnerImportIssues.tenantId, req.user.tenantId))).all();
@@ -3502,7 +3497,7 @@ app.post('/api/partners/import', async (req, res) => {
 
 app.get('/api/suppliers', async (req, res) => {
   try {
-    if (!ensureAnyPermission(req, res, ['suppliers.view', 'partners.view', 'purchases.view', 'purchases.create'])) return;
+    if (!ensurePermission(req, res, 'suppliers.view')) return;
     const canViewDetails = hasPermission(req, 'suppliers.view_detail');
     const includeMeta = String(req.query.includeMeta || '') === 'true';
     const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
@@ -3545,12 +3540,13 @@ app.get('/api/suppliers', async (req, res) => {
 
 app.post('/api/suppliers', async (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'suppliers.view')) return;
     if (!ensurePermission(req, res, 'partners.create')) return;
     const { code, name, phone = '', taxCode = null, address = '', note = '' } = req.body || {};
     if (!name) return res.status(400).json({ error: 'Supplier name is required' });
     const supplier = { id: uuid(), tenantId: req.user.tenantId, code: code || await nextSupplierCode(req.user.tenantId), name, phone, taxCode, address, note, currentPayable: 0, active: true };
     await db.insert(schema.suppliers).values(supplier).run();
-    res.status(201).json(supplier);
+    res.status(201).json(redactSupplierForUser(req, supplier));
   } catch (err) {
     console.error('POST /api/suppliers error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -3559,6 +3555,7 @@ app.post('/api/suppliers', async (req, res) => {
 
 app.patch('/api/suppliers/:id', async (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'suppliers.view')) return;
     if (!ensurePermission(req, res, 'partners.update')) return;
     const supplier = await db.select().from(schema.suppliers).where(and(eq(schema.suppliers.id, req.params.id), eq(schema.suppliers.tenantId, req.user.tenantId))).get();
     if (!supplier) return res.status(404).json({ error: 'Supplier not found' });
@@ -3569,7 +3566,7 @@ app.patch('/api/suppliers/:id', async (req, res) => {
     if (updates.name !== undefined && !updates.name) return res.status(400).json({ error: 'Tên nhà cung cấp là bắt buộc' });
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'Không có trường hợp lệ để cập nhật' });
     await db.update(schema.suppliers).set(updates).where(and(eq(schema.suppliers.id, supplier.id), eq(schema.suppliers.tenantId, req.user.tenantId))).run();
-    res.json(await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, supplier.id)).get());
+    res.json(redactSupplierForUser(req, await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, supplier.id)).get()));
   } catch (err) {
     console.error('PATCH /api/suppliers/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -3600,7 +3597,7 @@ app.get('/api/purchases', async (req, res) => {
       const items = await db.select({ quantity: schema.purchaseItems.quantity }).from(schema.purchaseItems).where(eq(schema.purchaseItems.purchaseId, purchase.id)).all();
       return {
         ...purchase,
-        supplier: await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, purchase.supplierId)).get() || null,
+        supplier: redactSupplierForUser(req, await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, purchase.supplierId)).get()),
         createdByName: userNameById.get(purchase.createdBy) || null,
         itemCount: items.length,
         totalQuantity: items.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
@@ -3623,7 +3620,7 @@ app.get('/api/purchases/:id', async (req, res) => {
     if (!canViewTransaction(req, purchase)) return res.status(404).json({ error: 'Purchase not found' });
     const items = await db.select().from(schema.purchaseItems).where(eq(schema.purchaseItems.purchaseId, purchase.id)).all();
     const creator = await db.select({ name: schema.users.name }).from(schema.users).where(and(eq(schema.users.id, purchase.createdBy), eq(schema.users.tenantId, req.user.tenantId))).get();
-    res.json({ ...purchase, items, createdByName: creator?.name || null, supplier: await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, purchase.supplierId)).get() || null });
+    res.json({ ...purchase, items, createdByName: creator?.name || null, supplier: redactSupplierForUser(req, await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, purchase.supplierId)).get()) });
   } catch (err) {
     console.error('GET /api/purchases/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -3775,7 +3772,7 @@ app.get('/api/purchase-returns', async (req, res) => {
     let rows = await db.select().from(schema.purchaseReturns).where(eq(schema.purchaseReturns.tenantId, req.user.tenantId)).orderBy(desc(schema.purchaseReturns.createdAt)).all();
     if (!canViewAllTransactions(req)) rows = rows.filter((row) => row.createdBy === req.user.id);
     if (req.query.supplierId) rows = rows.filter((row) => row.supplierId === req.query.supplierId);
-    res.json(await Promise.all(rows.map(async (row) => ({ ...row, items: await db.select().from(schema.purchaseReturnItems).where(eq(schema.purchaseReturnItems.returnId, row.id)).all(), supplier: await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, row.supplierId)).get() || null }))));
+    res.json(await Promise.all(rows.map(async (row) => ({ ...row, items: await db.select().from(schema.purchaseReturnItems).where(eq(schema.purchaseReturnItems.returnId, row.id)).all(), supplier: redactSupplierForUser(req, await db.select().from(schema.suppliers).where(eq(schema.suppliers.id, row.supplierId)).get()) }))));
   } catch (err) { res.status(500).json({ error: 'Không thể tải phiếu trả nhà cung cấp' }); }
 });
 
@@ -3913,6 +3910,7 @@ app.post('/api/payable-ledger', async (req, res) => {
 
 app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
   try {
+    if (!ensurePermission(req, res, 'suppliers.view_detail')) return;
     if (!ensurePermission(req, res, 'debt.view')) return;
     const supplier = await db.select().from(schema.suppliers)
       .where(and(eq(schema.suppliers.id, req.params.id), eq(schema.suppliers.tenantId, req.user.tenantId))).get();

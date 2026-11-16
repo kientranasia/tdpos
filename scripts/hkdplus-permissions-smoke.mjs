@@ -68,7 +68,7 @@ try {
   const permissionExpectations = {
     owner: ['inventory.delete', 'sales.create', 'cashbook.create', 'reports.export', 'settings.manage_permissions'],
     manager: ['inventory.delete', 'sales.create', 'cashbook.create', 'reports.export'],
-    cashier: ['sales.view', 'sales.create', 'partners.view'],
+    cashier: ['sales.view', 'sales.create', 'customers.view'],
     warehouse: ['inventory.view', 'inventory.create', 'inventory.adjust', 'purchases.create'],
     accountant: ['cashbook.view', 'cashbook.create', 'debt.collect', 'reports.export'],
   };
@@ -87,13 +87,13 @@ try {
   const allow = {
     owner: ['/api/products', '/api/invoices', '/api/purchases', '/api/cashbook', '/api/reports/staff', '/api/users', '/api/roles', '/api/stock-movements', '/api/debt-ledger'],
     manager: ['/api/products', '/api/invoices', '/api/purchases', '/api/cashbook', '/api/reports/staff', '/api/stock-movements', '/api/debt-ledger'],
-    cashier: ['/api/invoices', '/api/customers'],
+    cashier: ['/api/invoices', '/api/customers', '/api/price-lists'],
     warehouse: ['/api/products', '/api/purchases', '/api/suppliers', '/api/stock-movements'],
     accountant: ['/api/purchases', '/api/cashbook', '/api/reports/staff', '/api/debt-ledger', '/api/suppliers'],
   };
   const deny = {
     manager: ['/api/users', '/api/roles'],
-    cashier: ['/api/purchases', '/api/cashbook', '/api/reports/staff', '/api/users', '/api/roles'],
+    cashier: ['/api/purchases', '/api/suppliers', '/api/cashbook', '/api/reports/staff', '/api/users', '/api/roles'],
     warehouse: ['/api/invoices', '/api/cashbook', '/api/reports/staff', '/api/users', '/api/roles', '/api/debt-ledger'],
     accountant: ['/api/invoices', '/api/users', '/api/roles'],
   };

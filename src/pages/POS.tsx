@@ -222,18 +222,16 @@ export default function POS() {
   );
 
   useEffect(() => {
-    if (!priceProductIds.length) {
-      setPriceLists([]);
-      setPriceListError('');
-      setPriceListLoading(false);
-      return;
-    }
     let active = true;
     setPriceListLoading(true);
     setPriceListError('');
-    const batches: string[][] = [];
+    // Load the list metadata even before the first product page arrives. A
+    // salesperson must be able to choose a price list on an empty POS cart;
+    // item prices are merged in as the catalog pages are loaded.
+    const batches: Array<string[] | undefined> = [];
+    if (!priceProductIds.length) batches.push(undefined);
     for (let index = 0; index < priceProductIds.length; index += 80) batches.push(priceProductIds.slice(index, index + 80));
-    Promise.all(batches.map((productIds) => priceListsApi.list(true, productIds))).then((responses) => {
+    Promise.all(batches.map((productIds) => priceListsApi.list(Boolean(productIds), productIds))).then((responses) => {
       if (!active) return;
       const merged = new Map<string, any>();
       responses.flat().forEach((list: any) => {

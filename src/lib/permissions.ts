@@ -44,29 +44,10 @@ const routePermissions: Record<string, string> = {
   '/app/more': 'dashboard.view',
 };
 
-// A role that can perform an operation must be able to open the related
-// workspace first. Keep the implication here in sync with the API guard so a
-// custom role behaves the same in the menu and in the backend.
-const impliedViewPermissions: Record<string, string[]> = {
-  'dashboard.view': [],
-  'sales.view': ['sales.create', 'sales.cancel', 'sales.view_cost', 'sales.return', 'sales.override_price'],
-  'inventory.view': ['inventory.create', 'inventory.update', 'inventory.delete', 'inventory.adjust', 'inventory.view_cost', 'inventory.manage_pricing'],
-  'purchases.view': ['purchases.create', 'purchases.approve', 'purchases.return'],
-  'partners.view': ['partners.create', 'partners.update'],
-  'customers.view': ['customers.view_detail', 'partners.view', 'sales.view', 'sales.create'],
-  'suppliers.view': ['suppliers.view_detail', 'partners.view', 'purchases.view', 'purchases.create'],
-  'debt.view': ['debt.collect'],
-  'cashbook.view': ['cashbook.create'],
-  'reports.view': ['reports.export'],
-  'settings.view': ['settings.manage_users', 'settings.manage_permissions'],
-};
-
-const hasGrantedPermission = (grantedPermissions: string[], requiredPermission: string, visited = new Set<string>()): boolean => {
-  if (grantedPermissions.includes(requiredPermission)) return true;
-  if (visited.has(requiredPermission)) return false;
-  visited.add(requiredPermission);
-  return (impliedViewPermissions[requiredPermission] || []).some((permission) => hasGrantedPermission(grantedPermissions, permission, visited));
-};
+// Permission checkboxes are intentionally independent. A role that has
+// `partners.create` must not automatically gain supplier visibility, and
+// unchecking `suppliers.view` must immediately hide that workspace.
+const hasGrantedPermission = (grantedPermissions: string[], requiredPermission: string) => grantedPermissions.includes(requiredPermission);
 
 export const canAccessPath = (role: AppRole | undefined, path: string, grantedPermissions?: string[] | null) => {
   if (!role) return false;
