@@ -3081,6 +3081,75 @@ const supplierCreditBalance = async (tenantId: string, supplierId: string) => {
   return rows.reduce((sum, row) => sum + (row.type === 'increase' ? Number(row.amount) : -Number(row.amount)), 0);
 };
 
+// Manual cashbook movements must reconcile with the supplier account just like
+// purchases and purchase returns do. Payable is the amount owed to the
+// supplier; supplier credit is the amount the supplier owes us (for example,
+// an advance or a refund balance).
+const applySupplierCashbookDebt = async (tx: any, input: {
+  tenantId: string;
+  supplierId: string;
+  type: 'income' | 'expense';
+  amount: number;
+  note: string;
+  createdBy: string;
+  createdAt: string;
+}) => {
+  const supplier = await tx.select().from(schema.suppliers).where(and(
+    eq(schema.suppliers.id, input.supplierId),
+    eq(schema.suppliers.tenantId, input.tenantId),
+  )).get();
+  if (!supplier) throw new Error('Nhà cung cấp không hợp lệ');
+
+  const creditRows = await tx.select().from(schema.supplierCreditLedger).where(and(
+    eq(schema.supplierCreditLedger.tenantId, input.tenantId),
+    eq(schema.supplierCreditLedger.supplierId, input.supplierId),
+  )).all();
+  const creditBalance = Math.max(0, creditRows.reduce((sum: number, row: any) => sum + (row.type === 'increase' ? Number(row.amount) : -Number(row.amount)), 0));
+  let remaining = Math.max(0, Number(input.amount) || 0);
+
+  // A receipt from a supplier settles supplier credit first (refund/advance),
+  // then reduces any payable still owed to that supplier.
+  if (input.type === 'income' && creditBalance > 0) {
+    const creditSettled = Math.min(remaining, creditBalance);
+    if (creditSettled > 0) {
+      await tx.insert(schema.supplierCreditLedger).values({
+        id: uuid(), tenantId: input.tenantId, supplierId: input.supplierId,
+        purchaseReturnId: null, purchaseId: null, amount: creditSettled,
+        type: 'decrease', accountId: null, note: input.note || 'Thu tiền nhà cung cấp',
+        createdBy: input.createdBy, createdAt: input.createdAt,
+      }).run();
+      remaining -= creditSettled;
+    }
+  }
+
+  const currentPayable = Math.max(0, Number(supplier.currentPayable) || 0);
+  const payableSettled = Math.min(remaining, currentPayable);
+  if (payableSettled > 0) {
+    await tx.update(schema.suppliers)
+      .set({ currentPayable: currentPayable - payableSettled })
+      .where(and(eq(schema.suppliers.id, input.supplierId), eq(schema.suppliers.tenantId, input.tenantId)))
+      .run();
+    await tx.insert(schema.payableLedger).values({
+      id: uuid(), tenantId: input.tenantId, supplierId: input.supplierId,
+      purchaseId: null, amount: payableSettled, type: 'decrease',
+      note: input.note || (input.type === 'expense' ? 'Chi nhà cung cấp' : 'Thu từ nhà cung cấp'),
+      createdAt: input.createdAt, createdBy: input.createdBy,
+    }).run();
+    remaining -= payableSettled;
+  }
+
+  // Paying more than the current payable creates a supplier credit instead of
+  // allowing the payable balance to become negative.
+  if (input.type === 'expense' && remaining > 0) {
+    await tx.insert(schema.supplierCreditLedger).values({
+      id: uuid(), tenantId: input.tenantId, supplierId: input.supplierId,
+      purchaseReturnId: null, purchaseId: null, amount: remaining,
+      type: 'increase', accountId: null, note: input.note || 'Chi tạm ứng nhà cung cấp',
+      createdBy: input.createdBy, createdAt: input.createdAt,
+    }).run();
+  }
+};
+
 const defaultAccountForPayment = async (tenantId: string, paymentMethod: string) => {
   const type = paymentMethod === 'transfer' ? 'bank' : paymentMethod === 'wallet' ? 'wallet' : 'cash';
   const existing = await db.select().from(schema.cashAccounts).where(and(eq(schema.cashAccounts.tenantId, tenantId), eq(schema.cashAccounts.type, type), eq(schema.cashAccounts.active, 1))).get();
@@ -5768,6 +5837,7 @@ app.post('/api/cashbook', async (req, res) => {
     const counterpartyId = req.body?.counterpartyId ? String(req.body.counterpartyId) : null;
     let counterpartyName = String(req.body?.counterpartyName || '').trim();
     let counterpartyCustomer: { id: string; name: string; totalDebt: number } | null = null;
+    let counterpartySupplierId: string | null = null;
     if (counterpartyType === 'customer') {
       const customer = counterpartyId
         ? await db.select({ id: schema.customers.id, name: schema.customers.name, totalDebt: schema.customers.totalDebt }).from(schema.customers)
@@ -5783,6 +5853,7 @@ app.post('/api/cashbook', async (req, res) => {
         : null;
       if (!supplier) return res.status(400).json({ error: 'Nhà cung cấp không hợp lệ' });
       counterpartyName = supplier.name;
+      counterpartySupplierId = supplier.id;
     } else if (counterpartyType === 'employee') {
       const employee = counterpartyId
         ? await db.select({ id: schema.users.id, name: schema.users.name }).from(schema.users)
@@ -5837,6 +5908,17 @@ app.post('/api/cashbook', async (req, res) => {
             }).run();
           }
         }
+      }
+      if (counterpartySupplierId) {
+        await applySupplierCashbookDebt(tx, {
+          tenantId: req.user.tenantId,
+          supplierId: counterpartySupplierId,
+          type,
+          amount: amt,
+          note: String(entry.note || ''),
+          createdBy: req.user.id,
+          createdAt,
+        });
       }
     });
     await safeNotifyTenantOwners({
