@@ -69,7 +69,7 @@ export default function Dashboard() {
     collected: todayInvoices.reduce((sum, row) => sum + row.paidAmount, 0) - todayReturns.reduce((sum, row) => sum + Number(row.refundAmount || 0), 0),
     debtToday: todayInvoices.reduce((sum, row) => sum + row.debtAmount, 0),
     orders: todayInvoices.length,
-    debt: customers.reduce((sum, row) => sum + row.totalDebt, 0),
+    debt: customers.reduce((sum, row) => sum + Math.max(0, Number(row.totalDebt) || 0), 0),
     stockValue: productSummary.stockValue,
     lowStock: productSummary.lowStock,
   }), [customers, productSummary, products, todayInvoices, todayReturns]);

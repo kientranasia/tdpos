@@ -23,7 +23,7 @@ export default function Overview() {
     .filter(inv => new Date(inv.createdAt).toDateString() === new Date().toDateString())
     .reduce((sum, inv) => sum + inv.finalAmount, 0);
 
-  const totalDebt = customers.reduce((sum, c) => sum + c.totalDebt, 0);
+  const totalDebt = customers.reduce((sum, c) => sum + Math.max(0, Number(c.totalDebt) || 0), 0);
   const lowStockProducts = products.filter(p => p.stock <= p.lowStockThreshold);
 
   const stats = [

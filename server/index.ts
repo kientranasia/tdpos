@@ -6310,7 +6310,7 @@ app.get('/api/dashboard/stats', async (req, res) => {
         amount: sql<number>`coalesce(sum(case when ${schema.salesReturns.createdAt} >= ${startIso} and ${schema.salesReturns.createdAt} <= ${endIso} then ${schema.salesReturns.totalAmount} else 0 end), 0)`,
       }).from(schema.salesReturns).where(eq(schema.salesReturns.tenantId, tid)).get(),
       db.select({
-        totalDebt: sql<number>`coalesce(sum(${schema.customers.totalDebt}), 0)`,
+        totalDebt: sql<number>`coalesce(sum(case when ${schema.customers.totalDebt} > 0 then ${schema.customers.totalDebt} else 0 end), 0)`,
         totalCustomers: sql<number>`count(*)`,
       }).from(schema.customers).where(eq(schema.customers.tenantId, tid)).get(),
       db.select({

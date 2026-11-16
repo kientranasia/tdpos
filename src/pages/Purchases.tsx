@@ -153,6 +153,7 @@ export default function Purchases() {
   const [priceSetup, setPriceSetup] = useState<PriceSetupState | null>(null);
   const [priceSetupLoading, setPriceSetupLoading] = useState(false);
   const [priceSetupSaving, setPriceSetupSaving] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const productPickerRef = useRef<HTMLDivElement>(null);
   const supplierPickerRef = useRef<HTMLDivElement>(null);
 
@@ -440,6 +441,7 @@ export default function Purchases() {
   };
 
   const submit = async () => {
+    if (submitting) return;
     const normalizedLines = lines.map((line) => ({
       ...line,
       quantity: toNumber(line.quantity),
@@ -462,6 +464,8 @@ export default function Purchases() {
       setMessage('Chọn tài khoản tiền cho khoản thanh toán.');
       return;
     }
+    setSubmitting(true);
+    setMessage('');
     try {
       await purchasesApi.create({
         documentNo: documentNo.trim() || undefined,
@@ -479,11 +483,15 @@ export default function Purchases() {
       setDocumentNo('');
       setBillNote('');
       setBillDate(new Date().toISOString().slice(0, 10));
-      await reload();
-      await refreshProducts();
       setPurchaseView('history');
+      const [reloadResult, refreshResult] = await Promise.allSettled([reload(), refreshProducts()]);
+      if (reloadResult.status === 'rejected' || refreshResult.status === 'rejected') {
+        setMessage('Đã xác nhận phiếu nhập. Kho, công nợ và sổ quỹ đã cập nhật; danh sách hiển thị sẽ được tải lại khi kết nối ổn định.');
+      }
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Không thể tạo phiếu nhập.');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -691,7 +699,7 @@ export default function Purchases() {
         )}
       />
 
-      <main className="space-y-3 p-3 md:p-4 lg:p-5">
+      <main className="space-y-3 p-3 pb-28 md:p-4 md:pb-28 lg:p-5 lg:pb-5">
         {purchaseView === 'history' && message && <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-700">{message}</p>}
         {purchaseView === 'create' && (
           <>
@@ -797,7 +805,7 @@ export default function Purchases() {
             <label className="text-xs font-medium text-slate-600">Đã trả<input type="number" min="0" max={total > 0 ? total : undefined} step="0.01" inputMode="decimal" placeholder={paymentMethod === 'payable' ? 'Chọn hình thức thanh toán' : 'Nhập số tiền đã trả'} className={`mt-1 h-9 w-full rounded-md border px-2.5 text-sm ${paymentMethod === 'payable' ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-400 placeholder:text-slate-400' : 'border-slate-200 bg-white text-slate-900'}`} value={paidAmount} disabled={paymentMethod === 'payable'} onChange={(event) => setPaidAmount(event.target.value)} /><span className="mt-1 block text-[11px] font-normal text-slate-400">{paymentMethod === 'payable' ? 'Chọn Tiền mặt hoặc Chuyển khoản để nhập.' : 'Có thể nhập số tiền thanh toán một phần.'}</span></label>
             <label className="text-xs font-medium text-slate-600">Tài khoản chi<select className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2.5 text-sm disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400" value={accountId} disabled={paymentMethod === 'payable'} onChange={(event) => setAccountId(event.target.value)}><option value="">{paymentMethod === 'payable' ? 'Không áp dụng' : 'Chọn tài khoản'}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select><span className="mt-1 block text-[11px] font-normal text-slate-400">{paymentMethod === 'payable' ? 'Không cần chọn khi ghi công nợ.' : 'Chọn nơi ghi nhận khoản chi.'}</span></label>
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3"><p className="text-xs text-slate-500">Tồn kho sẽ tăng theo hệ số quy đổi về đơn vị cơ sở.</p><Button disabled={!lines.length} onClick={() => void submit()}><Save className="mr-2 h-4 w-4" />Xác nhận nhập hàng</Button></div>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3"><p className="text-xs text-slate-500">Tồn kho sẽ tăng theo hệ số quy đổi về đơn vị cơ sở.</p><Button type="button" disabled={submitting || !supplierId || !lines.length} onClick={() => void submit()}><Save className="mr-2 h-4 w-4" />{submitting ? 'Đang ghi nhận...' : 'Xác nhận nhập hàng'}</Button></div>
           {message && <p className="rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-700">{message}</p>}
         </section>
 
