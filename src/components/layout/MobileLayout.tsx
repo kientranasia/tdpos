@@ -172,7 +172,7 @@ export default function MobileLayout() {
 
       {/* Sidebar cho Desktop */}
       <aside className={`fixed inset-y-0 left-0 hidden ${isCollapsed ? 'w-14' : 'w-52'} flex-col overflow-visible bg-white lg:flex border-r border-slate-200/60 shadow-[4px_0_24px_rgba(0,0,0,0.02)] z-50 transition-all duration-300`}>
-        <div className={`relative flex h-[72px] items-center border-b border-slate-50 ${isCollapsed ? 'justify-center px-1' : 'justify-between px-4'}`}>
+        <div className={`relative flex h-[72px] items-center border-b border-slate-50 ${isCollapsed ? 'justify-center px-1' : 'px-4'}`}>
           <button type="button" onClick={() => navigate('/')} className="flex items-center overflow-hidden" title="Trung tâm điều khiển">
             {isCollapsed ? (
               <BrandMark compact />
@@ -180,14 +180,7 @@ export default function MobileLayout() {
               <BrandMark className="!h-8 !max-w-[153px]" />
             )}
           </button>
-          {!isCollapsed && <NotificationBell lowStockCount={lowStockCount} />}
         </div>
-
-        {isCollapsed && (
-          <div className="flex items-center justify-center border-b border-slate-50 px-2 py-1.5">
-            <NotificationBell lowStockCount={lowStockCount} />
-          </div>
-        )}
 
         <nav className="mt-2 flex-1 space-y-1 overflow-y-auto p-1.5">
           {visibleMenuSections.map((section) => (
