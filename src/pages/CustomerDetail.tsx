@@ -39,11 +39,16 @@ export default function CustomerDetail() {
     address: '',
     type: 'retail' as 'retail' | 'loyal',
   });
-  const [debtPayments, setDebtPayments] = useState<DebtLedger[]>([]);
+  const [debtLedgerEntries, setDebtLedgerEntries] = useState<DebtLedger[]>([]);
+  const [loadedCustomer, setLoadedCustomer] = useState<any | null>(null);
   const [exportingDebt, setExportingDebt] = useState(false);
   const [exportError, setExportError] = useState('');
 
-  const customer = customers.find(c => c.id === id);
+  const cachedCustomer = customers.find(c => c.id === id);
+  const customer = useMemo(() => {
+    if (cachedCustomer && loadedCustomer) return { ...cachedCustomer, ...loadedCustomer };
+    return loadedCustomer || cachedCustomer;
+  }, [cachedCustomer, loadedCustomer]);
   const customerInvoices = useMemo(() => {
     return invoices
       .filter(inv => inv.customerId === id)
@@ -55,16 +60,16 @@ export default function CustomerDetail() {
   [customerInvoices]);
 
   useEffect(() => {
-    const loadDebtPayments = async () => {
+    const loadCustomerData = async () => {
       if (!id) return;
-      try {
-        const entries = await debtLedgerApi.list(undefined, id);
-        setDebtPayments(entries.filter((entry) => entry.type === 'decrease'));
-      } catch {
-        setDebtPayments([]);
-      }
+      const [remoteCustomer, entries] = await Promise.all([
+        customersApi.get(id).catch(() => null),
+        debtLedgerApi.list(undefined, id).catch(() => []),
+      ]);
+      if (remoteCustomer) setLoadedCustomer(remoteCustomer);
+      setDebtLedgerEntries(entries);
     };
-    loadDebtPayments();
+    void loadCustomerData();
   }, [id]);
 
   const exportDebtStatement = async () => {
@@ -80,20 +85,32 @@ export default function CustomerDetail() {
       };
       const rows: any[][] = [
         [statement.tenant?.name || 'HKD Smart'],
+        ['Chi nhánh', statement.tenant?.legalName || statement.tenant?.name || ''],
+        ['Địa chỉ', statement.tenant?.address || ''],
+        ['Điện thoại', statement.tenant?.phone || ''],
         ['Công nợ chi tiết khách hàng'],
-        ['Khách hàng', customer.name],
-        ['Mã KH', customer.code || customer.id],
-        ['Nợ đầu kỳ', money(statement.openingDebt), 'Ghi nợ trong kỳ', money(statement.periodDebit)],
-        ['Ghi có trong kỳ', money(statement.periodCredit), 'Nợ cuối kỳ', money(statement.closingDebt)],
+        ['Khách hàng', customer.name, '', '', '', '', 'Nợ đầu kỳ', money(statement.openingDebt)],
+        ['Mã KH', customer.code || customer.id, '', '', '', '', 'Phát sinh trong kỳ', money(statement.periodDebit), money(statement.periodCredit)],
+        ['Điện thoại', customer.phone || '', '', '', '', '', 'Nợ cuối kỳ', money(statement.closingDebt)],
         [],
-        ['Thời gian', 'Mã', 'Diễn giải', 'ĐVT', 'SL', 'Đơn giá', 'Thành tiền', 'Ghi nợ', 'Ghi có', 'Ghi chú', 'Người thực hiện'],
+        ['Thời gian', 'Mã', 'Diễn giải', 'ĐVT', 'SL', 'Đơn giá', 'Thành tiền', 'Ghi nợ', 'Ghi có'],
         ...(statement.rows || []).flatMap((row: any) => [
-          [dateText(row.createdAt), row.documentNo || row.id, row.description || '', row.unitName || '', row.quantity ?? '', money(row.unitPrice), money(row.total), money(row.debit), money(row.credit), row.note || '', row.createdByName || row.createdBy || ''],
-          ...(row.rowType === 'invoice' ? (row.items || []).map((item: any) => ['', item.sku || item.productId || '', item.productName || '', item.unitName || '', item.quantity ?? '', money(item.price), money(item.total), '', '', item.note || '', row.createdByName || row.createdBy || '']) : []),
+          [dateText(row.createdAt), row.documentNo || '', row.description || '', row.unitName || '', row.quantity ?? '', money(row.unitPrice) || '', '', money(row.debit) || '', money(row.credit) || ''],
+          ...(row.rowType === 'invoice' ? (row.items || []).map((item: any) => ['', item.sku || item.productId || '', item.productName || '', item.unitName || '', item.quantity ?? '', money(item.price), money(item.total), '', '']) : []),
         ]),
       ];
       const sheet = XLSX.utils.aoa_to_sheet(rows);
-      sheet['!cols'] = [{ wch: 20 }, { wch: 19 }, { wch: 43 }, { wch: 13 }, { wch: 8 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 35 }, { wch: 20 }];
+      sheet['!merges'] = [
+        { s: { r: 0, c: 0 }, e: { r: 0, c: 8 } },
+        { s: { r: 1, c: 1 }, e: { r: 1, c: 8 } },
+        { s: { r: 2, c: 1 }, e: { r: 2, c: 8 } },
+        { s: { r: 3, c: 1 }, e: { r: 3, c: 8 } },
+        { s: { r: 4, c: 0 }, e: { r: 4, c: 8 } },
+        { s: { r: 5, c: 1 }, e: { r: 5, c: 5 } },
+        { s: { r: 6, c: 1 }, e: { r: 6, c: 5 } },
+        { s: { r: 7, c: 1 }, e: { r: 7, c: 5 } },
+      ];
+      sheet['!cols'] = [{ wch: 20 }, { wch: 19 }, { wch: 43 }, { wch: 13 }, { wch: 8 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 16 }];
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, sheet, 'CNCT');
       const safeCustomerName = String(customer.name || customer.id).replace(/[\\/:*?"<>|]/g, '-').slice(0, 60);
@@ -113,17 +130,17 @@ export default function CustomerDetail() {
       invoice: inv,
     }));
 
-    const paymentEvents = debtPayments.map((entry) => ({
-      id: `payment-${entry.id}`,
+    const debtEvents = debtLedgerEntries.map((entry) => ({
+      id: `debt-${entry.id}`,
       createdAt: entry.createdAt,
-      kind: 'payment' as const,
-      payment: entry,
+      kind: 'debt' as const,
+      debt: entry,
     }));
 
-    return [...invoiceEvents, ...paymentEvents].sort(
+    return [...invoiceEvents, ...debtEvents].sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
-  }, [customerInvoices, debtPayments]);
+  }, [customerInvoices, debtLedgerEntries]);
 
   const statusMeta = (status: 'completed' | 'partial' | 'unpaid') => {
     if (status === 'completed') return { label: 'Đã thanh toán', tone: 'status-chip-success' };
@@ -461,23 +478,23 @@ export default function CustomerDetail() {
                                                 <div className="flex items-center gap-2">
                                                     {event.kind === 'invoice' ? (
                                                       <button type="button" className="text-xs font-semibold tracking-tight text-sky-700 hover:underline" onClick={() => navigate(`/app/invoices?invoiceId=${encodeURIComponent(event.invoice.id)}`)}>#{event.invoice.documentNo || event.invoice.id}</button>
-                                                    ) : <p className="text-xs font-semibold tracking-tight text-slate-900">Thanh toán công nợ</p>}
+                                                    ) : <p className="text-xs font-semibold tracking-tight text-slate-900">{event.debt.type === 'increase' ? 'Chi cho khách hàng' : 'Thu nợ khách hàng'}</p>}
                                                     <span className={`status-chip ${
                                                         event.kind === 'invoice'
                                                           ? statusMeta(event.invoice.status).tone
-                                                          : 'status-chip-success'
+                                                          : event.debt.type === 'increase' ? 'status-chip-warning' : 'status-chip-success'
                                                     }`}>
                                                         {event.kind === 'invoice'
                                                           ? statusMeta(event.invoice.status).label
-                                                          : 'Đã thu nợ'}
+                                                          : event.debt.type === 'increase' ? 'Tăng công nợ' : 'Giảm công nợ'}
                                                     </span>
                                                 </div>
                                                 <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
                                                     <Calendar className="h-3 w-3" />
                                                     {new Date(event.createdAt).toLocaleString('vi-VN')}
                                                 </div>
-                                                {event.kind === 'payment' && event.payment.note && (
-                                                  <p className="text-xs text-slate-500">{event.payment.note}</p>
+                                                {event.kind === 'debt' && event.debt.note && (
+                                                  <p className="text-xs text-slate-500">{event.debt.note}</p>
                                                 )}
                                             </div>
                                         </div>
@@ -485,14 +502,14 @@ export default function CustomerDetail() {
                                         <div className="flex w-full items-center justify-between gap-3 border-t pt-2 sm:w-auto sm:border-t-0 sm:pt-0">
                                             <div className="text-left sm:text-right">
                                                 <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                                                  {event.kind === 'invoice' ? 'Thành tiền' : 'Đã thu nợ'}
+                                                  {event.kind === 'invoice' ? 'Thành tiền' : event.debt.type === 'increase' ? 'Ghi nợ' : 'Đã thu nợ'}
                                                 </p>
                                                 <p className={`text-sm font-semibold tracking-tight tabular-nums ${
-                                                  event.kind === 'invoice' ? 'text-indigo-700' : 'text-emerald-700'
+                                                  event.kind === 'invoice' ? 'text-indigo-700' : event.debt.type === 'increase' ? 'text-amber-700' : 'text-emerald-700'
                                                 }`}>
                                                   {event.kind === 'invoice'
                                                     ? formatCurrency(event.invoice.finalAmount)
-                                                    : `-${formatCurrency(event.payment.amount)}`}
+                                                    : `${event.debt.type === 'increase' ? '+' : '-'}${formatCurrency(event.debt.amount)}`}
                                                 </p>
                                             </div>
                                             {event.kind !== 'invoice' && (

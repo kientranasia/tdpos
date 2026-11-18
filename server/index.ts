@@ -3106,16 +3106,29 @@ const applySupplierCashbookDebt = async (tx: any, input: {
   )).all();
   const creditBalance = Math.max(0, creditRows.reduce((sum: number, row: any) => sum + (row.type === 'increase' ? Number(row.amount) : -Number(row.amount)), 0));
   let remaining = Math.max(0, Number(input.amount) || 0);
+  const withContext = (prefix: string) => input.note ? `${prefix} · ${input.note}` : prefix;
 
-  // A receipt from a supplier settles supplier credit first (refund/advance),
-  // then reduces any payable still owed to that supplier.
-  if (input.type === 'income' && creditBalance > 0) {
+  // Money received from a supplier means the supplier owes the business more.
+  // Keep this as a supplier-credit increase; it must not reduce payable debt.
+  if (input.type === 'income') {
+    await tx.insert(schema.supplierCreditLedger).values({
+      id: uuid(), tenantId: input.tenantId, supplierId: input.supplierId,
+      purchaseReturnId: null, purchaseId: null, amount: remaining,
+      type: 'increase', accountId: null, note: withContext('Thu tiền nhà cung cấp'),
+      createdBy: input.createdBy, createdAt: input.createdAt,
+    }).run();
+    return;
+  }
+
+  // Paying a supplier first settles any amount the supplier owes us (advance,
+  // refund or other supplier credit), then reduces payable debt.
+  if (creditBalance > 0) {
     const creditSettled = Math.min(remaining, creditBalance);
     if (creditSettled > 0) {
       await tx.insert(schema.supplierCreditLedger).values({
         id: uuid(), tenantId: input.tenantId, supplierId: input.supplierId,
         purchaseReturnId: null, purchaseId: null, amount: creditSettled,
-        type: 'decrease', accountId: null, note: input.note || 'Thu tiền nhà cung cấp',
+        type: 'decrease', accountId: null, note: withContext('Chi trả nhà cung cấp'),
         createdBy: input.createdBy, createdAt: input.createdAt,
       }).run();
       remaining -= creditSettled;
@@ -3132,7 +3145,7 @@ const applySupplierCashbookDebt = async (tx: any, input: {
     await tx.insert(schema.payableLedger).values({
       id: uuid(), tenantId: input.tenantId, supplierId: input.supplierId,
       purchaseId: null, amount: payableSettled, type: 'decrease',
-      note: input.note || (input.type === 'expense' ? 'Chi nhà cung cấp' : 'Thu từ nhà cung cấp'),
+      note: withContext('Chi trả nhà cung cấp'),
       createdAt: input.createdAt, createdBy: input.createdBy,
     }).run();
     remaining -= payableSettled;
@@ -3144,7 +3157,7 @@ const applySupplierCashbookDebt = async (tx: any, input: {
     await tx.insert(schema.supplierCreditLedger).values({
       id: uuid(), tenantId: input.tenantId, supplierId: input.supplierId,
       purchaseReturnId: null, purchaseId: null, amount: remaining,
-      type: 'increase', accountId: null, note: input.note || 'Chi tạm ứng nhà cung cấp',
+      type: 'increase', accountId: null, note: withContext('Chi tạm ứng nhà cung cấp'),
       createdBy: input.createdBy, createdAt: input.createdAt,
     }).run();
   }
@@ -4007,6 +4020,22 @@ app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
     ]);
     const userNameById = new Map(users.map((user) => [user.id, user.name]));
     const purchaseById = new Map<string, any>((purchases as any[]).map((purchase) => [purchase.id, purchase]));
+    const purchaseIds = (purchases as any[]).map((purchase) => purchase.id);
+    const purchaseItems = purchaseIds.length
+      ? await db.select().from(schema.purchaseItems).where(inArray(schema.purchaseItems.purchaseId, purchaseIds)).all()
+      : [];
+    const itemsByPurchase = new Map<string, any[]>();
+    (purchaseItems as any[]).forEach((item) => {
+      const rows = itemsByPurchase.get(item.purchaseId) || [];
+      rows.push({
+        ...item,
+        unitName: item.unit || '',
+        discountValue: 0,
+        discountMode: 'amount',
+        taxRate: Number(item.taxRate || 0),
+      });
+      itemsByPurchase.set(item.purchaseId, rows);
+    });
 
     const ledgerRows = payableEntries.map((entry: any) => {
       const purchase = entry.purchaseId ? purchaseById.get(entry.purchaseId) : null;
@@ -4015,7 +4044,7 @@ app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
         id: `payable:${entry.id}`,
         rowType: 'payable_ledger',
         createdAt: entry.createdAt,
-        documentNo: purchase?.documentNo || `CN-${entry.id.slice(0, 8).toUpperCase()}`,
+        documentNo: purchase?.documentNo || (increase ? 'Điều chỉnh tăng công nợ' : 'Phiếu chi nhà cung cấp'),
         description: increase ? 'Nhập hàng / tăng công nợ' : 'Thanh toán nhà cung cấp',
         unitName: '',
         quantity: null,
@@ -4026,23 +4055,39 @@ app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
         note: entry.note || '',
         createdBy: entry.createdBy,
         createdByName: userNameById.get(entry.createdBy) || entry.createdBy || null,
-        items: [],
+        items: purchase ? (itemsByPurchase.get(purchase.id) || []) : [],
       };
     });
 
     const creditRows = creditEntries.map((entry: any) => {
       let debit = 0;
       let credit = 0;
-      // Supplier credit created by a return reduces payable; settling that
-      // credit is shown as a separate debit-side movement.
+      // Supplier credit increases the amount the supplier owes us; settling
+      // that credit is shown as a separate debit-side movement.
       if (entry.type === 'increase') credit = Number(entry.amount || 0);
       else debit = Number(entry.amount || 0);
+      const note = String(entry.note || '');
+      const description = entry.type === 'increase'
+        ? note.startsWith('Thu tiền nhà cung cấp')
+          ? 'Thu tiền từ nhà cung cấp / tăng số dư được nhận'
+          : note.startsWith('Chi tạm ứng nhà cung cấp')
+            ? 'Chi tạm ứng nhà cung cấp / tăng số dư được nhận'
+            : 'Trả hàng / được nhận lại từ nhà cung cấp'
+        : note.startsWith('Chi trả nhà cung cấp')
+          ? 'Đối trừ chi trả nhà cung cấp'
+          : 'Đã nhận tiền hoàn từ nhà cung cấp';
       return {
         id: `supplier-credit:${entry.id}`,
         rowType: 'supplier_credit',
         createdAt: entry.createdAt,
-        documentNo: `CN-${entry.id.slice(0, 8).toUpperCase()}`,
-        description: entry.type === 'increase' ? 'Trả hàng / được nhận lại từ nhà cung cấp' : 'Đã nhận tiền hoàn từ nhà cung cấp',
+        documentNo: note.startsWith('Thu tiền nhà cung cấp')
+          ? 'Phiếu thu nhà cung cấp'
+          : note.startsWith('Chi trả nhà cung cấp')
+            ? 'Phiếu chi nhà cung cấp'
+            : note.startsWith('Chi tạm ứng nhà cung cấp')
+              ? 'Phiếu chi tạm ứng'
+              : 'Điều chỉnh số dư nhà cung cấp',
+        description,
         unitName: '',
         quantity: null,
         unitPrice: null,
@@ -4063,7 +4108,7 @@ app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
         id: `imported:${entry.id}`,
         rowType: 'imported_debt',
         createdAt: entry.occurredAt || entry.createdAt,
-        documentNo: entry.documentNo || `CN-${entry.id.slice(0, 8).toUpperCase()}`,
+        documentNo: entry.documentNo || 'Điều chỉnh số dư',
         description: entry.description || 'Công nợ import',
         unitName: entry.unit || '',
         quantity: entry.quantity,
@@ -4080,14 +4125,17 @@ app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
 
     const movementRows = [...ledgerRows, ...creditRows, ...importedRows];
     const currentPayable = Number(supplier.currentPayable || 0);
-    const movementPayable = movementRows.reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0);
+    // Supplier credit is a separate balance (the amount the supplier owes us)
+    // and must not be netted into the payable balance shown on the supplier.
+    const payableRows = movementRows.filter((row) => row.rowType !== 'supplier_credit');
+    const movementPayable = payableRows.reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0);
     const reconciliationAdjustment = currentPayable - movementPayable;
     if (Math.abs(reconciliationAdjustment) > 0.01) {
       movementRows.push({
         id: `opening:${supplier.id}`,
         rowType: 'opening',
         createdAt: tenant?.createdAt || new Date().toISOString(),
-        documentNo: `DC-${supplier.id}`,
+        documentNo: 'Số dư đầu kỳ',
         description: 'Số dư chuyển đổi',
         unitName: '',
         quantity: null,
@@ -4112,10 +4160,13 @@ app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
       return timestamp >= (fromMs as number) && timestamp <= (toMs as number);
     };
     const signed = (row: any) => Number(row.debit || 0) - Number(row.credit || 0);
-    const openingPayable = Math.max(0, allRows.filter((row) => new Date(row.createdAt).getTime() < (fromMs as number)).reduce((sum, row) => sum + signed(row), 0));
+    const openingPayable = Math.max(0, allRows
+      .filter((row) => row.rowType !== 'supplier_credit' && new Date(row.createdAt).getTime() < (fromMs as number))
+      .reduce((sum, row) => sum + signed(row), 0));
     const rows = allRows.filter(inRange);
     const periodDebit = rows.reduce((sum, row) => sum + Number(row.debit || 0), 0);
     const periodCredit = rows.reduce((sum, row) => sum + Number(row.credit || 0), 0);
+    const currentCredit = creditEntries.reduce((sum: number, entry: any) => sum + (entry.type === 'increase' ? Number(entry.amount || 0) : -Number(entry.amount || 0)), 0);
 
     res.json({
       from: req.query.from || null,
@@ -4127,6 +4178,7 @@ app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
       periodCredit,
       closingPayable: Math.max(0, openingPayable + periodDebit - periodCredit),
       currentPayable,
+      currentCredit,
       rows,
     });
   } catch (err) {
@@ -4317,12 +4369,20 @@ app.get('/api/customers/:id/debt-statement', async (req, res) => {
       .map((entry) => {
         const invoice = entry.invoiceId ? invoices.find((item) => item.id === entry.invoiceId) : null;
         const isReturn = /trả hàng|hoàn tiền/i.test(entry.note || '');
+        const isManualExpense = !invoice && entry.type === 'increase';
+        const isManualIncome = !invoice && entry.type === 'decrease';
         return {
           id: `ledger:${entry.id}`,
           rowType: 'ledger',
           createdAt: entry.createdAt,
-          documentNo: invoice?.documentNo || `CN-${entry.id.slice(0, 8).toUpperCase()}`,
-          description: isReturn ? 'Khách trả hàng' : entry.type === 'increase' ? 'Điều chỉnh tăng công nợ' : 'Thu công nợ',
+          documentNo: invoice?.documentNo || (isManualExpense ? 'Phiếu chi khách hàng' : isManualIncome ? 'Phiếu thu khách hàng' : 'Điều chỉnh công nợ'),
+          description: isReturn
+            ? 'Khách trả hàng'
+            : isManualExpense
+              ? 'Chi cho khách hàng / tăng công nợ'
+              : entry.type === 'increase'
+                ? 'Điều chỉnh tăng công nợ'
+                : 'Thu của khách hàng / giảm công nợ',
           unitName: '',
           quantity: null,
           unitPrice: null,
@@ -4344,7 +4404,7 @@ app.get('/api/customers/:id/debt-statement', async (req, res) => {
         id: `imported:${entry.id}`,
         rowType: 'imported_debt',
         createdAt: entry.occurredAt || entry.createdAt,
-        documentNo: entry.documentNo || `CN-${entry.id.slice(0, 8).toUpperCase()}`,
+        documentNo: entry.documentNo || 'Điều chỉnh số dư',
         description: entry.description || 'Công nợ import',
         unitName: entry.unit || '',
         quantity: entry.quantity,
@@ -4369,7 +4429,7 @@ app.get('/api/customers/:id/debt-statement', async (req, res) => {
         id: `opening:${customer.id}`,
         rowType: 'opening',
         createdAt: tenant?.createdAt || new Date().toISOString(),
-        documentNo: `DC-${customer.id}`,
+        documentNo: 'Số dư đầu kỳ',
         description: 'Số dư chuyển đổi',
         unitName: '',
         quantity: null,

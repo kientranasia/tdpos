@@ -201,22 +201,20 @@ export default function Debt() {
         ['Điện thoại', customer.phone || '', '', '', '', '', 'Nợ cuối kỳ', money(statement.closingDebt)],
         ...(customer.note ? [['Ghi chú khách hàng', customer.note]] : [[]]),
         [],
-        ['Thời gian', 'Mã', 'Diễn giải', 'ĐVT', 'SL', 'Đơn giá', 'Thành tiền', 'Ghi nợ', 'Ghi có', 'Ghi chú', 'Người thực hiện'],
+        ['Thời gian', 'Mã', 'Diễn giải', 'ĐVT', 'SL', 'Đơn giá', 'Thành tiền', 'Ghi nợ', 'Ghi có'],
       ];
 
       for (const row of statement.rows || []) {
         statementRows.push([
           dateText(row.createdAt),
-          row.documentNo || row.id,
+          row.documentNo || '',
           row.description || '',
           row.unitName || '',
           row.quantity ?? '',
           row.unitPrice ?? '',
-          money(row.total),
+          '',
           money(row.debit) || '',
           money(row.credit) || '',
-          row.note || '',
-          row.createdByName || row.createdBy || '',
         ]);
         if (row.rowType === 'invoice') {
           for (const item of row.items || []) {
@@ -230,8 +228,6 @@ export default function Debt() {
               money(item.total),
               '',
               '',
-              item.note || '',
-              row.createdByName || row.createdBy || '',
             ]);
           }
         }
@@ -239,26 +235,24 @@ export default function Debt() {
 
       const detailSheet = XLSX.utils.aoa_to_sheet(statementRows);
       detailSheet['!merges'] = [
-        { s: { r: 0, c: 0 }, e: { r: 0, c: 10 } },
-        { s: { r: 1, c: 1 }, e: { r: 1, c: 10 } },
-        { s: { r: 2, c: 1 }, e: { r: 2, c: 10 } },
-        { s: { r: 3, c: 1 }, e: { r: 3, c: 10 } },
-        { s: { r: 4, c: 0 }, e: { r: 4, c: 10 } },
+        { s: { r: 0, c: 0 }, e: { r: 0, c: 8 } },
+        { s: { r: 1, c: 1 }, e: { r: 1, c: 8 } },
+        { s: { r: 2, c: 1 }, e: { r: 2, c: 8 } },
+        { s: { r: 3, c: 1 }, e: { r: 3, c: 8 } },
+        { s: { r: 4, c: 0 }, e: { r: 4, c: 8 } },
         { s: { r: 5, c: 1 }, e: { r: 5, c: 5 } },
         { s: { r: 6, c: 1 }, e: { r: 6, c: 5 } },
         { s: { r: 7, c: 1 }, e: { r: 7, c: 5 } },
       ];
-      // Keep the legacy report's compact, printable proportions while adding
-      // explicit note and operator columns to the right.
       detailSheet['!cols'] = [
         { wch: 20 }, { wch: 19 }, { wch: 43 }, { wch: 13 }, { wch: 8 }, { wch: 14 },
-        { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 35 }, { wch: 20 },
+        { wch: 16 }, { wch: 16 }, { wch: 16 },
       ];
       detailSheet['!rows'] = statementRows.map((row, index) => ({ hpt: index === 4 ? 34 : index === 10 ? 26 : row.some((value) => String(value || '').includes('\n')) ? 30 : 20 }));
 
       const border = { top: { style: 'thin', color: { rgb: 'CBD5E1' } }, bottom: { style: 'thin', color: { rgb: 'CBD5E1' } }, left: { style: 'thin', color: { rgb: 'CBD5E1' } }, right: { style: 'thin', color: { rgb: 'CBD5E1' } } };
       for (let rowIndex = 0; rowIndex < statementRows.length; rowIndex += 1) {
-        for (let columnIndex = 0; columnIndex < 11; columnIndex += 1) {
+        for (let columnIndex = 0; columnIndex < 9; columnIndex += 1) {
           const address = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
           const cell = detailSheet[address] as any;
           if (!cell) continue;
@@ -278,38 +272,8 @@ export default function Debt() {
         }
       }
 
-      const summaryRows: any[][] = [
-        ['Khách hàng', customer.name || ''],
-        ['Mã KH', customer.code || customer.id || ''],
-        ['Khoảng thời gian', rangeText],
-        [],
-        ['Chỉ tiêu', 'Giá trị'],
-        ['Nợ đầu kỳ', money(statement.openingDebt)],
-        ['Ghi nợ trong kỳ', money(statement.periodDebit)],
-        ['Ghi có trong kỳ', money(statement.periodCredit)],
-        ['Nợ cuối kỳ theo kỳ xuất', money(statement.closingDebt)],
-        ['Số dư hiện tại hệ thống', money(statement.currentDebt)],
-        [],
-        ['Thời gian', 'Mã đơn', 'Ghi chú đơn hàng', 'Tổng đơn', 'Ghi nợ', 'Ghi có', 'Số dòng hàng', 'Người thực hiện'],
-        ...(statement.rows || []).filter((row: any) => row.rowType === 'invoice').map((row: any) => [
-          dateText(row.createdAt), row.documentNo || row.id, row.note || '', money(row.total), money(row.debit), money(row.credit), (row.items || []).length, row.createdByName || row.createdBy || '',
-        ]),
-      ];
-      const summarySheet = XLSX.utils.aoa_to_sheet(summaryRows);
-      summarySheet['!cols'] = [{ wch: 26 }, { wch: 22 }, { wch: 38 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 20 }];
-      summarySheet['!rows'] = summaryRows.map((row, index) => ({ hpt: index === 11 ? 26 : 20 }));
-      for (let rowIndex = 0; rowIndex < summaryRows.length; rowIndex += 1) {
-        for (let columnIndex = 0; columnIndex < 8; columnIndex += 1) {
-          const address = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
-          const cell = summarySheet[address] as any;
-          if (!cell) continue;
-          cell.s = { font: { name: 'Arial', sz: 10, bold: rowIndex === 4 || rowIndex === 11, color: { rgb: '1E293B' } }, alignment: { vertical: 'center', wrapText: true }, border: rowIndex === 4 || rowIndex === 11 ? border : undefined, fill: rowIndex === 4 || rowIndex === 11 ? { fgColor: { rgb: 'E2E8F0' } } : undefined };
-        }
-      }
-
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, detailSheet, 'CNCT');
-      XLSX.utils.book_append_sheet(workbook, summarySheet, 'Tổng hợp đơn hàng');
       const safeCustomerName = String(customer.name || customer.id).replace(/[\\/:*?"<>|]/g, '-').slice(0, 60);
       XLSX.writeFile(workbook, `cong-no-chi-tiet-${safeCustomerName}-${new Date().toISOString().slice(0, 10)}.xlsx`);
       setShowDebtExportModal(false);
