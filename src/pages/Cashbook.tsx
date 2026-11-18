@@ -276,6 +276,22 @@ export default function Cashbook() {
     navigate('/app/debt');
   };
 
+  const canViewCustomerDetails = currentUser?.role === 'owner' || permissions?.includes('customers.view_detail') === true;
+  const canViewSupplierDetails = currentUser?.role === 'owner' || permissions?.includes('suppliers.view_detail') === true;
+  const counterpartyHref = (entry: CashbookEntry) => {
+    if (!entry.counterpartyId) return null;
+    if (entry.counterpartyType === 'customer' && canViewCustomerDetails) return `/app/customers/${encodeURIComponent(entry.counterpartyId)}`;
+    if (entry.counterpartyType === 'supplier' && canViewSupplierDetails) return `/app/suppliers/${encodeURIComponent(entry.counterpartyId)}`;
+    return null;
+  };
+  const formatDateTime = (value: string) => new Date(value).toLocaleString('vi-VN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
   return (
     <div className="flex h-full flex-col bg-slate-50 overflow-hidden">
       <AppPageHeader icon={BookText} accentClassName="bg-emerald-600" title="Sổ quỹ" subtitle="Thu - Chi và số dư quỹ hiện tại" actions={<div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2">
@@ -316,28 +332,93 @@ export default function Cashbook() {
           </div>
         </section>
 
-        <section className="rounded-lg border border-slate-200 bg-white overflow-hidden">
-          <div className="border-b border-slate-100 px-3 py-2 text-sm font-semibold text-slate-700">Lịch sử giao dịch</div>
+        <section className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+          <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-3 py-2">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-700">Lịch sử giao dịch</h2>
+              <p className="mt-0.5 text-[11px] text-slate-500">Chạm vào đối tượng hoặc chứng từ để mở thông tin liên quan.</p>
+            </div>
+            {!loading && entries.length > 0 && <span className="shrink-0 text-xs tabular-nums text-slate-500">{entries.length} giao dịch</span>}
+          </div>
           {loading ? (
             <p className="p-4 text-sm text-slate-500">Đang tải...</p>
           ) : entries.length === 0 ? (
             <p className="p-4 text-sm text-slate-500">Không có giao dịch phù hợp với bộ lọc.</p>
           ) : (
-            <div className="divide-y divide-slate-100">
-              {entries.map((entry) => (
-                <div key={entry.id} className="flex items-center justify-between gap-3 px-3 py-2">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-slate-900">{entry.category || 'Khác'}</p>
-                    <p className="truncate text-xs text-slate-500">{accounts.find((account) => account.id === entry.accountId)?.name || 'Chưa phân bổ'} · {readableEntryNote(entry)} · {new Date(entry.createdAt).toLocaleString('vi-VN')}</p>
-                    <p className="mt-0.5 text-[11px] text-slate-500">Người thực hiện: {entry.createdByName || 'Chưa xác định'}</p>
-                    {(entry.actorName || entry.counterpartyName) && <p className="mt-0.5 text-[11px] text-slate-500">{entry.type === 'income' ? 'Người thu' : 'Người chi'}: {entry.actorName || 'Chưa xác định'}{entry.counterpartyName ? ` · ${entry.type === 'income' ? 'Người nộp' : 'Người nhận'}: ${entry.counterpartyName}` : ''}</p>}
-                    {entry.referenceId && entry.referenceLabel && <button type="button" onClick={() => openReference(entry)} className="mt-0.5 text-[11px] text-sky-700 hover:underline">Mở chứng từ liên quan · {entry.referenceLabel}</button>}
-                  </div>
-                  <div className={`text-sm font-semibold tabular-nums ${entry.type === 'income' ? 'text-emerald-700' : 'text-rose-700'}`}>
-                    {entry.type === 'income' ? '+' : '-'}{formatCurrency(entry.amount)}
-                  </div>
-                </div>
-              ))}
+            <div className="overflow-x-auto">
+              <table className="min-w-[1140px] w-full table-fixed text-left text-xs">
+                <caption className="sr-only">Danh sách lịch sử thu chi theo thời gian, tài khoản, đối tượng và chứng từ liên quan</caption>
+                <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th scope="col" className="w-[145px] px-3 py-2.5 font-semibold">Thời gian</th>
+                    <th scope="col" className="w-[205px] px-3 py-2.5 font-semibold">Nội dung</th>
+                    <th scope="col" className="w-[145px] px-3 py-2.5 font-semibold">Tài khoản</th>
+                    <th scope="col" className="w-[155px] px-3 py-2.5 font-semibold">Người thu/chi</th>
+                    <th scope="col" className="w-[190px] px-3 py-2.5 font-semibold">Đối tượng</th>
+                    <th scope="col" className="w-[170px] px-3 py-2.5 font-semibold">Chứng từ</th>
+                    <th scope="col" className="sticky right-0 z-20 w-[140px] border-l border-slate-200 bg-slate-50 px-3 py-2.5 text-right font-semibold">Số tiền</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {entries.map((entry) => {
+                    const href = counterpartyHref(entry);
+                    const counterpartyLabel = entry.counterpartyType === 'customer'
+                      ? 'Khách hàng'
+                      : entry.counterpartyType === 'supplier'
+                        ? 'Nhà cung cấp / đối tác'
+                        : entry.counterpartyType === 'employee'
+                          ? 'Nhân viên'
+                          : entry.counterpartyType === 'shipping_partner'
+                            ? 'Đơn vị vận chuyển'
+                            : '';
+                    return (
+                      <tr key={entry.id} className="group align-top transition-colors hover:bg-slate-50/80">
+                        <td className="whitespace-nowrap px-3 py-2.5 text-slate-600">
+                          <time dateTime={entry.createdAt}>{formatDateTime(entry.createdAt)}</time>
+                          <span className={`mt-1 block text-[11px] font-semibold ${entry.type === 'income' ? 'text-emerald-700' : 'text-rose-700'}`}>
+                            {entry.type === 'income' ? 'Thu' : 'Chi'}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <p className="truncate font-semibold text-slate-900" title={entry.category || 'Khác'}>{entry.category || 'Khác'}</p>
+                          <p className="mt-0.5 max-w-[190px] truncate text-slate-500" title={readableEntryNote(entry)}>{readableEntryNote(entry)}</p>
+                          <p className="mt-1 truncate text-[11px] text-slate-400" title={entry.createdByName || undefined}>Tạo bởi: {entry.createdByName || 'Chưa xác định'}</p>
+                        </td>
+                        <td className="px-3 py-2.5 text-slate-600">
+                          <span className="block truncate" title={accounts.find((account) => account.id === entry.accountId)?.name || 'Chưa phân bổ'}>{accounts.find((account) => account.id === entry.accountId)?.name || 'Chưa phân bổ'}</span>
+                        </td>
+                        <td className="px-3 py-2.5 text-slate-600">
+                          <span className="block truncate" title={entry.actorName || entry.createdByName || undefined}>{entry.actorName || entry.createdByName || 'Chưa xác định'}</span>
+                        </td>
+                        <td className="px-3 py-2.5">
+                          {entry.counterpartyName ? (
+                            <>
+                              {href ? (
+                                <button type="button" onClick={() => navigate(href)} className="block max-w-[175px] truncate text-left font-medium text-sky-700 hover:underline focus:outline-none focus:ring-2 focus:ring-sky-500" title={`Mở ${counterpartyLabel.toLocaleLowerCase('vi-VN')}`}>
+                                  {entry.counterpartyName}
+                                </button>
+                              ) : (
+                                <span className="block max-w-[175px] truncate font-medium text-slate-700" title={entry.counterpartyName}>{entry.counterpartyName}</span>
+                              )}
+                              {counterpartyLabel && <span className="mt-0.5 block text-[11px] text-slate-400">{counterpartyLabel}</span>}
+                            </>
+                          ) : <span className="text-slate-400">—</span>}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          {entry.referenceId && (entry.referenceLabel || entry.referenceType) ? (
+                            <button type="button" onClick={() => openReference(entry)} className="max-w-[155px] truncate text-left font-medium text-sky-700 hover:underline focus:outline-none focus:ring-2 focus:ring-sky-500" title="Mở chứng từ liên quan">
+                              {entry.referenceLabel || 'Mở chứng từ liên quan'}
+                            </button>
+                          ) : <span className="text-slate-400">—</span>}
+                        </td>
+                        <td className={`sticky right-0 z-10 w-[140px] whitespace-nowrap border-l border-slate-200 bg-white px-3 py-2.5 text-right text-sm font-semibold tabular-nums group-hover:bg-slate-50/80 ${entry.type === 'income' ? 'text-emerald-700' : 'text-rose-700'}`}>
+                          {entry.type === 'income' ? '+' : '-'}{formatCurrency(entry.amount)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </section>

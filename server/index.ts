@@ -5750,11 +5750,15 @@ app.get('/api/cashbook', async (req, res) => {
         return true;
       });
     const referenceIds = Array.from(new Set(rows.map((row) => row.referenceId).filter(Boolean))) as string[];
-    const relatedInvoices = referenceIds.length
-      ? await db.select().from(schema.invoices).where(and(eq(schema.invoices.tenantId, req.user.tenantId), inArray(schema.invoices.id, referenceIds))).all()
-      : [];
     const relatedSalesReturns = referenceIds.length
       ? await db.select().from(schema.salesReturns).where(and(eq(schema.salesReturns.tenantId, req.user.tenantId), inArray(schema.salesReturns.id, referenceIds))).all()
+      : [];
+    const invoiceIds = Array.from(new Set([
+      ...referenceIds,
+      ...relatedSalesReturns.map((document) => document.invoiceId).filter(Boolean),
+    ])) as string[];
+    const relatedInvoices = invoiceIds.length
+      ? await db.select().from(schema.invoices).where(and(eq(schema.invoices.tenantId, req.user.tenantId), inArray(schema.invoices.id, invoiceIds))).all()
       : [];
     const relatedPurchases = referenceIds.length
       ? await db.select().from(schema.purchases).where(and(eq(schema.purchases.tenantId, req.user.tenantId), inArray(schema.purchases.id, referenceIds))).all()
@@ -5762,10 +5766,54 @@ app.get('/api/cashbook', async (req, res) => {
     const relatedPurchaseReturns = referenceIds.length
       ? await db.select().from(schema.purchaseReturns).where(and(eq(schema.purchaseReturns.tenantId, req.user.tenantId), inArray(schema.purchaseReturns.id, referenceIds))).all()
       : [];
-    const invoiceMap = new Map(relatedInvoices.map((document) => [document.id, document]));
-    const salesReturnMap = new Map(relatedSalesReturns.map((document) => [document.id, document]));
-    const purchaseMap = new Map(relatedPurchases.map((document) => [document.id, document]));
-    const purchaseReturnMap = new Map(relatedPurchaseReturns.map((document) => [document.id, document]));
+    const relatedPayments = referenceIds.length
+      ? await db.select().from(schema.payments).where(and(eq(schema.payments.tenantId, req.user.tenantId), inArray(schema.payments.id, referenceIds))).all()
+      : [];
+    const relatedDebtLedger = referenceIds.length
+      ? await db.select().from(schema.debtLedger).where(and(eq(schema.debtLedger.tenantId, req.user.tenantId), inArray(schema.debtLedger.id, referenceIds))).all()
+      : [];
+    const relatedPayableLedger = referenceIds.length
+      ? await db.select().from(schema.payableLedger).where(and(eq(schema.payableLedger.tenantId, req.user.tenantId), inArray(schema.payableLedger.id, referenceIds))).all()
+      : [];
+    const relatedSupplierCreditLedger = referenceIds.length
+      ? await db.select().from(schema.supplierCreditLedger).where(and(eq(schema.supplierCreditLedger.tenantId, req.user.tenantId), inArray(schema.supplierCreditLedger.id, referenceIds))).all()
+      : [];
+    const invoiceMap = new Map<string, any>(relatedInvoices.map((document) => [document.id, document] as [string, any]));
+    const salesReturnMap = new Map<string, any>(relatedSalesReturns.map((document) => [document.id, document] as [string, any]));
+    const purchaseMap = new Map<string, any>(relatedPurchases.map((document) => [document.id, document] as [string, any]));
+    const purchaseReturnMap = new Map<string, any>(relatedPurchaseReturns.map((document) => [document.id, document] as [string, any]));
+    const paymentMap = new Map<string, any>(relatedPayments.map((document) => [document.id, document] as [string, any]));
+    const debtLedgerMap = new Map<string, any>(relatedDebtLedger.map((document) => [document.id, document] as [string, any]));
+    const payableLedgerMap = new Map<string, any>(relatedPayableLedger.map((document) => [document.id, document] as [string, any]));
+    const supplierCreditLedgerMap = new Map<string, any>(relatedSupplierCreditLedger.map((document) => [document.id, document] as [string, any]));
+    const customerIds = Array.from(new Set([
+      ...rows.filter((row) => row.counterpartyType === 'customer' && row.counterpartyId).map((row) => row.counterpartyId),
+      ...relatedInvoices.map((document) => document.customerId),
+      ...relatedSalesReturns.map((document) => document.customerId),
+      ...relatedPayments.map((document) => document.customerId),
+      ...relatedDebtLedger.map((document) => document.customerId),
+    ].filter(Boolean))) as string[];
+    const supplierIds = Array.from(new Set([
+      ...rows.filter((row) => row.counterpartyType === 'supplier' && row.counterpartyId).map((row) => row.counterpartyId),
+      ...relatedPurchases.map((document) => document.supplierId),
+      ...relatedPurchaseReturns.map((document) => document.supplierId),
+      ...relatedPayableLedger.map((document) => document.supplierId),
+      ...relatedSupplierCreditLedger.map((document) => document.supplierId),
+    ].filter(Boolean))) as string[];
+    const [customers, suppliers] = await Promise.all([
+      customerIds.length
+        ? db.select({ id: schema.customers.id, name: schema.customers.name })
+          .from(schema.customers)
+          .where(and(eq(schema.customers.tenantId, req.user.tenantId), inArray(schema.customers.id, customerIds))).all()
+        : Promise.resolve([]),
+      supplierIds.length
+        ? db.select({ id: schema.suppliers.id, name: schema.suppliers.name })
+          .from(schema.suppliers)
+          .where(and(eq(schema.suppliers.tenantId, req.user.tenantId), inArray(schema.suppliers.id, supplierIds))).all()
+        : Promise.resolve([]),
+    ]);
+    const customerNameById = new Map(customers.map((customer) => [customer.id, customer.name]));
+    const supplierNameById = new Map(suppliers.map((supplier) => [supplier.id, supplier.name]));
     const users = await db.select().from(schema.users).where(eq(schema.users.tenantId, req.user.tenantId)).all();
     const userNameById = new Map(users.map((user) => [user.id, user.name]));
     res.json(rows.map((row) => {
@@ -5773,6 +5821,22 @@ app.get('/api/cashbook', async (req, res) => {
       const salesReturn = row.referenceId ? salesReturnMap.get(row.referenceId) : undefined;
       const purchase = row.referenceId ? purchaseMap.get(row.referenceId) : undefined;
       const purchaseReturn = row.referenceId ? purchaseReturnMap.get(row.referenceId) : undefined;
+      const payment = row.referenceId ? paymentMap.get(row.referenceId) : undefined;
+      const debtEntry = row.referenceId ? debtLedgerMap.get(row.referenceId) : undefined;
+      const payableEntry = row.referenceId ? payableLedgerMap.get(row.referenceId) : undefined;
+      const supplierCreditEntry = row.referenceId ? supplierCreditLedgerMap.get(row.referenceId) : undefined;
+      const relatedInvoice = salesReturn?.invoiceId ? invoiceMap.get(salesReturn.invoiceId) : undefined;
+      const explicitCustomerId = row.counterpartyType === 'customer' ? row.counterpartyId : null;
+      const explicitSupplierId = row.counterpartyType === 'supplier' ? row.counterpartyId : null;
+      const customerId = explicitCustomerId || invoice?.customerId || salesReturn?.customerId || relatedInvoice?.customerId || payment?.customerId || debtEntry?.customerId || null;
+      const supplierId = explicitSupplierId || purchase?.supplierId || purchaseReturn?.supplierId || payableEntry?.supplierId || supplierCreditEntry?.supplierId || null;
+      const counterpartyType = row.counterpartyType || (customerId ? 'customer' : supplierId ? 'supplier' : null);
+      const counterpartyId = counterpartyType === 'customer'
+        ? (hasPermission(req, 'customers.view_detail') ? row.counterpartyId || customerId : null)
+        : counterpartyType === 'supplier'
+          ? (hasPermission(req, 'suppliers.view_detail') ? row.counterpartyId || supplierId : null)
+          : row.counterpartyId || null;
+      const counterpartyName = row.counterpartyName || (counterpartyType === 'customer' && customerId ? customerNameById.get(customerId) || '' : counterpartyType === 'supplier' && supplierId ? supplierNameById.get(supplierId) || '' : '');
       const reference = invoice
         ? { label: documentReference(invoice, 'HD'), type: 'invoice' as const }
         : salesReturn
@@ -5794,6 +5858,9 @@ app.get('/api/cashbook', async (req, res) => {
         displayNote,
         referenceLabel: reference?.label || null,
         referenceType: reference?.type || (row.referenceId ? 'unknown' : null),
+        counterpartyType,
+        counterpartyId,
+        counterpartyName,
       };
     }));
   } catch (err) {
