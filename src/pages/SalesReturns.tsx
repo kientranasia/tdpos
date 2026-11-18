@@ -37,7 +37,7 @@ const unitForCode = (product: Product, code: string) => {
 };
 
 export default function SalesReturns() {
-  const { invoices, customers, products, refreshInvoices, refreshProducts } = useApp();
+  const { invoices, customers, products, refreshInvoices, refreshProducts, dataRevision } = useApp();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedInvoiceId = searchParams.get('invoiceId');
@@ -99,7 +99,7 @@ export default function SalesReturns() {
   useEffect(() => {
     void loadHistory();
     cashAccountsApi.list().then(setAccounts).catch(() => setAccounts([]));
-  }, []);
+  }, [dataRevision]);
 
   useEffect(() => {
     if (!requestedReturnId) {

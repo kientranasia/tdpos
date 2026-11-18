@@ -21,7 +21,7 @@ const operationMeta: Record<OperationMode, { title: string; subtitle: string; no
 };
 
 export default function InventoryOperations() {
-  const { products, refreshProducts } = useApp();
+  const { products, refreshProducts, dataRevision } = useApp();
   const [searchParams] = useSearchParams();
   const requestedMode = searchParams.get('mode');
   const mode: OperationMode = requestedMode === 'internal' || requestedMode === 'transfer' ? requestedMode : 'dispose';
@@ -60,7 +60,7 @@ export default function InventoryOperations() {
 
   useEffect(() => {
     void loadHistory();
-  }, [mode]);
+  }, [dataRevision, mode]);
 
   const findProductByCode = async (code: string) => {
     const localMatch = findProductInScanIndex(scanCodeIndex, code);

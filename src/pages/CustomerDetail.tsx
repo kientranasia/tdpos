@@ -3,8 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { useApp } from '../context/AppContext';
 import { formatCurrency } from '../lib/utils';
-import { customersApi, debtLedgerApi } from '../lib/api';
-import { DebtLedger } from '../types';
+import { customersApi } from '../lib/api';
 import {
   Users,
   Phone,
@@ -24,12 +23,13 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
+import PartnerDebtImport from '../components/PartnerDebtImport';
 import { motion } from 'motion/react';
 
 export default function CustomerDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { customers, invoices, updateCustomer } = useApp();
+  const { customers, invoices, updateCustomer, dataRevision, currentUser, permissions } = useApp();
   const [showEditModal, setShowEditModal] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [editError, setEditError] = useState('');
@@ -39,10 +39,11 @@ export default function CustomerDetail() {
     address: '',
     type: 'retail' as 'retail' | 'loyal',
   });
-  const [debtLedgerEntries, setDebtLedgerEntries] = useState<DebtLedger[]>([]);
+  const [statementRows, setStatementRows] = useState<any[]>([]);
   const [loadedCustomer, setLoadedCustomer] = useState<any | null>(null);
   const [exportingDebt, setExportingDebt] = useState(false);
   const [exportError, setExportError] = useState('');
+  const [importRevision, setImportRevision] = useState(0);
 
   const cachedCustomer = customers.find(c => c.id === id);
   const customer = useMemo(() => {
@@ -62,15 +63,15 @@ export default function CustomerDetail() {
   useEffect(() => {
     const loadCustomerData = async () => {
       if (!id) return;
-      const [remoteCustomer, entries] = await Promise.all([
+      const [remoteCustomer, statement] = await Promise.all([
         customersApi.get(id).catch(() => null),
-        debtLedgerApi.list(undefined, id).catch(() => []),
+        customersApi.debtStatement(id).catch(() => ({ rows: [] })),
       ]);
       if (remoteCustomer) setLoadedCustomer(remoteCustomer);
-      setDebtLedgerEntries(entries);
+      setStatementRows(statement?.rows || []);
     };
     void loadCustomerData();
-  }, [id]);
+  }, [dataRevision, id, importRevision]);
 
   const exportDebtStatement = async () => {
     if (!customer || exportingDebt) return;
@@ -130,17 +131,23 @@ export default function CustomerDetail() {
       invoice: inv,
     }));
 
-    const debtEvents = debtLedgerEntries.map((entry) => ({
-      id: `debt-${entry.id}`,
-      createdAt: entry.createdAt,
+    const debtEvents = statementRows
+      .filter((row) => row.rowType !== 'invoice')
+      .map((row: any) => ({
+      id: `debt-${row.id}`,
+      createdAt: row.createdAt,
       kind: 'debt' as const,
-      debt: entry,
+      debt: {
+        ...row,
+        amount: Math.abs(Number(row.debit || 0) - Number(row.credit || 0)) || Number(row.total || 0),
+        type: Number(row.debit || 0) > Number(row.credit || 0) ? 'increase' : 'decrease',
+      },
     }));
 
     return [...invoiceEvents, ...debtEvents].sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
-  }, [customerInvoices, debtLedgerEntries]);
+  }, [customerInvoices, statementRows]);
 
   const statusMeta = (status: 'completed' | 'partial' | 'unpaid') => {
     if (status === 'completed') return { label: 'Đã thanh toán', tone: 'status-chip-success' };
@@ -320,7 +327,7 @@ export default function CustomerDetail() {
                 </span>
               </div>
               <div className="flex items-center gap-2 mt-0.5">
-                <span className="text-[11px] text-slate-400">Mã: {customer.id.slice(0, 8).toUpperCase()}</span>
+                <span className="text-[11px] text-slate-400">Mã: {customer.code || customer.sourceCode || customer.id.slice(0, 8).toUpperCase()}</span>
               </div>
             </div>
           </div>
@@ -334,6 +341,12 @@ export default function CustomerDetail() {
           >
             <Download className="h-4 w-4" /> {exportingDebt ? 'Đang xuất...' : 'Xuất công nợ'}
           </Button>
+          <PartnerDebtImport
+            partnerType="customer"
+            partnerCode={customer.code || customer.sourceCode || ''}
+            canImport={(currentUser?.role === 'owner' || permissions?.includes('partners.create') === true) && Boolean(customer.code || customer.sourceCode)}
+            onImported={() => setImportRevision((value) => value + 1)}
+          />
           <Button
             onClick={openEditModal}
             variant="outline"
@@ -435,6 +448,55 @@ export default function CustomerDetail() {
 
                 {/* Right: History */}
                 <div className="lg:col-span-8 space-y-4">
+                    <section className="overflow-hidden rounded-lg border border-slate-100 bg-white shadow-sm">
+                        <div className="flex items-center justify-between border-b border-slate-50 bg-slate-50/30 p-3">
+                            <div className="flex items-center gap-2">
+                                <div className="flex h-7 w-7 items-center justify-center rounded-md bg-sky-50 text-sky-600">
+                                    <ShoppingCart className="h-4 w-4" />
+                                </div>
+                                <div>
+                                    <h3 className="text-sm font-semibold leading-tight text-slate-900">Lịch sử đơn hàng</h3>
+                                    <p className="mt-0.5 text-[11px] text-slate-500">Các đơn hàng đã gắn với khách hàng</p>
+                                </div>
+                            </div>
+                            <span className="text-[11px] font-medium text-slate-400">{customerInvoices.length} đơn</span>
+                        </div>
+                        <div className="divide-y divide-slate-50">
+                            {customerInvoices.slice(0, 20).map((invoice) => {
+                                const meta = statusMeta(invoice.status);
+                                return (
+                                    <button
+                                        key={invoice.id}
+                                        type="button"
+                                        onClick={() => navigate(`/app/invoices?invoiceId=${encodeURIComponent(invoice.id)}`)}
+                                        className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors hover:bg-sky-50/50"
+                                    >
+                                        <span className="min-w-0">
+                                            <span className="flex items-center gap-2">
+                                                <span className="truncate text-xs font-semibold text-sky-700">#{invoice.documentNo || invoice.id}</span>
+                                                <span className={`status-chip ${meta.tone}`}>{meta.label}</span>
+                                            </span>
+                                            <span className="mt-1 block text-[11px] text-slate-400">
+                                                {new Date(invoice.createdAt).toLocaleString('vi-VN')} · {invoice.createdByName || 'Nhân viên'}
+                                            </span>
+                                        </span>
+                                        <span className="shrink-0 text-right">
+                                            <span className="block text-xs font-semibold tabular-nums text-slate-800">{formatCurrency(Number(invoice.finalAmount || 0))}</span>
+                                            <span className={`mt-1 block text-[11px] ${Number(invoice.debtAmount || 0) > 0 ? 'text-orange-600' : 'text-emerald-600'}`}>
+                                                {Number(invoice.debtAmount || 0) > 0 ? `Còn nợ ${formatCurrency(Number(invoice.debtAmount || 0))}` : 'Đã thu đủ'}
+                                            </span>
+                                        </span>
+                                    </button>
+                                );
+                            })}
+                            {!customerInvoices.length && <p className="px-3 py-6 text-center text-xs text-slate-500">Chưa có đơn hàng gắn với khách hàng.</p>}
+                        </div>
+                        {customerInvoices.length > 20 && (
+                            <button type="button" onClick={() => navigate(`/app/invoices?customerId=${encodeURIComponent(customer.id)}`)} className="w-full border-t border-slate-100 px-3 py-2 text-center text-xs font-medium text-sky-700 hover:bg-sky-50">
+                                Xem tất cả đơn hàng
+                            </button>
+                        )}
+                    </section>
                     <div className="bg-white rounded-lg shadow-sm border border-slate-100 flex flex-col min-h-[360px] overflow-hidden">
                         <div className="p-3 border-b border-slate-50 flex items-center justify-between bg-slate-50/30">
                              <div className="flex items-center gap-2">
@@ -478,7 +540,7 @@ export default function CustomerDetail() {
                                                 <div className="flex items-center gap-2">
                                                     {event.kind === 'invoice' ? (
                                                       <button type="button" className="text-xs font-semibold tracking-tight text-sky-700 hover:underline" onClick={() => navigate(`/app/invoices?invoiceId=${encodeURIComponent(event.invoice.id)}`)}>#{event.invoice.documentNo || event.invoice.id}</button>
-                                                    ) : <p className="text-xs font-semibold tracking-tight text-slate-900">{event.debt.type === 'increase' ? 'Chi cho khách hàng' : 'Thu nợ khách hàng'}</p>}
+                                                    ) : <p className="text-xs font-semibold tracking-tight text-slate-900">{event.debt.rowType === 'imported_debt' ? (event.debt.documentNo || 'Công nợ import') : event.debt.rowType === 'opening' ? 'Số dư đầu kỳ' : event.debt.type === 'increase' ? 'Chi cho khách hàng' : 'Thu nợ khách hàng'}</p>}
                                                     <span className={`status-chip ${
                                                         event.kind === 'invoice'
                                                           ? statusMeta(event.invoice.status).tone
@@ -486,15 +548,15 @@ export default function CustomerDetail() {
                                                     }`}>
                                                         {event.kind === 'invoice'
                                                           ? statusMeta(event.invoice.status).label
-                                                          : event.debt.type === 'increase' ? 'Tăng công nợ' : 'Giảm công nợ'}
+                                                          : event.debt.rowType === 'imported_debt' ? 'Kiot Việt' : event.debt.type === 'increase' ? 'Tăng công nợ' : 'Giảm công nợ'}
                                                     </span>
                                                 </div>
                                                 <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
                                                     <Calendar className="h-3 w-3" />
                                                     {new Date(event.createdAt).toLocaleString('vi-VN')}
                                                 </div>
-                                                {event.kind === 'debt' && event.debt.note && (
-                                                  <p className="text-xs text-slate-500">{event.debt.note}</p>
+                                                {event.kind === 'debt' && (event.debt.note || event.debt.description) && (
+                                                  <p className="text-xs text-slate-500">{event.debt.note || event.debt.description}</p>
                                                 )}
                                             </div>
                                         </div>
@@ -502,7 +564,7 @@ export default function CustomerDetail() {
                                         <div className="flex w-full items-center justify-between gap-3 border-t pt-2 sm:w-auto sm:border-t-0 sm:pt-0">
                                             <div className="text-left sm:text-right">
                                                 <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                                                  {event.kind === 'invoice' ? 'Thành tiền' : event.debt.type === 'increase' ? 'Ghi nợ' : 'Đã thu nợ'}
+                                                  {event.kind === 'invoice' ? 'Thành tiền' : event.debt.type === 'increase' ? 'Ghi nợ' : 'Ghi có'}
                                                 </p>
                                                 <p className={`text-sm font-semibold tracking-tight tabular-nums ${
                                                   event.kind === 'invoice' ? 'text-indigo-700' : event.debt.type === 'increase' ? 'text-amber-700' : 'text-emerald-700'

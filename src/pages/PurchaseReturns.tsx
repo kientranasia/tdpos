@@ -10,7 +10,7 @@ import { formatCurrency, normalizeSearchText } from '../lib/utils';
 type ReturnLine = { purchaseItemId: string; productName: string; unit: string; quantity: number; maxQuantity: number; price: number };
 
 export default function PurchaseReturns() {
-  const { refreshProducts } = useApp();
+  const { refreshProducts, dataRevision } = useApp();
   const [purchases, setPurchases] = useState<any[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [history, setHistory] = useState<any[]>([]);
@@ -36,7 +36,7 @@ export default function PurchaseReturns() {
     }
   };
 
-  useEffect(() => { void reload(); }, []);
+  useEffect(() => { void reload(); }, [dataRevision]);
 
   const selectPurchase = async (purchase: any) => {
     setLoading(true); setMessage('');

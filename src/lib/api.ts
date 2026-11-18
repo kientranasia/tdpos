@@ -45,6 +45,7 @@ async function request<T>(endpoint: string, options: RequestOptions = {}): Promi
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    cache: method === 'GET' ? 'no-store' : undefined,
   });
 
   if (!res.ok) {

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { ArrowLeft, Calendar, ClipboardList, Download, MapPin, Phone, Receipt, Truck, Wallet } from 'lucide-react';
 import { Button } from '../components/ui/Button';
+import PartnerDebtImport from '../components/PartnerDebtImport';
 import { useApp } from '../context/AppContext';
 import { purchasesApi, suppliersApi } from '../lib/api';
 import { formatCurrency } from '../lib/utils';
@@ -25,6 +26,7 @@ type SupplierRow = {
 export default function SupplierDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { dataRevision, currentUser, permissions } = useApp();
   const [supplier, setSupplier] = useState<SupplierRow | null>(null);
   const [purchases, setPurchases] = useState<any[]>([]);
   const [purchaseBalances, setPurchaseBalances] = useState<Record<string, { payableAmount: number; paidAmount: number; status: string }>>({});
@@ -32,6 +34,7 @@ export default function SupplierDetail() {
   const [statementTenant, setStatementTenant] = useState<any>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [importRevision, setImportRevision] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,7 +64,7 @@ export default function SupplierDetail() {
     };
     void load();
     return () => { cancelled = true; };
-  }, [id]);
+  }, [dataRevision, id, importRevision]);
 
   const purchaseTotal = useMemo(() => purchases.reduce((sum, purchase) => sum + Number(purchase.finalAmount || 0), 0), [purchases]);
   const payableBalance = useMemo(() => Math.max(0, statementRows
@@ -156,6 +159,12 @@ export default function SupplierDetail() {
       </div>
       <div className="flex items-center gap-2">
         <Button size="sm" variant="outline" onClick={exportSupplierDebtStatement} className="h-8 rounded-md px-3 text-xs"><Download className="mr-1.5 h-3.5 w-3.5" />Xuất công nợ</Button>
+        <PartnerDebtImport
+          partnerType="supplier"
+          partnerCode={supplier.code}
+          canImport={currentUser?.role === 'owner' || permissions?.includes('partners.create') === true}
+          onImported={() => setImportRevision((value) => value + 1)}
+        />
         <Button size="sm" onClick={() => navigate('/app/purchases')} className="h-8 rounded-md px-3 text-xs"><ClipboardList className="mr-1.5 h-3.5 w-3.5" />Nhập hàng</Button>
       </div>
     </header>

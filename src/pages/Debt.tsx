@@ -10,7 +10,7 @@ import { DebtLedger } from '../types';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 export default function Debt() {
-  const { customers, refreshCustomers, activeTenant, invoices } = useApp();
+  const { customers, refreshCustomers, activeTenant, invoices, dataRevision } = useApp();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [searchTerm, setSearchTerm] = useState('');
@@ -467,7 +467,7 @@ export default function Debt() {
       }
     };
     loadLedgers();
-  }, []);
+  }, [dataRevision]);
 
   useEffect(() => {
     const loadSupplierDebt = async () => {
@@ -489,7 +489,7 @@ export default function Debt() {
       }
     };
     void loadSupplierDebt();
-  }, []);
+  }, [dataRevision]);
 
   return (
     <div className="erp-compact flex h-full flex-col overflow-hidden bg-slate-50 animate-in fade-in duration-500">

@@ -15,7 +15,7 @@ const localDateInputValue = (value = new Date()) => {
 };
 
 export default function Reports() {
-  const { invoices, productSummary, currentUser, permissions } = useApp();
+  const { invoices, productSummary, currentUser, permissions, dataRevision } = useApp();
   const navigate = useNavigate();
   const [purchases, setPurchases] = useState<any[]>([]);
   const [cashbook, setCashbook] = useState<any[]>([]);
@@ -61,7 +61,7 @@ export default function Reports() {
       setPurchases(purchaseRows); setCashbook(cashRows); setCashAccounts(accounts); setStaffReport(staff); setStockMovements(movementRows); setSalesReturns(returnRows);
     } catch (err) { setMessage(err instanceof Error ? err.message : 'Không thể tải báo cáo.'); }
   };
-  useEffect(() => { void load(); }, [fromDate, paymentFilter, staffId, toDate]);
+  useEffect(() => { void load(); }, [dataRevision, fromDate, paymentFilter, staffId, toDate]);
 
   const inDateRange = (value: string) => {
     const timestamp = new Date(value).getTime();

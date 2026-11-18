@@ -1,4 +1,4 @@
-const CACHE_NAME = 'hkdsmart-shell-v1';
+const CACHE_NAME = 'hkdsmart-shell-v2';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -31,5 +31,20 @@ self.addEventListener('fetch', (event) => {
 
   event.respondWith(
     fetch(event.request).catch(() => caches.match('/index.html')),
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  const target = event.notification?.data?.target || '/app/dashboard';
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+      const existing = clients.find((client) => 'focus' in client);
+      if (existing) {
+        existing.navigate(target);
+        return existing.focus();
+      }
+      return self.clients.openWindow(target);
+    }),
   );
 });

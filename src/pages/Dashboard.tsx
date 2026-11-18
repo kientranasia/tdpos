@@ -18,7 +18,7 @@ const dateKey = (value: string | Date) => {
 const dateInputValue = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
 export default function Dashboard() {
-  const { activeTenant, invoices, products, productSummary, customers } = useApp();
+  const { activeTenant, invoices, products, productSummary, customers, dataRevision } = useApp();
   const navigate = useNavigate();
   const [salesReturns, setSalesReturns] = useState<any[]>([]);
   const [revenueRange, setRevenueRange] = useState<RevenueRange>(14);
@@ -32,7 +32,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     invoicesApi.returns().then(setSalesReturns).catch(() => setSalesReturns([]));
-  }, [activeTenant?.id, invoices.length]);
+  }, [activeTenant?.id, dataRevision, invoices.length]);
 
   const revenueWindow = useMemo(() => {
     const today = new Date();

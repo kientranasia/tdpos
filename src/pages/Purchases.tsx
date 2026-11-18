@@ -91,7 +91,7 @@ const purchaseLineTotal = (line: Pick<Line, 'quantity' | 'price' | 'sellingPrice
 };
 
 export default function Purchases() {
-  const { products, categories, refreshProducts } = useApp();
+  const { products, categories, refreshProducts, dataRevision } = useApp();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [suppliers, setSuppliers] = useState<any[]>([]);
@@ -175,7 +175,7 @@ export default function Purchases() {
 
   useEffect(() => {
     reload().catch((err) => setMessage(err instanceof Error ? err.message : 'Không thể tải dữ liệu nhập hàng.'));
-  }, []);
+  }, [dataRevision]);
 
   useEffect(() => {
     if (!showProductPicker && !showSupplierPicker) return undefined;

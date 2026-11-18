@@ -94,7 +94,7 @@ const readableEntryNote = (entry: CashbookEntry) => {
 
 export default function Cashbook() {
   const navigate = useNavigate();
-  const { currentUser, permissions } = useApp();
+  const { currentUser, permissions, dataRevision } = useApp();
   const canViewAllTransactions = currentUser?.role === 'owner' || permissions?.includes('transactions.view_all') === true;
   const [entries, setEntries] = useState<CashbookEntry[]>([]);
   const [accounts, setAccounts] = useState<any[]>([]);
@@ -146,11 +146,11 @@ export default function Cashbook() {
   }, [canViewAllTransactions, currentUser?.id]);
   useEffect(() => {
     loadEntries();
-  }, [accountFilter, employeeFilter, fromDate, toDate, typeFilter]);
-  useEffect(() => { cashAccountsApi.list().then(setAccounts).catch(() => setAccounts([])); }, []);
+  }, [accountFilter, dataRevision, employeeFilter, fromDate, toDate, typeFilter]);
+  useEffect(() => { cashAccountsApi.list().then(setAccounts).catch(() => setAccounts([])); }, [dataRevision]);
   useEffect(() => {
     cashbookApi.participants().then(setParticipants).catch(() => setParticipants({ users: [], customers: [], suppliers: [] }));
-  }, []);
+  }, [dataRevision]);
   useEffect(() => {
     if (!showModal) return;
     setCategoryLoading(true);

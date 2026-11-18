@@ -18,6 +18,7 @@ interface AppContextType {
   categories: Category[];
   customers: Customer[];
   invoices: Invoice[];
+  dataRevision: number;
   permissions: string[] | null;
   loading: boolean;
   setActiveTenant: (tenant: Tenant | null) => void;
@@ -50,6 +51,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [categories, setCategories] = useState<Category[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [dataRevision, setDataRevision] = useState(0);
   const [permissions, setPermissions] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(true);
   const lastLoadedTenantIdRef = useRef<string | null>(null);
@@ -220,6 +222,58 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.error('Failed to refresh invoices:', err);
     }
   }, [activeTenant]);
+
+  // Keep the shared business data fresh while another device or employee is
+  // changing the same tenant. Page-level screens can use dataRevision to
+  // reload their own detail lists without forcing a full browser refresh.
+  const refreshSharedData = useCallback(async () => {
+    if (!activeTenant?.id || activeTenant.accessBlocked || !authApi.getToken()) return;
+    const [productResult, summaryResult, customerResult, invoiceResult, categoryResult] = await Promise.allSettled([
+      productsApi.listPage(activeTenant.id, { limit: 100, offset: 0 }),
+      productsApi.summary(activeTenant.id),
+      customersApi.list(activeTenant.id),
+      invoicesApi.list(activeTenant.id),
+      categoriesApi.list(activeTenant.id),
+    ]);
+    if (productResult.status === 'fulfilled') {
+      setProducts(productResult.value.items);
+    }
+    if (summaryResult.status === 'fulfilled') setProductSummary(summaryResult.value);
+    if (customerResult.status === 'fulfilled') setCustomers(customerResult.value);
+    if (invoiceResult.status === 'fulfilled') setInvoices(invoiceResult.value);
+    if (categoryResult.status === 'fulfilled') setCategories(categoryResult.value);
+    setDataRevision((revision) => revision + 1);
+  }, [activeTenant]);
+
+  useEffect(() => {
+    if (!activeTenant?.id || activeTenant.accessBlocked || !currentUser?.id) return;
+    let disposed = false;
+    let inFlight = false;
+    const sync = async () => {
+      if (disposed || inFlight || document.visibilityState === 'hidden') return;
+      inFlight = true;
+      try {
+        await refreshSharedData();
+      } catch (error) {
+        console.warn('Không thể đồng bộ dữ liệu nền:', error);
+      } finally {
+        inFlight = false;
+      }
+    };
+    const interval = window.setInterval(() => void sync(), 15_000);
+    const handleFocus = () => void sync();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') void sync();
+    };
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [activeTenant?.accessBlocked, activeTenant?.id, currentUser?.id, refreshSharedData]);
 
   // ─── Mutations (optimistic UI + API call) ──────────────────
   const updateTenant = useCallback(async (tenantUpdates: Partial<Tenant>) => {
@@ -399,6 +453,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       categories,
       customers,
       invoices,
+      dataRevision,
       permissions,
       loading,
       setActiveTenant,

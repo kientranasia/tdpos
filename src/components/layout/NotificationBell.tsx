@@ -50,6 +50,8 @@ export default function NotificationBell({ lowStockCount }: NotificationBellProp
   const [items, setItems] = useState<AppNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [notificationError, setNotificationError] = useState('');
+  const [toastItems, setToastItems] = useState<AppNotification[]>([]);
   const [permissionState, setPermissionState] = useState<PermissionState>(() => {
     if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported';
     return window.Notification.permission;
@@ -73,24 +75,42 @@ export default function NotificationBell({ lowStockCount }: NotificationBellProp
         : [];
       setItems(nextItems);
       setUnreadCount(Number(result.unreadCount || 0));
+      setNotificationError('');
       knownIdsRef.current = new Set(nextItems.map((item) => item.id));
       initializedRef.current = true;
 
+      if (newItems.length > 0) {
+        setToastItems(newItems.slice(0, 3));
+        window.setTimeout(() => setToastItems([]), 8_000);
+      }
+
       if (newItems.length > 0 && permissionState === 'granted' && 'Notification' in window) {
-        newItems.slice(0, 3).forEach((item) => {
-          const notification = new window.Notification(item.title, {
-            body: item.body,
-            tag: item.id,
-          });
+        const showDeviceNotification = async (item: AppNotification) => {
+          const target = notificationTarget(item);
+          const registration = 'serviceWorker' in navigator
+            ? await navigator.serviceWorker.ready.catch(() => null)
+            : null;
+          if (registration?.showNotification) {
+            await registration.showNotification(item.title, {
+              body: item.body,
+              tag: item.id,
+              icon: '/branding/hkdsmart-icon.png',
+              data: { target },
+            });
+            return;
+          }
+          const notification = new window.Notification(item.title, { body: item.body, tag: item.id });
           notification.onclick = () => {
             window.focus();
             openTarget(item);
             notification.close();
           };
-        });
+        };
+        void Promise.all(newItems.slice(0, 3).map(showDeviceNotification)).catch(() => undefined);
       }
     } catch (error) {
       // Notifications are additive and must not interrupt the current screen.
+      setNotificationError(error instanceof Error ? error.message : 'Không thể tải thông báo.');
       console.warn('Không thể tải thông báo:', error);
     } finally {
       setLoading(false);
@@ -106,8 +126,18 @@ export default function NotificationBell({ lowStockCount }: NotificationBellProp
       return;
     }
     void loadNotifications();
-    const timer = window.setInterval(() => void loadNotifications(), 30_000);
-    return () => window.clearInterval(timer);
+    const timer = window.setInterval(() => void loadNotifications(), 15_000);
+    const handleFocus = () => void loadNotifications();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') void loadNotifications();
+    };
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [activeTenant?.id, isOwner, loadNotifications]);
 
   const requestDevicePermission = async () => {
@@ -137,11 +167,46 @@ export default function NotificationBell({ lowStockCount }: NotificationBellProp
 
   const badgeCount = isOwner ? unreadCount : lowStockCount;
   const badgeText = badgeCount > 9 ? '9+' : String(badgeCount);
+  const toggleNotifications = () => {
+    if (!isOwner) {
+      navigate('/app/inventory');
+      return;
+    }
+    setOpen((value) => !value);
+    void loadNotifications();
+  };
 
   return (
     <div className="relative">
+      {isOwner && toastItems.length > 0 && (
+        <div
+          className="pointer-events-none fixed right-3 top-16 z-[210] flex w-[min(22rem,calc(100vw-1.5rem))] flex-col gap-2 md:right-5 md:top-16"
+          role="status"
+          aria-live="polite"
+          aria-label="Thông báo mới"
+        >
+          {toastItems.map((item) => (
+            <button
+              type="button"
+              key={item.id}
+              onClick={() => void markRead(item)}
+              className="pointer-events-auto flex items-start gap-2.5 rounded-xl border border-sky-200 bg-white px-3 py-3 text-left shadow-2xl ring-1 ring-sky-100 transition hover:bg-sky-50"
+            >
+              <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-sky-100 text-sky-700">
+                <Bell className="h-4 w-4" />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[10px] font-semibold uppercase tracking-[0.08em] text-sky-700">Thông báo mới</span>
+                <span className="mt-0.5 block text-xs font-semibold text-slate-800">{item.title}</span>
+                <span className="mt-0.5 block text-[11px] leading-4 text-slate-500">{item.body}</span>
+                <span className="mt-1 block text-[10px] text-slate-400">Nhấn để xem chi tiết</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
       <button
-        onClick={() => isOwner ? setOpen((value) => !value) : navigate('/app/inventory')}
+        onClick={toggleNotifications}
         className="relative flex h-9 w-9 items-center justify-center rounded-lg brand-surface text-slate-600 transition-colors hover:text-sky-600 md:h-10 md:w-10"
         title={isOwner ? 'Thông báo' : 'Hàng sắp hết'}
         aria-label={isOwner ? `Thông báo${unreadCount ? `, ${unreadCount} chưa đọc` : ''}` : 'Hàng sắp hết'}
@@ -156,7 +221,7 @@ export default function NotificationBell({ lowStockCount }: NotificationBellProp
       </button>
 
       {isOwner && open && (
-        <div className="absolute right-0 top-11 z-[120] w-[min(23rem,calc(100vw-1rem))] overflow-hidden rounded-xl border border-slate-200 bg-white text-slate-800 shadow-xl md:top-12">
+        <div className="absolute right-0 top-11 z-[120] w-[min(23rem,calc(100vw-1rem))] overflow-hidden rounded-xl border border-slate-200 bg-white text-slate-800 shadow-xl md:top-12 lg:left-full lg:right-auto lg:top-0 lg:ml-2 lg:w-[25rem]">
           <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2.5">
             <div>
               <p className="text-sm font-semibold">Thông báo</p>
@@ -199,6 +264,11 @@ export default function NotificationBell({ lowStockCount }: NotificationBellProp
           {permissionState === 'denied' && (
             <p className="border-b border-slate-100 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
               Thông báo trình duyệt đang bị chặn. Hãy bật lại quyền thông báo trong cài đặt trình duyệt.
+            </p>
+          )}
+          {notificationError && (
+            <p className="border-b border-slate-100 bg-rose-50 px-3 py-2 text-[11px] text-rose-700">
+              {notificationError}
             </p>
           )}
 

@@ -675,6 +675,7 @@ app.use('/api', authenticateUser);
 app.get('/api/notifications', async (req, res) => {
   try {
     if (!ensureOwner(req, res)) return;
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     const requestedLimit = Number(req.query.limit);
     const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
       ? Math.min(Math.floor(requestedLimit), 100)
@@ -3466,42 +3467,88 @@ const normalizeSupplierImportRow = (row: Record<string, unknown>) => ({
   raw: row,
 });
 
+const isImportValuePresent = (value: unknown) => value !== null && value !== undefined && String(value).trim() !== '';
+const debtImportFooterPattern = /ngày\s+\d{1,2}\s+tháng|người\s+lập\s+biểu|ký[,\s]+họ\s+tên|tm\s+công\s+ty/i;
+
 const normalizeDebtImportRows = (rows: Record<string, unknown>[], entityType: PartnerImportEntity) => {
   const documents: Array<any> = [];
   let current: any = null;
+  let footerStarted = false;
+  let detailRowCount = 0;
+  let ignoredRowCount = 0;
   rows.forEach((row, index) => {
-    const occurredAt = importValue(row, ['Thời gian']);
-    const documentNo = importText(importValue(row, ['Mã']));
-    const description = importText(importValue(row, ['Diễn giải']));
-    if (occurredAt && documentNo) {
+    const sourceRowNumber = Math.max(1, Math.floor(importNumber(row.__sourceRowNumber, index + 2)));
+    const raw = Object.fromEntries(Object.entries(row).filter(([key]) => key !== '__sourceRowNumber'));
+    const rowText = Object.values(raw).map(importText).filter(Boolean).join(' · ');
+    if (footerStarted || !rowText) {
+      ignoredRowCount += 1;
+      return;
+    }
+    if (debtImportFooterPattern.test(rowText)) {
+      footerStarted = true;
+      ignoredRowCount += 1;
+      return;
+    }
+
+    const valuePresent = (labels: string[]) => isImportValuePresent(importValue(row, labels));
+    const occurredAt = importValue(row, ['Thời gian', 'Ngày chứng từ', 'Ngày']);
+    const documentNo = importText(importValue(row, ['Mã', 'Mã chứng từ', 'Số chứng từ']));
+    const description = importText(importValue(row, ['Diễn giải', 'Nội dung']));
+    if (isImportValuePresent(occurredAt) && documentNo) {
+      const amount = importNumber(importValue(row, ['Thành tiền', 'Giá trị', 'Tổng tiền']));
+      const debit = importNumber(importValue(row, ['Ghi nợ', 'Nợ']));
+      const credit = importNumber(importValue(row, ['Ghi có', 'Có']));
       current = {
         documentNo,
         occurredAt: importDate(occurredAt),
         description,
-        amount: importNumber(importValue(row, ['Thành tiền', 'Giá trị'])),
-        debit: importNumber(importValue(row, ['Ghi nợ'])),
-        credit: importNumber(importValue(row, ['Ghi có'])),
+        amount: amount || debit || credit,
+        debit,
+        credit,
         note: '',
-        sourceRowNumber: index + 2,
-        raw: row,
+        sourceRowNumber,
+        raw,
         details: [],
       };
       documents.push(current);
       return;
     }
-    if (!current) return;
-    const unit = importText(importValue(row, ['ĐVT']));
-    const quantity = importNumber(importValue(row, ['SL']));
-    const unitPrice = importNumber(importValue(row, ['Đơn giá']));
-    const amount = importNumber(importValue(row, ['Thành tiền', 'Giá trị']));
-    if (documentNo || unit || quantity || unitPrice || amount) {
-      current.details.push({ code: documentNo, description, unit, quantity, unitPrice, amount, discount: importNumber(importValue(row, ['Giảm giá'])), vat: importNumber(importValue(row, ['VAT'])), purchasePrice: importNumber(importValue(row, ['Giá nhập/trả'])), raw: row });
+    if (!current) {
+      ignoredRowCount += 1;
+      return;
+    }
+
+    const unit = importText(importValue(row, ['ĐVT', 'Đơn vị tính']));
+    const quantityValue = importValue(row, ['SL', 'Số lượng']);
+    const unitPriceValue = importValue(row, ['Đơn giá', 'Đơn giá nhập', 'Giá']);
+    const amountValue = importValue(row, ['Thành tiền', 'Giá trị', 'Tổng tiền']);
+    const detail = documentNo || valuePresent(['ĐVT', 'Đơn vị tính']) || valuePresent(['SL', 'Số lượng']) || valuePresent(['Đơn giá', 'Đơn giá nhập', 'Giá']) || valuePresent(['Giảm giá', 'Chiết khấu']) || valuePresent(['VAT', 'Thuế']) || valuePresent(['Giá nhập/trả', 'Giá nhập', 'Giá trả']) || valuePresent(['Thành tiền', 'Giá trị', 'Tổng tiền']);
+    if (detail) {
+      current.details.push({
+        code: documentNo,
+        description,
+        unit,
+        quantity: importNumber(quantityValue),
+        unitPrice: importNumber(unitPriceValue),
+        amount: importNumber(amountValue),
+        discount: importNumber(importValue(row, ['Giảm giá', 'Chiết khấu'])),
+        vat: importNumber(importValue(row, ['VAT', 'Thuế'])),
+        purchasePrice: importNumber(importValue(row, ['Giá nhập/trả', 'Giá nhập', 'Giá trả'])),
+        sourceRowNumber,
+        raw,
+      });
+      detailRowCount += 1;
+    } else if (description) {
+      current.note = [current.note, description].filter(Boolean).join('\n');
     } else {
-      const note = importText(importValue(row, ['Diễn giải'])) || Object.values(row).map(importText).filter(Boolean).join(' · ');
-      if (note) current.note = [current.note, note].filter(Boolean).join('\n');
+      ignoredRowCount += 1;
     }
   });
-  return documents.map((document) => ({ ...document, entityType, detailsJson: JSON.stringify(document.details) }));
+  return {
+    documents: documents.map((document) => ({ ...document, entityType, detailsJson: JSON.stringify(document.details) })),
+    detailRowCount,
+    ignoredRowCount,
+  };
 };
 
 const partnerImportPreview = async (req: Request, res: Response) => {
@@ -3516,7 +3563,7 @@ const partnerImportPreview = async (req: Request, res: Response) => {
     const sourceHash = partnerImportHash(sourceSystem, entityType, rows, req.body?.meta);
     const issues: Array<{ rowNumber: number; code: string; message: string; sourceCode: string; sourceName: string }> = [];
     let normalizedRows: any[] = [];
-    let stats = { totalRows: rows.length, createdCount: 0, updatedCount: 0, debtAdjustedCount: 0, detailCount: 0, errorCount: 0 };
+    let stats: any = { totalRows: rows.length, createdCount: 0, updatedCount: 0, debtAdjustedCount: 0, detailCount: 0, documentCount: 0, detailRowCount: 0, ignoredRowCount: 0, debitTotal: 0, creditTotal: 0, errorCount: 0 };
     if (entityType === 'customer' || entityType === 'supplier') {
       normalizedRows = rows.map((row) => entityType === 'customer' ? normalizeCustomerImportRow(row) : normalizeSupplierImportRow(row));
       const existingRows = entityType === 'customer'
@@ -3538,8 +3585,14 @@ const partnerImportPreview = async (req: Request, res: Response) => {
         } else if (row.code && row.name) stats.createdCount += 1;
       });
     } else {
-      normalizedRows = normalizeDebtImportRows(rows, entityType);
+      const normalizedDebt = normalizeDebtImportRows(rows, entityType);
+      normalizedRows = normalizedDebt.documents;
       stats.detailCount = normalizedRows.length;
+      stats.documentCount = normalizedRows.length;
+      stats.detailRowCount = normalizedDebt.detailRowCount;
+      stats.ignoredRowCount = normalizedDebt.ignoredRowCount;
+      stats.debitTotal = normalizedRows.reduce((sum, row) => sum + Number(row.debit || 0), 0);
+      stats.creditTotal = normalizedRows.reduce((sum, row) => sum + Number(row.credit || 0), 0);
       const partnerCode = importText(req.body?.partnerCode || req.body?.meta?.partnerCode);
       if (!partnerCode) issues.push({ rowNumber: 1, code: 'MISSING_PARTNER_CODE', message: 'Chưa xác định mã khách hàng/nhà cung cấp của báo cáo công nợ.', sourceCode: '', sourceName: '' });
       else {
@@ -3548,6 +3601,7 @@ const partnerImportPreview = async (req: Request, res: Response) => {
           : await db.select({ id: schema.suppliers.id }).from(schema.suppliers).where(and(eq(schema.suppliers.tenantId, req.user.tenantId), eq(schema.suppliers.code, partnerCode))).get();
         if (!partner) issues.push({ rowNumber: 1, code: 'PARTNER_NOT_FOUND', message: `Không tìm thấy đối tác có mã ${partnerCode}. Hãy import danh sách đối tác trước.`, sourceCode: partnerCode, sourceName: '' });
       }
+      if (!normalizedRows.length) issues.push({ rowNumber: Number(req.body?.meta?.headerRow) || 1, code: 'NO_DEBT_DOCUMENTS', message: 'File không có chứng từ công nợ phát sinh để nhập.', sourceCode: partnerCode, sourceName: '' });
     }
     stats.errorCount = issues.length;
     res.json({ sourceSystem, entityType, sourceHash, stats, issues, sample: normalizedRows.slice(0, 20).map(({ raw, ...row }) => row), fieldCount: rows[0] ? Object.keys(rows[0]).length : 0 });
@@ -3596,7 +3650,7 @@ app.post('/api/partners/import', async (req, res) => {
 
     const now = new Date().toISOString();
     const batch: any = { id: uuid(), tenantId: req.user.tenantId, sourceSystem, entityType, fileName: importText(req.body?.fileName), sourceHash, status: 'completed', totalRows: rows.length, createdCount: 0, updatedCount: 0, debtAdjustedCount: 0, detailCount: 0, errorCount: 0, createdBy: req.user.id, createdAt: now, completedAt: now };
-    const normalizedRows = entityType === 'customer' ? rows.map(normalizeCustomerImportRow) : entityType === 'supplier' ? rows.map(normalizeSupplierImportRow) : normalizeDebtImportRows(rows, entityType);
+    const normalizedRows = entityType === 'customer' ? rows.map(normalizeCustomerImportRow) : entityType === 'supplier' ? rows.map(normalizeSupplierImportRow) : normalizeDebtImportRows(rows, entityType).documents;
     await db.transaction(async (tx) => {
       await tx.insert(schema.partnerImportBatches).values(batch).run();
       if (entityType === 'customer' || entityType === 'supplier') {

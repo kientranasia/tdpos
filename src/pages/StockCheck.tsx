@@ -19,7 +19,7 @@ const signedQuantity = (value: number) => {
 };
 
 export default function StockCheck() {
-  const { products: loadedProducts, refreshProducts, activeTenant } = useApp();
+  const { products: loadedProducts, refreshProducts, activeTenant, dataRevision } = useApp();
   const [checkProducts, setCheckProducts] = useState<Product[]>([]);
   const [checkProductsTotal, setCheckProductsTotal] = useState(0);
   const [checkProductsLoading, setCheckProductsLoading] = useState(false);
@@ -38,7 +38,7 @@ export default function StockCheck() {
   const [showScanner, setShowScanner] = useState(false);
   const products = useMemo(() => {
     const byId = new Map<string, Product>();
-    [...loadedProducts, ...checkProducts, ...remoteProductResults].forEach((product) => byId.set(product.id, product));
+    [...checkProducts, ...remoteProductResults, ...loadedProducts].forEach((product) => byId.set(product.id, product));
     return Array.from(byId.values());
   }, [loadedProducts, checkProducts, remoteProductResults]);
   const scanCodeIndex = useMemo(() => createProductScanIndex(products), [products]);
@@ -162,7 +162,7 @@ export default function StockCheck() {
 
   useEffect(() => {
     void loadHistory();
-  }, []);
+  }, [dataRevision]);
 
   useEffect(() => {
     setActuals((previous) => {

@@ -23,7 +23,7 @@ type InvoicePaymentFilter = 'all' | 'cash' | 'transfer';
 type InvoiceStaffFilter = 'all' | string;
 
 export default function Invoices() {
-  const { invoices, customers, products, activeTenant, currentUser, refreshInvoices } = useApp();
+  const { invoices, customers, products, activeTenant, currentUser, refreshInvoices, dataRevision } = useApp();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [searchTerm, setSearchTerm] = useState('');
@@ -307,11 +307,11 @@ export default function Invoices() {
       }
     };
     loadDebtPayments();
-  }, []);
+  }, [dataRevision]);
 
   useEffect(() => {
     void loadSalesReturns();
-  }, []);
+  }, [dataRevision]);
 
   useEffect(() => {
     const loadInvoiceItems = async () => {

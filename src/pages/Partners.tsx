@@ -25,7 +25,19 @@ type ImportPreview = {
   payload: ImportPayload;
   result: {
     entityType: ImportEntity;
-    stats: { totalRows: number; createdCount: number; updatedCount: number; debtAdjustedCount: number; detailCount: number; errorCount: number };
+    stats: {
+      totalRows: number;
+      createdCount: number;
+      updatedCount: number;
+      debtAdjustedCount: number;
+      detailCount: number;
+      documentCount?: number;
+      detailRowCount?: number;
+      ignoredRowCount?: number;
+      debitTotal?: number;
+      creditTotal?: number;
+      errorCount: number;
+    };
     issues: Array<{ rowNumber: number; code: string; message: string; sourceCode: string; sourceName: string }>;
     sample: Record<string, unknown>[];
     fieldCount: number;
@@ -44,7 +56,8 @@ const rowToObject = (headers: unknown[], values: unknown[]) => headers.reduce<Re
 const findHeaderRow = (rows: unknown[][]) => {
   for (let index = 0; index < Math.min(rows.length, 40); index += 1) {
     const headers = rows[index].map(compactHeader).filter(Boolean);
-    if (headers.some((value) => value === 'makhachhang') || headers.some((value) => value === 'manhacungcap') || (headers.includes('ghino') && headers.includes('ghico'))) return index;
+    const hasHeader = (expected: string) => headers.some((value) => value === expected || value.includes(expected));
+    if (hasHeader('makhachhang') || hasHeader('manhacungcap') || (hasHeader('ghino') && hasHeader('ghico'))) return index;
   }
   return -1;
 };
@@ -76,10 +89,14 @@ const parsePartnerWorkbook = async (file: File): Promise<ImportPayload> => {
   const headerKeys = headers.map(compactHeader);
   const isCustomer = headerKeys.includes('makhachhang');
   const isSupplier = headerKeys.includes('manhacungcap');
-  const isDebt = headerKeys.includes('ghino') && headerKeys.includes('ghico');
+  const hasHeader = (expected: string) => headerKeys.some((value) => value === expected || value.includes(expected));
+  const isDebt = hasHeader('ghino') && hasHeader('ghico');
   const partnerCode = isDebt ? findMetaValue(rawRows, ['Mã KH', 'Mã NCC', 'Mã khách hàng', 'Mã nhà cung cấp']) : '';
   const entityType: ImportEntity = isDebt ? (partnerCode.toUpperCase().startsWith('NCC') ? 'supplier_debt' : 'customer_debt') : isSupplier ? 'supplier' : 'customer';
-  const rows = rawRows.slice(headerIndex + 1).map((row) => rowToObject(headers, row)).filter((row) => Object.values(row).some((value) => cellText(value)));
+  const rows = rawRows.slice(headerIndex + 1)
+    .map((row, index) => ({ row: rowToObject(headers, row), sourceRowNumber: headerIndex + index + 2 }))
+    .filter(({ row }) => Object.values(row).some((value) => cellText(value)))
+    .map(({ row, sourceRowNumber }) => ({ ...row, __sourceRowNumber: sourceRowNumber }));
   if (!rows.length) throw new Error('File không có dòng dữ liệu để import.');
   return { sourceSystem: 'kiot-viet', fileName: file.name, entityType, rows, ...(partnerCode ? { partnerCode } : {}), meta: { sheetName, headerRow: headerIndex + 1, partnerCode } };
 };
@@ -87,7 +104,7 @@ const parsePartnerWorkbook = async (file: File): Promise<ImportPayload> => {
 export default function Partners() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { customers, invoices, activeTenant, currentUser, permissions, addCustomer, refreshCustomers } = useApp();
+  const { customers, invoices, activeTenant, currentUser, permissions, addCustomer, refreshCustomers, dataRevision } = useApp();
   const [type, setType] = useState<PartnerType>(location.pathname.includes('supplier') ? 'supplier' : 'customer');
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [search, setSearch] = useState('');
@@ -119,7 +136,7 @@ export default function Partners() {
       if (!isCustomer && canViewSuppliers) await loadSuppliers();
     };
     load().catch((err) => setError(err instanceof Error ? err.message : 'Không thể tải dữ liệu đối tác.'));
-  }, [canViewCustomers, canViewSuppliers, isCustomer, loadSuppliers, location.pathname, refreshCustomers]);
+  }, [canViewCustomers, canViewSuppliers, dataRevision, isCustomer, loadSuppliers, location.pathname, refreshCustomers]);
 
   const rows = useMemo(() => {
     const keyword = normalizeSearchText(search);
@@ -163,6 +180,9 @@ export default function Partners() {
     setParsing(true);
     try {
       const payload = await parsePartnerWorkbook(file);
+      if (payload.entityType.endsWith('_debt')) {
+        throw new Error('Công nợ chi tiết được nhập tại trang chi tiết của đúng khách hàng hoặc nhà cung cấp.');
+      }
       const result = await partnerImportApi.preview(payload);
       setImportPreview({ payload, result });
     } catch (err) {
@@ -181,7 +201,7 @@ export default function Partners() {
       const batch = result.batch;
       const importedLabel = entityLabel(importPreview.payload.entityType);
       setImportPreview(null);
-      setSuccess(`Đã import ${importedLabel}: tạo ${batch.createdCount || 0}, cập nhật ${batch.updatedCount || 0}${batch.detailCount ? `, ${batch.detailCount} dòng công nợ` : ''}.`);
+      setSuccess(`Đã import ${importedLabel}: tạo ${batch.createdCount || 0}, cập nhật ${batch.updatedCount || 0}${batch.detailCount ? `, ${batch.detailCount} chứng từ công nợ` : ''}.`);
       await Promise.all([
         canViewCustomers ? refreshCustomers() : Promise.resolve(),
         canViewSuppliers ? loadSuppliers() : Promise.resolve(),
@@ -199,7 +219,7 @@ export default function Partners() {
       <div className="flex items-center rounded border border-slate-200 bg-slate-50 p-0.5">{canViewCustomers && <button className={`h-7 px-3 text-xs ${type === 'customer' ? 'bg-white font-semibold text-sky-700 shadow-sm' : 'text-slate-500'}`} onClick={() => switchType('customer')}><Users className="mr-1 inline h-3.5 w-3.5" />Khách hàng</button>}{canViewSuppliers && <button className={`h-7 px-3 text-xs ${type === 'supplier' ? 'bg-white font-semibold text-sky-700 shadow-sm' : 'text-slate-500'}`} onClick={() => switchType('supplier')}><Truck className="mr-1 inline h-3.5 w-3.5" />Nhà cung cấp</button>}</div>
       <div className="relative w-48"><Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" /><Input className="h-8 rounded border-slate-200 pl-7 text-xs" placeholder={canViewDetails ? 'Tìm mã, tên, SĐT...' : 'Tìm mã, tên...'} value={search} onChange={(e) => setSearch(e.target.value)} /></div>
       <input ref={importInputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleImportFile} />
-      {canManagePartners && <><Button size="sm" variant="outline" className="h-8 rounded px-3 text-xs" disabled={parsing} onClick={() => importInputRef.current?.click()}><Upload className="mr-1 h-3.5 w-3.5" />{parsing ? 'Đang đọc...' : 'Nhập dữ liệu'}</Button>
+      {canManagePartners && <><Button size="sm" variant="outline" className="h-8 rounded px-3 text-xs" disabled={parsing} onClick={() => importInputRef.current?.click()} title="Nhập danh sách khách hàng hoặc nhà cung cấp theo mẫu Kiot Việt"><Upload className="mr-1 h-3.5 w-3.5" />{parsing ? 'Đang đọc...' : 'Nhập danh sách'}</Button>
       <Button size="sm" className="h-8 rounded px-3 text-xs" onClick={() => setShowCreate(true)}><Plus className="mr-1 h-3.5 w-3.5" />Thêm {type === 'customer' ? 'khách' : 'NCC'}</Button></>}
     </header>
 
@@ -225,8 +245,10 @@ export default function Partners() {
 
     {showCreate && <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-3 pt-16 sm:p-4 sm:pt-20"><form onSubmit={submit} className="max-h-[calc(100dvh-5rem)] w-full max-w-xl overflow-y-auto rounded border border-slate-200 bg-white p-3 shadow-xl"><div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-2"><h2 className="text-sm font-semibold">Thêm {isCustomer ? 'khách hàng' : 'nhà cung cấp'}</h2><button type="button" onClick={() => setShowCreate(false)}><X className="h-4 w-4 text-slate-400" /></button></div><div className="grid grid-cols-1 gap-2 sm:grid-cols-2"><label>{isCustomer ? 'Tên khách hàng' : 'Tên nhà cung cấp'}<input autoFocus className="mt-1 h-8 w-full rounded border border-slate-200 px-2 text-xs" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label><label>Số điện thoại<input className="mt-1 h-8 w-full rounded border border-slate-200 px-2 text-xs" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></label><label>Mã số thuế<input className="mt-1 h-8 w-full rounded border border-slate-200 px-2 text-xs" value={form.taxCode} onChange={(e) => setForm({ ...form, taxCode: e.target.value })} /></label><label>Địa chỉ<input className="mt-1 h-8 w-full rounded border border-slate-200 px-2 text-xs" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></label></div>{error && <p className="mt-2 text-xs text-rose-600">{error}</p>}<div className="mt-3 flex justify-end gap-2"><Button type="button" size="sm" variant="outline" onClick={() => setShowCreate(false)}>Hủy</Button><Button type="submit" size="sm">Lưu</Button></div></form></div>}
 
-    {importPreview && <div className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-slate-900/50 p-3 pt-8 sm:p-6"><section className="w-full max-w-3xl rounded-lg border border-slate-200 bg-white shadow-2xl"><div className="flex items-start justify-between border-b border-slate-100 px-4 py-3"><div className="flex items-center gap-2"><div className="rounded-lg bg-sky-50 p-2 text-sky-700"><FileSpreadsheet className="h-5 w-5" /></div><div><h2 className="text-base font-semibold text-slate-900">Xem trước nhập dữ liệu</h2><p className="text-xs text-slate-500">{importPreview.payload.fileName} · {entityLabel(importPreview.payload.entityType)}</p></div></div><button type="button" onClick={() => setImportPreview(null)}><X className="h-5 w-5 text-slate-400" /></button></div><div className="space-y-3 p-4"><div className="grid grid-cols-2 gap-2 sm:grid-cols-5">{[
+    {importPreview && <div className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-slate-900/50 p-3 pt-8 sm:p-6"><section className="w-full max-w-3xl rounded-lg border border-slate-200 bg-white shadow-2xl"><div className="flex items-start justify-between border-b border-slate-100 px-4 py-3"><div className="flex items-center gap-2"><div className="rounded-lg bg-sky-50 p-2 text-sky-700"><FileSpreadsheet className="h-5 w-5" /></div><div><h2 className="text-base font-semibold text-slate-900">Xem trước nhập dữ liệu</h2><p className="text-xs text-slate-500">{importPreview.payload.fileName} · {entityLabel(importPreview.payload.entityType)}{importPreview.payload.partnerCode ? ` · ${importPreview.payload.partnerCode}` : ''}</p></div></div><button type="button" onClick={() => setImportPreview(null)}><X className="h-5 w-5 text-slate-400" /></button></div><div className="space-y-3 p-4"><div className="grid grid-cols-2 gap-2 sm:grid-cols-5">{(importPreview.payload.entityType.endsWith('_debt') ? [
+      ['Dòng đọc', importPreview.result.stats.totalRows], ['Chứng từ', importPreview.result.stats.documentCount ?? importPreview.result.stats.detailCount], ['Dòng hàng', importPreview.result.stats.detailRowCount ?? 0], ['Ghi nợ', importPreview.result.stats.debitTotal ?? 0], ['Ghi có', importPreview.result.stats.creditTotal ?? 0],
+    ] : [
       ['Dòng đọc', importPreview.result.stats.totalRows], ['Tạo mới', importPreview.result.stats.createdCount], ['Cập nhật', importPreview.result.stats.updatedCount], ['Công nợ lệch', importPreview.result.stats.debtAdjustedCount], ['Lỗi', importPreview.result.stats.errorCount],
-    ].map(([label, value]) => <div key={String(label)} className={`rounded border px-3 py-2 ${label === 'Lỗi' && Number(value) > 0 ? 'border-rose-200 bg-rose-50' : 'border-slate-200 bg-slate-50'}`}><div className="text-[11px] text-slate-500">{label}</div><div className="text-lg font-semibold tabular-nums text-slate-900">{value}</div></div>)}</div>{importPreview.payload.entityType.endsWith('_debt') && <div className="rounded border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800">Các dòng công nợ chi tiết sẽ được lưu vào lịch sử đối tác. Số dư hiện tại chỉ được cập nhật khi import bảng danh sách đối tác, tránh cộng dồn trùng khi chạy lại báo cáo.</div>}{importPreview.result.issues.length > 0 && <div className="max-h-56 overflow-auto rounded border border-rose-200 bg-rose-50"><div className="border-b border-rose-200 px-3 py-2 text-xs font-semibold text-rose-800">Cần xử lý trước khi import</div><div className="divide-y divide-rose-100">{importPreview.result.issues.slice(0, 100).map((issue) => <div key={`${issue.rowNumber}-${issue.code}`} className="px-3 py-2 text-xs text-rose-700">Dòng {issue.rowNumber}: {issue.message}{issue.sourceCode ? ` · ${issue.sourceCode}` : ''}</div>)}{importPreview.result.issues.length > 100 && <div className="px-3 py-2 text-xs text-rose-700">Còn {importPreview.result.issues.length - 100} lỗi khác.</div>}</div></div>}{importPreview.result.issues.length === 0 && <div className="flex items-center gap-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800"><CheckCircle2 className="h-4 w-4" />Mapping hợp lệ, có thể import an toàn. Mã nguồn được dùng để cập nhật lại dữ liệu khi chạy cùng file.</div>}<details className="rounded border border-slate-200"><summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-700">Xem mẫu {Math.min(importPreview.result.sample.length, 5)} dòng đầu</summary><pre className="max-h-48 overflow-auto border-t border-slate-100 bg-slate-50 p-3 text-[10px] text-slate-600">{JSON.stringify(importPreview.result.sample.slice(0, 5), null, 2)}</pre></details></div><div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3"><Button type="button" size="sm" variant="outline" onClick={() => setImportPreview(null)}>Hủy</Button><Button type="button" size="sm" disabled={importing || importPreview.result.issues.length > 0} onClick={confirmImport}>{importing ? 'Đang import...' : 'Xác nhận import'}</Button></div></section></div>}
+    ]).map(([label, value]) => <div key={String(label)} className={`rounded border px-3 py-2 ${label === 'Lỗi' && Number(value) > 0 ? 'border-rose-200 bg-rose-50' : 'border-slate-200 bg-slate-50'}`}><div className="text-[11px] text-slate-500">{label}</div><div className="text-lg font-semibold tabular-nums text-slate-900">{typeof value === 'number' && ['Ghi nợ', 'Ghi có'].includes(String(label)) ? formatCurrency(value) : value}</div></div>)}</div>{importPreview.payload.entityType.endsWith('_debt') && <div className="rounded border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800">Các dòng chứng từ và dòng hàng sẽ được lưu vào lịch sử công nợ của đúng đối tác. Số dư hiện tại không cộng lại từ file chi tiết để tránh trùng với số dư đã migration trong danh sách đối tác.</div>}{importPreview.result.issues.length > 0 && <div className="max-h-56 overflow-auto rounded border border-rose-200 bg-rose-50"><div className="border-b border-rose-200 px-3 py-2 text-xs font-semibold text-rose-800">Cần xử lý trước khi import</div><div className="divide-y divide-rose-100">{importPreview.result.issues.slice(0, 100).map((issue) => <div key={`${issue.rowNumber}-${issue.code}`} className="px-3 py-2 text-xs text-rose-700">Dòng {issue.rowNumber}: {issue.message}{issue.sourceCode ? ` · ${issue.sourceCode}` : ''}</div>)}{importPreview.result.issues.length > 100 && <div className="px-3 py-2 text-xs text-rose-700">Còn {importPreview.result.issues.length - 100} lỗi khác.</div>}</div></div>}{importPreview.result.issues.length === 0 && <div className="flex items-center gap-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800"><CheckCircle2 className="h-4 w-4" />Mapping hợp lệ, có thể import an toàn. Mã nguồn được dùng để chống nhập trùng khi chạy lại cùng file.</div>}{importPreview.result.stats.ignoredRowCount ? <p className="text-[11px] text-slate-500">Đã bỏ qua {importPreview.result.stats.ignoredRowCount} dòng trống hoặc chân trang của file Kiot Việt.</p> : null}<details className="rounded border border-slate-200"><summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-700">Xem mẫu {Math.min(importPreview.result.sample.length, 5)} chứng từ</summary><pre className="max-h-48 overflow-auto border-t border-slate-100 bg-slate-50 p-3 text-[10px] text-slate-600">{JSON.stringify(importPreview.result.sample.slice(0, 5), null, 2)}</pre></details></div><div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3"><Button type="button" size="sm" variant="outline" onClick={() => setImportPreview(null)}>Hủy</Button><Button type="button" size="sm" disabled={importing || importPreview.result.issues.length > 0} onClick={confirmImport}>{importing ? 'Đang import...' : 'Xác nhận import'}</Button></div></section></div>}
   </div>;
 }
