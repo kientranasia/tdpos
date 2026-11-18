@@ -3081,6 +3081,98 @@ const supplierCreditBalance = async (tenantId: string, supplierId: string) => {
   return rows.reduce((sum, row) => sum + (row.type === 'increase' ? Number(row.amount) : -Number(row.amount)), 0);
 };
 
+const supplierPaymentNotePattern = /thanh toán nhà cung cấp|chi trả nhà cung cấp/i;
+
+const deriveSupplierPurchaseBalances = (purchaseRows: any[], payableEntries: any[]) => {
+  const balances = new Map<string, { payableAmount: number; paidAmount: number; status: 'confirmed' | 'partial' | 'unpaid' }>();
+  const sortedPurchases = [...purchaseRows].sort((a, b) => {
+    const timeDiff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    return timeDiff || String(a.id).localeCompare(String(b.id));
+  });
+
+  // Older payments were recorded without a purchaseId. Apply those legacy
+  // payments FIFO so the purchase history agrees with the supplier balance.
+  let unlinkedPayment = payableEntries
+    .filter((entry) => entry.type === 'decrease' && !entry.purchaseId && supplierPaymentNotePattern.test(String(entry.note || '')))
+    .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount) || 0), 0);
+
+  for (const purchase of sortedPurchases) {
+    const originalPayable = Math.max(0, Number(purchase.payableAmount) || 0);
+    const applied = Math.min(originalPayable, unlinkedPayment);
+    const payableAmount = Math.max(0, originalPayable - applied);
+    const paidAmount = Math.min(
+      Math.max(0, Number(purchase.finalAmount) || 0),
+      Math.max(0, Number(purchase.paidAmount) || 0) + applied,
+    );
+    balances.set(purchase.id, {
+      payableAmount,
+      paidAmount,
+      status: payableAmount <= 0.01 ? 'confirmed' : paidAmount > 0 ? 'partial' : 'unpaid',
+    });
+    unlinkedPayment -= applied;
+  }
+
+  return balances;
+};
+
+const recordSupplierPayablePayment = async (tx: any, input: {
+  tenantId: string;
+  supplierId: string;
+  amount: number;
+  note: string;
+  createdBy: string;
+  createdAt: string;
+}) => {
+  let remaining = Math.max(0, Number(input.amount) || 0);
+  const entries: any[] = [];
+  const purchases = await tx.select().from(schema.purchases).where(and(
+    eq(schema.purchases.tenantId, input.tenantId),
+    eq(schema.purchases.supplierId, input.supplierId),
+  )).orderBy(asc(schema.purchases.createdAt), asc(schema.purchases.id)).all();
+
+  for (const purchase of purchases) {
+    if (remaining <= 0) break;
+    const payableAmount = Math.max(0, Number(purchase.payableAmount) || 0);
+    if (payableAmount <= 0) continue;
+    const applied = Math.min(remaining, payableAmount);
+    const nextPayable = Math.max(0, payableAmount - applied);
+    const nextPaid = Math.min(
+      Math.max(0, Number(purchase.finalAmount) || 0),
+      Math.max(0, Number(purchase.paidAmount) || 0) + applied,
+    );
+    await tx.update(schema.purchases).set({
+      payableAmount: nextPayable,
+      paidAmount: nextPaid,
+      status: nextPayable <= 0.01 ? 'confirmed' : nextPaid > 0 ? 'partial' : 'unpaid',
+    }).where(and(
+      eq(schema.purchases.id, purchase.id),
+      eq(schema.purchases.tenantId, input.tenantId),
+    )).run();
+    const entry = {
+      id: uuid(), tenantId: input.tenantId, supplierId: input.supplierId,
+      purchaseId: purchase.id, amount: applied, type: 'decrease' as const,
+      note: input.note, createdAt: input.createdAt, createdBy: input.createdBy,
+    };
+    await tx.insert(schema.payableLedger).values(entry).run();
+    entries.push(entry);
+    remaining -= applied;
+  }
+
+  // Keep any amount that cannot be tied to a purchase as an unlinked opening
+  // settlement; it still affects the supplier-level balance correctly.
+  if (remaining > 0) {
+    const entry = {
+      id: uuid(), tenantId: input.tenantId, supplierId: input.supplierId,
+      purchaseId: null, amount: remaining, type: 'decrease' as const,
+      note: input.note, createdAt: input.createdAt, createdBy: input.createdBy,
+    };
+    await tx.insert(schema.payableLedger).values(entry).run();
+    entries.push(entry);
+  }
+
+  return entries;
+};
+
 // Manual cashbook movements must reconcile with the supplier account just like
 // purchases and purchase returns do. Payable is the amount owed to the
 // supplier; supplier credit is the amount the supplier owes us (for example,
@@ -3104,62 +3196,43 @@ const applySupplierCashbookDebt = async (tx: any, input: {
     eq(schema.supplierCreditLedger.tenantId, input.tenantId),
     eq(schema.supplierCreditLedger.supplierId, input.supplierId),
   )).all();
-  const creditBalance = Math.max(0, creditRows.reduce((sum: number, row: any) => sum + (row.type === 'increase' ? Number(row.amount) : -Number(row.amount)), 0));
+  const creditBalance = creditRows.reduce((sum: number, row: any) => sum + (row.type === 'increase' ? Number(row.amount) : -Number(row.amount)), 0);
+  const currentBalance = Math.max(0, Number(supplier.currentPayable || 0) + creditBalance);
   let remaining = Math.max(0, Number(input.amount) || 0);
   const withContext = (prefix: string) => input.note ? `${prefix} · ${input.note}` : prefix;
 
-  // Money received from a supplier means the supplier owes the business more.
-  // Keep this as a supplier-credit increase; it must not reduce payable debt.
+  // Keep one supplier balance: money received from a supplier increases the
+  // balance, just like an imported debt increase. The old credit ledger is
+  // folded into the same balance for backward compatibility.
   if (input.type === 'income') {
-    await tx.insert(schema.supplierCreditLedger).values({
-      id: uuid(), tenantId: input.tenantId, supplierId: input.supplierId,
-      purchaseReturnId: null, purchaseId: null, amount: remaining,
-      type: 'increase', accountId: null, note: withContext('Thu tiền nhà cung cấp'),
-      createdBy: input.createdBy, createdAt: input.createdAt,
-    }).run();
-    return;
-  }
-
-  // Paying a supplier first settles any amount the supplier owes us (advance,
-  // refund or other supplier credit), then reduces payable debt.
-  if (creditBalance > 0) {
-    const creditSettled = Math.min(remaining, creditBalance);
-    if (creditSettled > 0) {
-      await tx.insert(schema.supplierCreditLedger).values({
-        id: uuid(), tenantId: input.tenantId, supplierId: input.supplierId,
-        purchaseReturnId: null, purchaseId: null, amount: creditSettled,
-        type: 'decrease', accountId: null, note: withContext('Chi trả nhà cung cấp'),
-        createdBy: input.createdBy, createdAt: input.createdAt,
-      }).run();
-      remaining -= creditSettled;
-    }
-  }
-
-  const currentPayable = Math.max(0, Number(supplier.currentPayable) || 0);
-  const payableSettled = Math.min(remaining, currentPayable);
-  if (payableSettled > 0) {
     await tx.update(schema.suppliers)
-      .set({ currentPayable: currentPayable - payableSettled })
+      .set({ currentPayable: currentBalance + remaining - creditBalance })
       .where(and(eq(schema.suppliers.id, input.supplierId), eq(schema.suppliers.tenantId, input.tenantId)))
       .run();
     await tx.insert(schema.payableLedger).values({
       id: uuid(), tenantId: input.tenantId, supplierId: input.supplierId,
-      purchaseId: null, amount: payableSettled, type: 'decrease',
-      note: withContext('Chi trả nhà cung cấp'),
+      purchaseId: null, amount: remaining, type: 'increase',
+      note: withContext('Thu tiền nhà cung cấp'),
       createdAt: input.createdAt, createdBy: input.createdBy,
     }).run();
-    remaining -= payableSettled;
+    return;
   }
 
-  // Paying more than the current payable creates a supplier credit instead of
-  // allowing the payable balance to become negative.
-  if (input.type === 'expense' && remaining > 0) {
-    await tx.insert(schema.supplierCreditLedger).values({
-      id: uuid(), tenantId: input.tenantId, supplierId: input.supplierId,
-      purchaseReturnId: null, purchaseId: null, amount: remaining,
-      type: 'increase', accountId: null, note: withContext('Chi tạm ứng nhà cung cấp'),
-      createdBy: input.createdBy, createdAt: input.createdAt,
-    }).run();
+  const payableSettled = Math.min(remaining, currentBalance);
+  if (payableSettled > 0) {
+    await tx.update(schema.suppliers)
+      .set({ currentPayable: Math.max(0, currentBalance - payableSettled) - creditBalance })
+      .where(and(eq(schema.suppliers.id, input.supplierId), eq(schema.suppliers.tenantId, input.tenantId)))
+      .run();
+    await recordSupplierPayablePayment(tx, {
+      tenantId: input.tenantId,
+      supplierId: input.supplierId,
+      amount: payableSettled,
+      note: withContext('Chi trả nhà cung cấp'),
+      createdAt: input.createdAt,
+      createdBy: input.createdBy,
+    });
+    remaining -= payableSettled;
   }
 };
 
@@ -3608,8 +3681,17 @@ app.get('/api/suppliers', async (req, res) => {
       .limit(includeMeta ? limit : 5000)
       .offset(includeMeta ? offset : 0)
       .all();
+    const supplierIds = rows.map((row) => row.id);
+    const supplierCreditRows = canViewDetails && supplierIds.length
+      ? await db.select().from(schema.supplierCreditLedger).where(and(
+        eq(schema.supplierCreditLedger.tenantId, req.user.tenantId),
+        inArray(schema.supplierCreditLedger.supplierId, supplierIds),
+      )).all()
+      : [];
+    const supplierCreditById = new Map<string, number>();
+    supplierCreditRows.forEach((entry) => supplierCreditById.set(entry.supplierId, (supplierCreditById.get(entry.supplierId) || 0) + (entry.type === 'increase' ? Number(entry.amount || 0) : -Number(entry.amount || 0))));
     const visibleRows = canViewDetails
-      ? rows
+      ? rows.map((row) => ({ ...row, currentPayable: Math.max(0, Number(row.currentPayable || 0) + Number(supplierCreditById.get(row.id) || 0)) }))
       : rows.map((row) => ({ id: row.id, code: row.code, name: row.name, active: row.active }));
     res.json(includeMeta
       ? { items: visibleRows, total: Number(totalRow?.count || 0), offset, limit }
@@ -3905,6 +3987,11 @@ app.post('/api/purchases/:id/returns', async (req, res) => {
       if (appliedPayable > 0) {
         await tx.update(schema.suppliers).set({ currentPayable: Math.max(0, Number(supplier.currentPayable) - appliedPayable) }).where(eq(schema.suppliers.id, supplier.id)).run();
         await tx.insert(schema.payableLedger).values({ id: uuid(), tenantId: req.user.tenantId, supplierId: supplier.id, purchaseId: purchase.id, amount: appliedPayable, type: 'decrease', note: `Giảm công nợ do trả hàng ${returnId}`, createdAt: timestamp, createdBy: req.user.id }).run();
+        const nextPayable = Math.max(0, Number(purchase.payableAmount) - appliedPayable);
+        await tx.update(schema.purchases).set({
+          payableAmount: nextPayable,
+          status: nextPayable <= 0.01 ? 'confirmed' : Number(purchase.paidAmount || 0) > 0 ? 'partial' : 'unpaid',
+        }).where(and(eq(schema.purchases.id, purchase.id), eq(schema.purchases.tenantId, req.user.tenantId))).run();
       }
       if (creditAmount > 0) await tx.insert(schema.supplierCreditLedger).values({ id: uuid(), tenantId: req.user.tenantId, supplierId: supplier.id, purchaseReturnId: returnId, purchaseId: purchase.id, amount: creditAmount, type: 'increase', accountId: null, note: `Số dư được nhận từ trả hàng ${returnId}`, createdBy: req.user.id, createdAt: timestamp }).run();
     });
@@ -3977,10 +4064,23 @@ app.post('/api/payable-ledger', async (req, res) => {
     const timestamp = new Date().toISOString();
     const paymentMethod = String(req.body?.paymentMethod || 'cash');
     const accountId = req.body?.accountId || await defaultAccountForPayment(req.user.tenantId, paymentMethod);
-    const entry = { id: uuid(), tenantId: req.user.tenantId, supplierId, purchaseId: null, amount: Math.min(payment, supplier.currentPayable), type: 'decrease' as const, note: note || 'Thanh toán nhà cung cấp', createdAt: timestamp, createdBy: req.user.id };
+    const supplierCredits = await db.select().from(schema.supplierCreditLedger).where(and(
+      eq(schema.supplierCreditLedger.tenantId, req.user.tenantId),
+      eq(schema.supplierCreditLedger.supplierId, supplierId),
+    )).all();
+    const creditBalance = supplierCredits.reduce((sum, row) => sum + (row.type === 'increase' ? Number(row.amount || 0) : -Number(row.amount || 0)), 0);
+    const currentBalance = Math.max(0, Number(supplier.currentPayable || 0) + creditBalance);
+    const entry = { id: uuid(), tenantId: req.user.tenantId, supplierId, purchaseId: null, amount: Math.min(payment, currentBalance), type: 'decrease' as const, note: note || 'Thanh toán nhà cung cấp', createdAt: timestamp, createdBy: req.user.id };
     await db.transaction(async (tx) => {
-      await tx.insert(schema.payableLedger).values(entry).run();
-      await tx.update(schema.suppliers).set({ currentPayable: Math.max(0, supplier.currentPayable - entry.amount) }).where(eq(schema.suppliers.id, supplierId)).run();
+      await tx.update(schema.suppliers).set({ currentPayable: Math.max(0, currentBalance - entry.amount) - creditBalance }).where(and(eq(schema.suppliers.id, supplierId), eq(schema.suppliers.tenantId, req.user.tenantId))).run();
+      await recordSupplierPayablePayment(tx, {
+        tenantId: req.user.tenantId,
+        supplierId,
+        amount: entry.amount,
+        note: entry.note,
+        createdAt: timestamp,
+        createdBy: req.user.id,
+      });
       await tx.insert(schema.cashbookEntries).values({ id: uuid(), tenantId: req.user.tenantId, type: 'expense', amount: entry.amount, category: 'Thanh toán NCC', note: entry.note, referenceId: entry.id, accountId, createdAt: timestamp, createdBy: req.user.id }).run();
     });
     res.status(201).json(entry);
@@ -4062,20 +4162,21 @@ app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
     const creditRows = creditEntries.map((entry: any) => {
       let debit = 0;
       let credit = 0;
-      // Supplier credit increases the amount the supplier owes us; settling
-      // that credit is shown as a separate debit-side movement.
-      if (entry.type === 'increase') credit = Number(entry.amount || 0);
-      else debit = Number(entry.amount || 0);
+      // Legacy supplier-credit rows are now folded into the single supplier
+      // debt balance: an increase is a debit movement and a settlement is a
+      // credit movement.
+      if (entry.type === 'increase') debit = Number(entry.amount || 0);
+      else credit = Number(entry.amount || 0);
       const note = String(entry.note || '');
       const description = entry.type === 'increase'
         ? note.startsWith('Thu tiền nhà cung cấp')
-          ? 'Thu tiền từ nhà cung cấp / tăng số dư được nhận'
+          ? 'Thu tiền nhà cung cấp / tăng công nợ'
           : note.startsWith('Chi tạm ứng nhà cung cấp')
-            ? 'Chi tạm ứng nhà cung cấp / tăng số dư được nhận'
-            : 'Trả hàng / được nhận lại từ nhà cung cấp'
+            ? 'Chi tạm ứng nhà cung cấp / tăng công nợ'
+            : 'Trả hàng / tăng công nợ nhà cung cấp'
         : note.startsWith('Chi trả nhà cung cấp')
-          ? 'Đối trừ chi trả nhà cung cấp'
-          : 'Đã nhận tiền hoàn từ nhà cung cấp';
+          ? 'Chi trả nhà cung cấp / giảm công nợ'
+          : 'Nhận tiền hoàn / giảm công nợ nhà cung cấp';
       return {
         id: `supplier-credit:${entry.id}`,
         rowType: 'supplier_credit',
@@ -4124,11 +4225,10 @@ app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
     });
 
     const movementRows = [...ledgerRows, ...creditRows, ...importedRows];
-    const currentPayable = Number(supplier.currentPayable || 0);
-    // Supplier credit is a separate balance (the amount the supplier owes us)
-    // and must not be netted into the payable balance shown on the supplier.
-    const payableRows = movementRows.filter((row) => row.rowType !== 'supplier_credit');
-    const movementPayable = payableRows.reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0);
+    const purchaseBalances = deriveSupplierPurchaseBalances(purchases as any[], payableEntries as any[]);
+    const supplierCreditBalance = creditEntries.reduce((sum: number, entry: any) => sum + (entry.type === 'increase' ? Number(entry.amount || 0) : -Number(entry.amount || 0)), 0);
+    const currentPayable = Math.max(0, Number(supplier.currentPayable || 0) + supplierCreditBalance);
+    const movementPayable = movementRows.reduce((sum, row) => sum + Number(row.debit || 0) - Number(row.credit || 0), 0);
     const reconciliationAdjustment = currentPayable - movementPayable;
     if (Math.abs(reconciliationAdjustment) > 0.01) {
       movementRows.push({
@@ -4161,13 +4261,11 @@ app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
     };
     const signed = (row: any) => Number(row.debit || 0) - Number(row.credit || 0);
     const openingPayable = Math.max(0, allRows
-      .filter((row) => row.rowType !== 'supplier_credit' && new Date(row.createdAt).getTime() < (fromMs as number))
+      .filter((row) => new Date(row.createdAt).getTime() < (fromMs as number))
       .reduce((sum, row) => sum + signed(row), 0));
     const rows = allRows.filter(inRange);
     const periodDebit = rows.reduce((sum, row) => sum + Number(row.debit || 0), 0);
     const periodCredit = rows.reduce((sum, row) => sum + Number(row.credit || 0), 0);
-    const currentCredit = creditEntries.reduce((sum: number, entry: any) => sum + (entry.type === 'increase' ? Number(entry.amount || 0) : -Number(entry.amount || 0)), 0);
-
     res.json({
       from: req.query.from || null,
       to: req.query.to || null,
@@ -4178,7 +4276,7 @@ app.get('/api/suppliers/:id/debt-statement', async (req, res) => {
       periodCredit,
       closingPayable: Math.max(0, openingPayable + periodDebit - periodCredit),
       currentPayable,
-      currentCredit,
+      purchaseBalances: Object.fromEntries([...purchaseBalances.entries()]),
       rows,
     });
   } catch (err) {
